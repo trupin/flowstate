@@ -37,6 +37,7 @@ class TaskExecutionResponse(BaseModel):
     started_at: str | None
     elapsed_seconds: float | None
     exit_code: int | None
+    error_message: str | None = None
 
 
 class EdgeTransitionResponse(BaseModel):
@@ -59,6 +60,7 @@ class RunDetailResponse(BaseModel):
     started_at: str | None
     elapsed_seconds: float
     budget_seconds: int
+    error_message: str | None = None
     tasks: list[TaskExecutionResponse]
     edges: list[EdgeTransitionResponse]
 

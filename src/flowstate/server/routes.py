@@ -335,6 +335,7 @@ async def get_run(request: Request, run_id: str) -> dict[str, Any]:
         "started_at": run.started_at,
         "elapsed_seconds": run.elapsed_seconds,
         "budget_seconds": run.budget_seconds,
+        "error_message": run.error_message,
         "created_at": run.created_at if hasattr(run, "created_at") else run.started_at,
         "flow": flow_data,
         "tasks": [
@@ -350,6 +351,7 @@ async def get_run(request: Request, run_id: str) -> dict[str, Any]:
                 "started_at": t.started_at,
                 "elapsed_seconds": t.elapsed_seconds,
                 "exit_code": t.exit_code,
+                "error_message": t.error_message,
             }
             for t in tasks
         ],
