@@ -104,10 +104,20 @@ def mount_static_files(app: FastAPI, dist_dir: Path | None = None) -> None:
 async def lifespan(app: FastAPI) -> AsyncGenerator[None]:
     """Async lifespan context manager for startup/shutdown hooks.
 
-    Startup and shutdown logic for DB connections, file watcher, WebSocket hub,
-    etc. will be added by later issues (SERVER-002, SERVER-003, SERVER-005).
+    Creates and starts the FlowRegistry (file watcher) on startup,
+    and stops it on shutdown. Future issues will add DB connections,
+    WebSocket hub, etc.
     """
-    yield
+    from flowstate.server.flow_registry import FlowRegistry
+
+    config: FlowstateConfig = app.state.config
+    registry = FlowRegistry(watch_dir=config.watch_dir)
+    app.state.flow_registry = registry
+    await registry.start()
+    try:
+        yield
+    finally:
+        await registry.stop()
 
 
 def create_app(
@@ -157,6 +167,11 @@ def create_app(
             status_code=exc.status_code,
             content={"error": exc.message, "details": exc.details},
         )
+
+    # Include REST API routes
+    from flowstate.server.routes import router
+
+    app.include_router(router)
 
     # Mount static files LAST (catch-all SPA fallback must come after API routes)
     # Only mount when explicitly requested via static_dir parameter.
