@@ -87,8 +87,13 @@
 }
 
 .react-flow__edge-text {
-  font-size: 10px;
-  fill: var(--text-secondary);
+  font-size: 11px;
+  fill: var(--text-primary);
+}
+
+.react-flow__edge-textbg {
+  fill: var(--bg-secondary) !important;
+  fill-opacity: 0.9 !important;
 }
 
 .react-flow__background {

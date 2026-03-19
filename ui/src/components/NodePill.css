@@ -54,14 +54,24 @@
   }
 }
 
-/* Entry node: double border */
+/* Entry node: green accent border */
 .node-pill.type-entry {
-  border: 2px double rgba(255, 255, 255, 0.6);
+  border: 2px solid rgba(34, 197, 94, 0.7);
+  box-shadow: 0 0 6px rgba(34, 197, 94, 0.2);
 }
 
-/* Exit node: thick border */
+/* Exit node: orange accent border + rounded square */
 .node-pill.type-exit {
-  border: 3px solid rgba(255, 255, 255, 0.6);
+  border: 2px solid rgba(249, 115, 22, 0.7);
+  box-shadow: 0 0 6px rgba(249, 115, 22, 0.2);
+  border-radius: 10px;
+}
+
+/* Type indicator icon (▶ for entry, ■ for exit) */
+.node-pill-type-indicator {
+  font-size: 8px;
+  opacity: 0.8;
+  margin-right: 2px;
 }
 
 /* Expanded state */

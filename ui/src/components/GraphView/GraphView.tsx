@@ -35,7 +35,7 @@ function getLayoutedElements(
 ): { nodes: Node<NodePillData>[]; edges: Edge[] } {
   const g = new dagre.graphlib.Graph();
   g.setDefaultEdgeLabel(() => ({}));
-  g.setGraph({ rankdir: 'TB', nodesep: 60, ranksep: 80 });
+  g.setGraph({ rankdir: 'TB', nodesep: 80, ranksep: 100 });
 
   nodes.forEach((node) => {
     g.setNode(node.id, { width: 150, height: 40 });
@@ -90,6 +90,7 @@ function convertToReactFlowNodes(
 
 function convertToReactFlowEdges(
   edgeDefs: FlowEdgeDef[],
+  nodeOrder: Map<string, number>,
   activeEdges?: Set<string>,
 ): Edge[] {
   return edgeDefs.map((e, i) => {
@@ -97,15 +98,32 @@ function convertToReactFlowEdges(
     const target = e.target ?? '';
     const id = `${source}-${target}-${i}`;
     const isActive = activeEdges?.has(id) ?? false;
+    const sourceRank = nodeOrder.get(source) ?? 0;
+    const targetRank = nodeOrder.get(target) ?? 0;
+    const isBackEdge = targetRank <= sourceRank;
     return {
       id,
       source,
       target,
-      label: e.condition ? truncate(e.condition, 30) : undefined,
+      type: 'smoothstep',
+      label: isBackEdge
+        ? undefined
+        : e.condition
+          ? truncate(e.condition, 40)
+          : undefined,
+      labelBgPadding: [6, 4] as [number, number],
+      labelBgBorderRadius: 4,
+      labelBgStyle: { fill: 'var(--bg-secondary)', fillOpacity: 0.95 },
+      labelStyle: { fill: 'var(--text-primary)', fontSize: 11 },
       style: {
         strokeDasharray: e.edge_type === 'conditional' ? '5 5' : undefined,
-        stroke: isActive ? 'var(--accent)' : 'var(--text-secondary)',
-        strokeWidth: isActive ? 2 : 1,
+        stroke: isActive
+          ? 'var(--accent)'
+          : isBackEdge
+            ? 'var(--accent)'
+            : 'var(--text-secondary)',
+        strokeWidth: isActive || isBackEdge ? 2 : 1,
+        opacity: isBackEdge && !isActive ? 0.6 : 1,
       },
       animated: isActive,
       markerEnd: { type: 'arrowclosed' as const },
@@ -143,9 +161,14 @@ export function GraphView({
       ),
     [nodes, taskStatuses, waitUntil, taskGenerations, taskElapsed],
   );
+  const nodeOrder = useMemo(() => {
+    const order = new Map<string, number>();
+    nodes.forEach((n, i) => order.set(n.name, i));
+    return order;
+  }, [nodes]);
   const rfEdges = useMemo(
-    () => convertToReactFlowEdges(edges, activeEdges),
-    [edges, activeEdges],
+    () => convertToReactFlowEdges(edges, nodeOrder, activeEdges),
+    [edges, nodeOrder, activeEdges],
   );
   const layouted = useMemo(
     () => getLayoutedElements(rfNodes, rfEdges),

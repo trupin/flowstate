@@ -86,6 +86,11 @@ export function NodePill({ data }: NodeProps<Node<NodePillData>>) {
 
       {/* Compact view (always visible) */}
       <div className="node-pill-compact">
+        {data.nodeType !== 'task' && (
+          <span className="node-pill-type-indicator">
+            {data.nodeType === 'entry' ? '\u25B6' : '\u25A0'}
+          </span>
+        )}
         <span className="node-pill-name">
           {expanded ? data.label : truncateName(data.label)}
         </span>
