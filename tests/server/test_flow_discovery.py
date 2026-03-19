@@ -256,10 +256,10 @@ class TestGetFlowParams:
             # Check types and defaults
             focus = next(p for p in flow.params if p["name"] == "focus")
             assert focus["type"] == "string"
-            assert focus["default"] == "all"
+            assert focus["default_value"] == "all"
             verbose = next(p for p in flow.params if p["name"] == "verbose")
             assert verbose["type"] == "bool"
-            assert verbose["default"] is False
+            assert verbose["default_value"] is False
         finally:
             await registry.stop()
 

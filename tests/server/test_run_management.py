@@ -209,6 +209,11 @@ def _make_test_client(
         run_manager = RunManager()
     app.state.run_manager = run_manager
 
+    # Mock WebSocket hub (routes access ws_hub.on_flow_event for executor creation)
+    mock_ws_hub = MagicMock()
+    mock_ws_hub.on_flow_event = MagicMock()
+    app.state.ws_hub = mock_ws_hub
+
     return TestClient(app, raise_server_exceptions=False)
 
 
@@ -421,7 +426,7 @@ class TestGetRunDetail:
         assert e1["from_node"] == "start"
         assert e1["to_node"] == "done"
         assert e1["edge_type"] == "unconditional"
-        assert e1["transitioned_at"] == "2025-01-01T00:01:00+00:00"
+        assert e1["created_at"] == "2025-01-01T00:01:00+00:00"
 
 
 class TestGetRunNotFound:

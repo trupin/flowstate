@@ -144,6 +144,11 @@ def _make_test_client(
         run_manager = RunManager()
     app.state.run_manager = run_manager
 
+    # Mock WebSocket hub (routes access ws_hub.on_flow_event for executor creation)
+    mock_ws_hub = MagicMock()
+    mock_ws_hub.on_flow_event = MagicMock()
+    app.state.ws_hub = mock_ws_hub
+
     return TestClient(app, raise_server_exceptions=False)
 
 
