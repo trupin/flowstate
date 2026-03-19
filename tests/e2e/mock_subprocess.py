@@ -356,6 +356,39 @@ class MockSubprocessManager:
             raw=f"Process exited with code {behavior.exit_code}",
         )
 
+    async def run_task_with_system_prompt(
+        self,
+        system_prompt: str,
+        init_message: str,
+        workspace: str,
+        session_id: str,
+        *,
+        skip_permissions: bool = False,
+        model: str | None = None,
+    ) -> AsyncGenerator[StreamEvent, None]:
+        """Simulate running a task with a system prompt. Delegates to run_task."""
+        self._call_history.append(
+            {"method": "run_task_with_system_prompt", "session_id": session_id}
+        )
+        # Yield a system/init event with the session_id (mimics real Claude Code)
+        yield StreamEvent(
+            type=StreamEventType.SYSTEM,
+            content={"type": "system", "subtype": "init", "session_id": session_id},
+            raw=json.dumps({"type": "system", "subtype": "init", "session_id": session_id}),
+        )
+        # Yield a quick result
+        yield StreamEvent(
+            type=StreamEventType.RESULT,
+            content={"type": "result", "result": "Orchestrator ready."},
+            raw=json.dumps({"type": "result", "result": "Orchestrator ready."}),
+        )
+        # Yield exit
+        yield StreamEvent(
+            type=StreamEventType.SYSTEM,
+            content={"event": "process_exit", "exit_code": 0, "stderr": ""},
+            raw="Process exited with code 0",
+        )
+
     async def run_task_resume(
         self,
         prompt: str,

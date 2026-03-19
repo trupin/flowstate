@@ -45,16 +45,16 @@ async def _empty_stream():
 
 
 def _mock_subprocess_mgr() -> SubprocessManager:
-    """Create a SubprocessManager mock with run_task returning an empty async generator.
+    """Create a SubprocessManager mock with async generator methods.
 
-    run_task is an async generator function, so the mock must return an async iterable
-    (not a coroutine). We use a regular Mock with side_effect to produce a fresh
-    async generator on each call.
+    Async generator methods (run_task, run_task_with_system_prompt) must return
+    async iterables (not coroutines). We use regular Mock with side_effect.
     """
     from unittest.mock import Mock
 
     mgr = Mock(spec=SubprocessManager)
     mgr.run_task = Mock(side_effect=lambda *args, **kwargs: _empty_stream())
+    mgr.run_task_with_system_prompt = Mock(side_effect=lambda *args, **kwargs: _empty_stream())
     mgr.kill = AsyncMock()
     return mgr
 
@@ -93,7 +93,7 @@ class TestOrchestratorSession:
 class TestGetOrCreateNew:
     @pytest.mark.asyncio
     async def test_creates_session(self, tmp_path: Path) -> None:
-        """First call creates a new session with session_id and is_initialized=True."""
+        """First call creates a lazy session (not yet initialized)."""
         mock_mgr = _mock_subprocess_mgr()
         manager = OrchestratorManager(mock_mgr)
         flow = _make_flow()
@@ -109,11 +109,12 @@ class TestGetOrCreateNew:
         assert session.session_id  # non-empty
         assert session.harness == "claude"
         assert session.cwd == "/project"
-        assert session.is_initialized is True
+        assert session.is_initialized is False  # lazy — no subprocess yet
+        assert session.system_prompt  # system prompt stored for first task
 
     @pytest.mark.asyncio
-    async def test_calls_subprocess_run_task(self, tmp_path: Path) -> None:
-        """Creating a session invokes subprocess_mgr.run_task with the system prompt."""
+    async def test_lazy_no_subprocess_call(self, tmp_path: Path) -> None:
+        """Creating a session does NOT spawn a subprocess (lazy init)."""
         mock_mgr = _mock_subprocess_mgr()
         manager = OrchestratorManager(mock_mgr)
         flow = _make_flow()
@@ -126,11 +127,9 @@ class TestGetOrCreateNew:
             run_data_dir=str(tmp_path),
         )
 
-        mock_mgr.run_task.assert_called_once()
-        call_args = mock_mgr.run_task.call_args
-        prompt_arg = call_args[0][0]
-        assert "Flowstate Orchestrator Agent" in prompt_arg
-        assert call_args[0][1] == "/project"  # cwd
+        # No subprocess calls during lazy session creation
+        mock_mgr.run_task.assert_not_called()
+        mock_mgr.run_task_with_system_prompt.assert_not_called()
 
 
 class TestGetOrCreateCached:
@@ -389,13 +388,14 @@ class TestSessionKey:
 
 class TestSkipPermissions:
     @pytest.mark.asyncio
-    async def test_skip_permissions_forwarded(self, tmp_path: Path) -> None:
-        """skip_permissions flag is passed through to subprocess_mgr.run_task."""
+    async def test_skip_permissions_stored(self, tmp_path: Path) -> None:
+        """skip_permissions flag is accepted (stored for use by executor)."""
         mock_mgr = _mock_subprocess_mgr()
         manager = OrchestratorManager(mock_mgr)
         flow = _make_flow()
 
-        await manager.get_or_create(
+        # Lazy init — no subprocess call, but should not raise
+        session = await manager.get_or_create(
             harness="claude",
             cwd="/project",
             flow=flow,
@@ -404,6 +404,5 @@ class TestSkipPermissions:
             skip_permissions=True,
         )
 
-        mock_mgr.run_task.assert_called_once()
-        call_kwargs = mock_mgr.run_task.call_args[1]
-        assert call_kwargs["skip_permissions"] is True
+        assert session is not None
+        assert session.is_initialized is False

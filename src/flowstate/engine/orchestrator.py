@@ -33,6 +33,7 @@ class OrchestratorSession:
     harness: str
     cwd: str
     data_dir: str
+    system_prompt: str = ""
     is_initialized: bool = False
 
 
@@ -99,7 +100,14 @@ class OrchestratorManager:
         *,
         skip_permissions: bool = False,
     ) -> OrchestratorSession:
-        """Create a new orchestrator session."""
+        """Create a new orchestrator session (lazy — no subprocess spawned yet).
+
+        The session is created with metadata only. The actual Claude Code
+        subprocess is spawned on the first task execution via
+        run_first_task_with_system_prompt(), which combines the system prompt
+        with the first task instruction in a single call. This avoids blocking
+        on a separate init subprocess.
+        """
         session_id = str(uuid.uuid4())
         system_prompt = build_orchestrator_system_prompt(flow, run_data_dir, cwd)
 
@@ -107,45 +115,16 @@ class OrchestratorManager:
         orch_dir = Path(run_data_dir) / "orchestrator" / key
         orch_dir.mkdir(parents=True, exist_ok=True)
 
-        # Write system prompt and session ID for debugging/recovery.
-        # Session ID is written BEFORE running the subprocess so that the
-        # orchestrator session is discoverable even if init fails or the run
-        # is cancelled mid-init.
         (orch_dir / "system_prompt.md").write_text(system_prompt)
         (orch_dir / "session_id").write_text(session_id)
-
-        # Initialize session by running the system prompt.
-        # We consume the stream to completion to fully initialize the session.
-        # Capture the real Claude Code session_id from the system/init event
-        # (Claude Code assigns its own session ID, different from our UUID).
-        real_session_id: str | None = None
-        stream = self._subprocess_mgr.run_task(
-            system_prompt,
-            cwd,
-            session_id,
-            skip_permissions=skip_permissions,
-        )
-        async for event in stream:
-            if (
-                real_session_id is None
-                and event.content.get("type") == "system"
-                and event.content.get("subtype") == "init"
-                and isinstance(event.content.get("session_id"), str)
-            ):
-                real_session_id = event.content["session_id"]
-
-        # Use the real session ID for resume; fall back to our UUID if not found
-        if real_session_id:
-            session_id = real_session_id
-            # Update the persisted session_id file with the real one
-            (orch_dir / "session_id").write_text(session_id)
 
         return OrchestratorSession(
             session_id=session_id,
             harness=harness,
             cwd=cwd,
             data_dir=str(orch_dir),
-            is_initialized=True,
+            system_prompt=system_prompt,
+            is_initialized=False,
         )
 
     async def terminate(self, session_id: str) -> None:

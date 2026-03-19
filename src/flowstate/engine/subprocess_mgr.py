@@ -97,6 +97,41 @@ class SubprocessManager:
         async for event in self._run_streaming(cmd, workspace, session_id):
             yield event
 
+    async def run_task_with_system_prompt(
+        self,
+        system_prompt: str,
+        init_message: str,
+        workspace: str,
+        session_id: str,
+        *,
+        skip_permissions: bool = False,
+        model: str | None = None,
+    ) -> AsyncGenerator[StreamEvent, None]:
+        """Launch a Claude Code session with a system prompt and short init message.
+
+        Uses --system-prompt for context (not responded to at length) and -p for
+        a short init message. This is faster than passing everything via -p because
+        the system prompt is treated as context, not a prompt to respond to.
+
+        Constructs: claude -p "<init>" --system-prompt "<system>" --output-format stream-json --verbose
+        """
+        cmd = [
+            "claude",
+            "-p",
+            init_message,
+            "--system-prompt",
+            system_prompt,
+            "--output-format",
+            "stream-json",
+            "--verbose",
+        ]
+        if model:
+            cmd.extend(["--model", model])
+        if skip_permissions:
+            cmd.append("--dangerously-skip-permissions")
+        async for event in self._run_streaming(cmd, workspace, session_id):
+            yield event
+
     async def run_task_resume(
         self,
         prompt: str,

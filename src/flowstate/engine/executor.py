@@ -25,6 +25,7 @@ import os
 import time
 import uuid
 from datetime import UTC, datetime
+from pathlib import Path
 from typing import TYPE_CHECKING
 
 from flowstate.dsl.ast import ContextMode, EdgeType, ErrorPolicy, NodeType
@@ -1355,14 +1356,28 @@ class FlowExecutor:
                         cwd=task_exec.cwd,
                     )
 
-                    # Resume orchestrator with task instruction
-                    session_id = orch_session.session_id
-                    stream = self._subprocess_mgr.run_task_resume(
-                        instruction,
-                        task_exec.cwd,
-                        orch_session.session_id,
-                        skip_permissions=skip_perms,
-                    )
+                    if not orch_session.is_initialized:
+                        # First task: combine system prompt + task instruction
+                        # in a single subprocess call (no separate init needed)
+                        session_id = orch_session.session_id
+                        stream = self._subprocess_mgr.run_task_with_system_prompt(
+                            system_prompt=orch_session.system_prompt,
+                            init_message=instruction,
+                            workspace=task_exec.cwd,
+                            session_id=session_id,
+                            skip_permissions=skip_perms,
+                            model="sonnet",
+                        )
+                        orch_session.is_initialized = True
+                    else:
+                        # Subsequent tasks: resume the orchestrator session
+                        session_id = orch_session.session_id
+                        stream = self._subprocess_mgr.run_task_resume(
+                            instruction,
+                            task_exec.cwd,
+                            orch_session.session_id,
+                            skip_permissions=skip_perms,
+                        )
                 except Exception:
                     # Fall back to direct subprocess on any orchestrator error
                     logger.warning(
@@ -1416,13 +1431,29 @@ class FlowExecutor:
                     and event.content.get("event") == "process_exit"
                 ):
                     exit_code = event.content.get("exit_code", -1)
-                # Capture real Claude Code session ID from system/init event
+                # Capture real Claude Code session ID from system/init event.
+                # Update orchestrator session too so subsequent resumes use it.
                 if (
                     event.type == StreamEventType.SYSTEM
                     and event.content.get("subtype") == "init"
                     and isinstance(event.content.get("session_id"), str)
                 ):
                     session_id = event.content["session_id"]
+                    if self._orchestrator_mgr is not None and stream is not None:
+                        try:
+                            orch = await self._orchestrator_mgr.get_or_create(
+                                harness="claude",
+                                cwd=task_exec.cwd,
+                                flow=flow,
+                                run_id=flow_run_id,
+                                run_data_dir=data_dir,
+                                skip_permissions=skip_perms,
+                            )
+                            orch.session_id = session_id
+                            # Persist for recovery
+                            Path(orch.data_dir, "session_id").write_text(session_id)
+                        except Exception:
+                            pass
 
             elapsed = time.monotonic() - start_time
 
