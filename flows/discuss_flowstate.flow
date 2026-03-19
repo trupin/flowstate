@@ -1,0 +1,59 @@
+flow discuss_flowstate {
+    budget = 30m
+    on_error = pause
+    context = handoff
+    workspace = "."
+
+    entry moderator {
+        prompt = """
+        You are a moderator facilitating a discussion between two colleagues —
+        Alice (an enthusiastic software engineer) and Bob (a thoughtful software
+        architect) — about why Flowstate, a state-machine orchestration system
+        for AI agents, is a good system.
+
+        If this is the start of the discussion, introduce the topic and invite
+        Alice to share her perspective. If the discussion is already underway,
+        acknowledge the latest points made, add a brief bridging comment, and
+        prompt the next speaker to continue.
+        """
+    }
+
+    task alice {
+        prompt = """
+        You are Alice, an enthusiastic software engineer. Read the moderator's
+        prompt and the discussion so far, then contribute 1-2 points about why
+        Flowstate is a great system. You might discuss the graph-based workflow
+        model, static analysis before execution, parallel agent execution,
+        handoff vs session context modes, workspace isolation, or how the type
+        checker catches errors before runtime.
+
+        Be conversational and engaging. Address Bob directly.
+        """
+    }
+
+    task bob {
+        prompt = """
+        You are Bob, a thoughtful software architect. Read what Alice just said
+        about Flowstate and respond with your own perspective. You may agree, add
+        nuance, or raise new points — such as the error handling model
+        (pause/abort/skip), judge-based edge evaluation, budget controls, or the
+        clean DSL for defining workflows.
+
+        Build on the discussion and add 1-2 new insights. Be conversational and
+        address Alice directly.
+        """
+    }
+
+    exit done {
+        prompt = """
+        You are the moderator wrapping up. Write a polished summary highlighting
+        the top 3-5 insights from Alice and Bob's discussion about why Flowstate
+        is a good system.
+        """
+    }
+
+    moderator -> alice
+    alice -> bob
+    bob -> moderator
+    moderator -> done when "4 or more topics covered"
+}
