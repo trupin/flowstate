@@ -1,0 +1,125 @@
+-- Flow definitions (parsed DSL stored alongside source)
+CREATE TABLE IF NOT EXISTS flow_definitions (
+    id TEXT PRIMARY KEY,
+    name TEXT NOT NULL UNIQUE,
+    source_dsl TEXT NOT NULL,
+    ast_json TEXT NOT NULL,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+-- Flow runs (execution instances)
+CREATE TABLE IF NOT EXISTS flow_runs (
+    id TEXT PRIMARY KEY,
+    flow_definition_id TEXT NOT NULL REFERENCES flow_definitions(id),
+    status TEXT NOT NULL CHECK(status IN (
+        'created', 'running', 'paused', 'completed',
+        'failed', 'cancelled', 'budget_exceeded'
+    )),
+    default_workspace TEXT,
+    data_dir TEXT NOT NULL,
+    params_json TEXT,
+    budget_seconds INTEGER NOT NULL,
+    elapsed_seconds REAL DEFAULT 0,
+    on_error TEXT NOT NULL CHECK(on_error IN ('pause', 'abort', 'skip')),
+    started_at TIMESTAMP,
+    completed_at TIMESTAMP,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    error_message TEXT
+);
+
+-- Task executions (individual node runs within a flow run)
+CREATE TABLE IF NOT EXISTS task_executions (
+    id TEXT PRIMARY KEY,
+    flow_run_id TEXT NOT NULL REFERENCES flow_runs(id),
+    node_name TEXT NOT NULL,
+    node_type TEXT NOT NULL CHECK(node_type IN ('entry', 'task', 'exit')),
+    status TEXT NOT NULL CHECK(status IN (
+        'pending', 'waiting', 'running', 'completed', 'failed', 'skipped'
+    )),
+    wait_until TIMESTAMP,
+    generation INTEGER NOT NULL DEFAULT 1,
+    context_mode TEXT NOT NULL CHECK(context_mode IN ('handoff', 'session', 'none')),
+    cwd TEXT NOT NULL,
+    claude_session_id TEXT,
+    task_dir TEXT NOT NULL,
+    prompt_text TEXT NOT NULL,
+    started_at TIMESTAMP,
+    completed_at TIMESTAMP,
+    elapsed_seconds REAL,
+    exit_code INTEGER,
+    summary_path TEXT,
+    error_message TEXT,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+-- Edge transitions (log of every edge traversal)
+CREATE TABLE IF NOT EXISTS edge_transitions (
+    id TEXT PRIMARY KEY,
+    flow_run_id TEXT NOT NULL REFERENCES flow_runs(id),
+    from_task_id TEXT NOT NULL REFERENCES task_executions(id),
+    to_task_id TEXT REFERENCES task_executions(id),
+    edge_type TEXT NOT NULL CHECK(edge_type IN (
+        'unconditional', 'conditional', 'fork', 'join'
+    )),
+    condition_text TEXT,
+    judge_session_id TEXT,
+    judge_decision TEXT,
+    judge_reasoning TEXT,
+    judge_confidence REAL,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+-- Fork groups (track parallel execution groups)
+CREATE TABLE IF NOT EXISTS fork_groups (
+    id TEXT PRIMARY KEY,
+    flow_run_id TEXT NOT NULL REFERENCES flow_runs(id),
+    source_task_id TEXT NOT NULL REFERENCES task_executions(id),
+    join_node_name TEXT NOT NULL,
+    generation INTEGER NOT NULL DEFAULT 1,
+    status TEXT NOT NULL CHECK(status IN ('active', 'joined', 'cancelled')),
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+-- Fork group members
+CREATE TABLE IF NOT EXISTS fork_group_members (
+    fork_group_id TEXT NOT NULL REFERENCES fork_groups(id),
+    task_execution_id TEXT NOT NULL REFERENCES task_executions(id),
+    PRIMARY KEY (fork_group_id, task_execution_id)
+);
+
+-- Streaming logs from Claude subprocesses
+CREATE TABLE IF NOT EXISTS task_logs (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    task_execution_id TEXT NOT NULL REFERENCES task_executions(id),
+    timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    log_type TEXT NOT NULL CHECK(log_type IN (
+        'stdout', 'stderr', 'tool_use', 'assistant_message', 'system'
+    )),
+    content TEXT NOT NULL
+);
+
+-- Flow schedules (recurring flow runs)
+CREATE TABLE IF NOT EXISTS flow_schedules (
+    id TEXT PRIMARY KEY,
+    flow_definition_id TEXT NOT NULL REFERENCES flow_definitions(id),
+    cron_expression TEXT NOT NULL,
+    on_overlap TEXT NOT NULL DEFAULT 'skip' CHECK(on_overlap IN ('skip', 'queue', 'parallel')),
+    enabled INTEGER NOT NULL DEFAULT 1,
+    last_triggered_at TIMESTAMP,
+    next_trigger_at TIMESTAMP,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+-- Indexes
+CREATE INDEX IF NOT EXISTS idx_flow_runs_status ON flow_runs(status);
+CREATE INDEX IF NOT EXISTS idx_task_executions_flow_run ON task_executions(flow_run_id);
+CREATE INDEX IF NOT EXISTS idx_task_executions_status ON task_executions(flow_run_id, status);
+CREATE INDEX IF NOT EXISTS idx_task_executions_waiting ON task_executions(status, wait_until)
+    WHERE status = 'waiting';
+CREATE INDEX IF NOT EXISTS idx_edge_transitions_flow_run ON edge_transitions(flow_run_id);
+CREATE INDEX IF NOT EXISTS idx_task_logs_execution ON task_logs(task_execution_id);
+CREATE INDEX IF NOT EXISTS idx_task_logs_timestamp ON task_logs(task_execution_id, timestamp);
+CREATE INDEX IF NOT EXISTS idx_fork_groups_flow_run ON fork_groups(flow_run_id);
+CREATE INDEX IF NOT EXISTS idx_flow_schedules_next ON flow_schedules(next_trigger_at)
+    WHERE enabled = 1;
