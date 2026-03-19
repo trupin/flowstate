@@ -64,7 +64,7 @@ export function StartRunModal({ flow, onClose }: StartRunModalProps) {
 
     try {
       const result = await api.runs.start(flow.id, { params });
-      navigate(`/runs/${result.id}`);
+      navigate(`/runs/${result.flow_run_id}`);
       onClose();
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to start run');

@@ -66,7 +66,7 @@ export const api = {
       get<FlowRun[]>(`/api/runs${status ? `?status=${status}` : ''}`),
     get: (id: string) => get<FlowRunDetail>(`/api/runs/${id}`),
     start: (flowId: string, req: StartRunRequest) =>
-      post<{ id: string }>(`/api/flows/${flowId}/runs`, req),
+      post<{ flow_run_id: string }>(`/api/flows/${flowId}/runs`, req),
     pause: (id: string) => post<void>(`/api/runs/${id}/pause`),
     resume: (id: string) => post<void>(`/api/runs/${id}/resume`),
     cancel: (id: string) => post<void>(`/api/runs/${id}/cancel`),
