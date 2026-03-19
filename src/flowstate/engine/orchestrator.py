@@ -107,8 +107,12 @@ class OrchestratorManager:
         orch_dir = Path(run_data_dir) / "orchestrator" / key
         orch_dir.mkdir(parents=True, exist_ok=True)
 
-        # Write system prompt for debugging/recovery
+        # Write system prompt and session ID for debugging/recovery.
+        # Session ID is written BEFORE running the subprocess so that the
+        # orchestrator session is discoverable even if init fails or the run
+        # is cancelled mid-init.
         (orch_dir / "system_prompt.md").write_text(system_prompt)
+        (orch_dir / "session_id").write_text(session_id)
 
         # Initialize session by running the system prompt.
         # We consume the stream to completion to fully initialize the session.
@@ -120,9 +124,6 @@ class OrchestratorManager:
         )
         async for _event in stream:
             pass  # Consume init stream to completion
-
-        # Persist session ID for recovery
-        (orch_dir / "session_id").write_text(session_id)
 
         return OrchestratorSession(
             session_id=session_id,
