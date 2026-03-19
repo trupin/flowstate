@@ -209,7 +209,11 @@ async def start_run(
     subprocess_mgr = request.app.state.subprocess_manager
     ws_hub = request.app.state.ws_hub
 
-    orchestrator_mgr = OrchestratorManager(subprocess_mgr)
+    # Orchestrator is opt-in via config (disabled by default — needs more
+    # real-world testing with Claude Code resume before enabling).
+    orchestrator_mgr = None
+    if getattr(config, "enable_orchestrator", False):
+        orchestrator_mgr = OrchestratorManager(subprocess_mgr)
     executor = FlowExecutor(
         db=db,
         event_callback=ws_hub.on_flow_event,
@@ -634,7 +638,9 @@ async def trigger_schedule(request: Request, schedule_id: str) -> dict[str, str]
     subprocess_mgr = request.app.state.subprocess_manager
     ws_hub = request.app.state.ws_hub
 
-    orchestrator_mgr = OrchestratorManager(subprocess_mgr)
+    orchestrator_mgr = None
+    if getattr(config, "enable_orchestrator", False):
+        orchestrator_mgr = OrchestratorManager(subprocess_mgr)
     executor = FlowExecutor(
         db=db,
         event_callback=ws_hub.on_flow_event,
