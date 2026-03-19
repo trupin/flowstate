@@ -28,6 +28,7 @@ class JudgeContext:
     task_cwd: str
     run_id: str
     outgoing_edges: list[tuple[str, str]]  # (condition, target_node_name)
+    skip_permissions: bool = False
 
 
 @dataclass
@@ -163,14 +164,18 @@ class JudgeProtocol:
 
         # First attempt
         try:
-            result = await self._subprocess_mgr.run_judge(prompt, context.task_cwd)
+            result = await self._subprocess_mgr.run_judge(
+                prompt, context.task_cwd, skip_permissions=context.skip_permissions
+            )
             return self._parse_result(result, context)
         except (JudgeError, KeyError, ValueError):
             pass
 
         # Retry (second attempt)
         try:
-            result = await self._subprocess_mgr.run_judge(prompt, context.task_cwd)
+            result = await self._subprocess_mgr.run_judge(
+                prompt, context.task_cwd, skip_permissions=context.skip_permissions
+            )
             return self._parse_result(result, context)
         except (JudgeError, KeyError, ValueError) as second_error:
             raise JudgePauseError(f"Judge failed after retry: {second_error}") from second_error

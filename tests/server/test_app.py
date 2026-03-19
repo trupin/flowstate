@@ -198,10 +198,12 @@ class TestCreateApp:
         app = create_app(subprocess_manager=sentinel)
         assert app.state.subprocess_manager is sentinel
 
-    def test_subprocess_manager_none_by_default(self) -> None:
-        """subprocess_manager is None by default."""
+    def test_subprocess_manager_created_by_default(self) -> None:
+        """subprocess_manager is a real SubprocessManager by default."""
+        from flowstate.engine.subprocess_mgr import SubprocessManager
+
         app = create_app()
-        assert app.state.subprocess_manager is None
+        assert isinstance(app.state.subprocess_manager, SubprocessManager)
 
 
 class TestCreateAppWithCustomConfig:

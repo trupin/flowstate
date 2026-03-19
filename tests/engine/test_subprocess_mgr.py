@@ -95,9 +95,11 @@ class TestRunTaskCommandConstruction:
                 "do stuff",
                 "--output-format",
                 "stream-json",
+                "--verbose",
                 cwd="/workspace",
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
+                limit=10 * 1024 * 1024,
             )
             # Should have at least the exit event
             assert len(events) >= 1
@@ -118,11 +120,13 @@ class TestRunTaskCommandConstruction:
                 "continue",
                 "--output-format",
                 "stream-json",
+                "--verbose",
                 "--resume",
                 "prev-sess",
                 cwd="/workspace",
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
+                limit=10 * 1024 * 1024,
             )
             assert len(events) >= 1
 
@@ -145,10 +149,14 @@ class TestRunTaskCommandConstruction:
                 "judge this",
                 "--output-format",
                 "json",
-                "--permission-mode",
-                "plan",
                 "--model",
                 "sonnet",
+                "--system-prompt",
+                SubprocessManager._JUDGE_SYSTEM_PROMPT,
+                "--setting-sources",
+                "user",
+                "--permission-mode",
+                "plan",
                 cwd="/workspace",
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,

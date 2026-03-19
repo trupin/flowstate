@@ -217,7 +217,12 @@ def create_app(
         lifespan=lifespan,
     )
 
-    # Store config and optional mock subprocess manager on app state
+    # Store config and subprocess manager on app state
+    # If no subprocess manager provided (production mode), create a real one
+    if subprocess_manager is None:
+        from flowstate.engine.subprocess_mgr import SubprocessManager
+
+        subprocess_manager = SubprocessManager()
     app.state.config = config
     app.state.subprocess_manager = subprocess_manager
 

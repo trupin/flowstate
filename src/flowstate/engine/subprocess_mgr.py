@@ -80,22 +80,34 @@ class SubprocessManager:
         self._processes: dict[str, asyncio.subprocess.Process] = {}
 
     async def run_task(
-        self, prompt: str, workspace: str, session_id: str
+        self,
+        prompt: str,
+        workspace: str,
+        session_id: str,
+        *,
+        skip_permissions: bool = False,
     ) -> AsyncGenerator[StreamEvent, None]:
         """Launch a fresh Claude Code task session and stream events.
 
-        Constructs: claude -p "<prompt>" --output-format stream-json
+        Constructs: claude -p "<prompt>" --output-format stream-json --verbose
         """
-        cmd = ["claude", "-p", prompt, "--output-format", "stream-json"]
+        cmd = ["claude", "-p", prompt, "--output-format", "stream-json", "--verbose"]
+        if skip_permissions:
+            cmd.append("--dangerously-skip-permissions")
         async for event in self._run_streaming(cmd, workspace, session_id):
             yield event
 
     async def run_task_resume(
-        self, prompt: str, workspace: str, resume_session_id: str
+        self,
+        prompt: str,
+        workspace: str,
+        resume_session_id: str,
+        *,
+        skip_permissions: bool = False,
     ) -> AsyncGenerator[StreamEvent, None]:
         """Resume a previous Claude Code session and stream events.
 
-        Constructs: claude -p "<prompt>" --output-format stream-json --resume <session_id>
+        Constructs: claude -p "<prompt>" --output-format stream-json --verbose --resume <session_id>
         """
         cmd = [
             "claude",
@@ -103,16 +115,30 @@ class SubprocessManager:
             prompt,
             "--output-format",
             "stream-json",
+            "--verbose",
             "--resume",
             resume_session_id,
         ]
+        if skip_permissions:
+            cmd.append("--dangerously-skip-permissions")
         async for event in self._run_streaming(cmd, workspace, resume_session_id):
             yield event
 
-    async def run_judge(self, prompt: str, workspace: str) -> JudgeResult:
+    _JUDGE_SYSTEM_PROMPT = (
+        "You are a routing judge for the Flowstate orchestration system. "
+        "You evaluate task outcomes and decide which transition to take. "
+        'Respond with ONLY a raw JSON object with keys: "decision" (target name or "__none__"), '
+        '"reasoning" (brief explanation), "confidence" (0.0-1.0). '
+        "No markdown, no code fences, no extra text."
+    )
+
+    async def run_judge(
+        self, prompt: str, workspace: str, *, skip_permissions: bool = False
+    ) -> JudgeResult:
         """Run a judge evaluation (non-streaming) and return the parsed result.
 
-        Constructs: claude -p "<prompt>" --output-format json --permission-mode plan --model sonnet
+        Uses --system-prompt and --setting-sources user to isolate the judge
+        from project CLAUDE.md and give it a clear routing role.
         Raises JudgeError on non-zero exit code or unparseable output.
         """
         cmd = [
@@ -121,11 +147,17 @@ class SubprocessManager:
             prompt,
             "--output-format",
             "json",
-            "--permission-mode",
-            "plan",
             "--model",
             "sonnet",
+            "--system-prompt",
+            self._JUDGE_SYSTEM_PROMPT,
+            "--setting-sources",
+            "user",
         ]
+        if skip_permissions:
+            cmd.append("--dangerously-skip-permissions")
+        else:
+            cmd.extend(["--permission-mode", "plan"])
         proc = await asyncio.create_subprocess_exec(
             *cmd,
             cwd=workspace,
@@ -145,10 +177,13 @@ class SubprocessManager:
 
         try:
             data = json.loads(stdout_text)
+            # Claude CLI wraps output in a result envelope: {"type": "result", "result": "..."}
+            # Unwrap to get the model's actual response text, then parse that as JSON.
+            inner = json.loads(data["result"]) if "result" in data and "type" in data else data
             return JudgeResult(
-                decision=data["decision"],
-                reasoning=data["reasoning"],
-                confidence=float(data["confidence"]),
+                decision=inner["decision"],
+                reasoning=inner["reasoning"],
+                confidence=float(inner["confidence"]),
                 raw_output=stdout_text,
             )
         except (json.JSONDecodeError, KeyError, TypeError) as e:
@@ -186,6 +221,7 @@ class SubprocessManager:
             cwd=workspace,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
+            limit=10 * 1024 * 1024,  # 10 MB buffer for large streaming JSON lines
         )
         self._processes[session_id] = proc
 
