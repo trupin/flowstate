@@ -14,8 +14,16 @@ import './RunDetail.css';
 
 export function RunDetail() {
   const { id } = useParams<{ id: string }>();
-  const { run, tasks, selectedTask, selectTask, logs, isConnected, send } =
-    useFlowRun(id!);
+  const {
+    run,
+    tasks,
+    edges,
+    selectedTask,
+    selectTask,
+    logs,
+    isConnected,
+    send,
+  } = useFlowRun(id!);
 
   // Build task status map for the graph
   const taskStatuses = useMemo(() => {
@@ -82,6 +90,19 @@ export function RunDetail() {
     });
     return active;
   }, [tasks, graphEdges]);
+
+  // Traversed edges (transitions that have already completed)
+  const traversedEdges = useMemo(() => {
+    const traversed = new Set<string>();
+    for (const edge of edges) {
+      graphEdges.forEach((e, i) => {
+        if (e.source === edge.from_node && e.target === edge.to_node) {
+          traversed.add(`${e.source}-${e.target}-${i}`);
+        }
+      });
+    }
+    return traversed;
+  }, [edges, graphEdges]);
 
   // Wait-until map for waiting nodes
   const waitUntil = useMemo(() => {
@@ -177,6 +198,7 @@ export function RunDetail() {
             taskGenerations={taskGenerations}
             taskElapsed={taskElapsed}
             activeEdges={activeEdges}
+            traversedEdges={traversedEdges}
             waitUntil={waitUntil}
             selectedNode={selectedTask}
             onNodeClick={(nodeName) => selectTask(nodeName)}

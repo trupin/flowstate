@@ -21,6 +21,7 @@ export interface GraphViewProps {
   taskGenerations?: Map<string, number>;
   taskElapsed?: Map<string, number>;
   activeEdges?: Set<string>;
+  traversedEdges?: Set<string>;
   readOnly?: boolean;
   selectedNode?: string | null;
   onNodeClick?: (nodeName: string) => void;
@@ -92,15 +93,28 @@ function convertToReactFlowEdges(
   edgeDefs: FlowEdgeDef[],
   nodeOrder: Map<string, number>,
   activeEdges?: Set<string>,
+  traversedEdges?: Set<string>,
 ): Edge[] {
   return edgeDefs.map((e, i) => {
     const source = e.source ?? '';
     const target = e.target ?? '';
     const id = `${source}-${target}-${i}`;
     const isActive = activeEdges?.has(id) ?? false;
+    const isTraversed = (traversedEdges?.has(id) ?? false) && !isActive;
     const sourceRank = nodeOrder.get(source) ?? 0;
     const targetRank = nodeOrder.get(target) ?? 0;
     const isBackEdge = targetRank <= sourceRank;
+
+    // Determine stroke color: active (blue) > traversed (green) > back-edge (accent) > idle (gray)
+    let stroke = 'var(--text-secondary)';
+    if (isActive) {
+      stroke = 'var(--accent)';
+    } else if (isTraversed) {
+      stroke = 'var(--success)';
+    } else if (isBackEdge) {
+      stroke = 'var(--accent)';
+    }
+
     return {
       id,
       source,
@@ -117,13 +131,9 @@ function convertToReactFlowEdges(
       labelStyle: { fill: 'var(--text-primary)', fontSize: 11 },
       style: {
         strokeDasharray: e.edge_type === 'conditional' ? '5 5' : undefined,
-        stroke: isActive
-          ? 'var(--accent)'
-          : isBackEdge
-            ? 'var(--accent)'
-            : 'var(--text-secondary)',
-        strokeWidth: isActive || isBackEdge ? 2 : 1,
-        opacity: isBackEdge && !isActive ? 0.6 : 1,
+        stroke,
+        strokeWidth: isActive || isTraversed || isBackEdge ? 2 : 1,
+        opacity: isBackEdge && !isActive && !isTraversed ? 0.6 : 1,
       },
       animated: isActive,
       markerEnd: { type: 'arrowclosed' as const },
@@ -146,6 +156,7 @@ export function GraphView({
   taskGenerations,
   taskElapsed,
   activeEdges,
+  traversedEdges,
   readOnly = false,
   onNodeClick,
   waitUntil,
@@ -167,8 +178,9 @@ export function GraphView({
     return order;
   }, [nodes]);
   const rfEdges = useMemo(
-    () => convertToReactFlowEdges(edges, nodeOrder, activeEdges),
-    [edges, nodeOrder, activeEdges],
+    () =>
+      convertToReactFlowEdges(edges, nodeOrder, activeEdges, traversedEdges),
+    [edges, nodeOrder, activeEdges, traversedEdges],
   );
   const layouted = useMemo(
     () => getLayoutedElements(rfNodes, rfEdges),
