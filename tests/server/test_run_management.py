@@ -505,6 +505,7 @@ class TestRetryTask:
         """POST /api/runs/:id/tasks/:tid/retry delegates to executor.retry_task()."""
         mock_executor = MagicMock()
         mock_executor.retry_task = AsyncMock()
+        mock_executor._flow_run_id = "db-run-1"
 
         run_manager = RunManager()
         run_manager._executors["run-1"] = mock_executor
@@ -514,7 +515,7 @@ class TestRetryTask:
 
         assert response.status_code == 200
         assert response.json() == {"status": "running"}
-        mock_executor.retry_task.assert_called_once_with("task-1")
+        mock_executor.retry_task.assert_called_once_with("db-run-1", "task-1")
 
 
 class TestSkipTask:
@@ -522,6 +523,7 @@ class TestSkipTask:
         """POST /api/runs/:id/tasks/:tid/skip delegates to executor.skip_task()."""
         mock_executor = MagicMock()
         mock_executor.skip_task = AsyncMock()
+        mock_executor._flow_run_id = "db-run-1"
 
         run_manager = RunManager()
         run_manager._executors["run-1"] = mock_executor
@@ -531,7 +533,7 @@ class TestSkipTask:
 
         assert response.status_code == 200
         assert response.json() == {"status": "skipped"}
-        mock_executor.skip_task.assert_called_once_with("task-1")
+        mock_executor.skip_task.assert_called_once_with("db-run-1", "task-1")
 
 
 # ---------------------------------------------------------------------------

@@ -276,8 +276,12 @@ def _get_executor_or_error(request: Request, run_id: str) -> Any:
 async def pause_run(request: Request, run_id: str) -> dict[str, str]:
     """Pause a running flow."""
     executor = _get_executor_or_error(request, run_id)
+    # Use the executor's internal flow_run_id (the DB-generated ID) when available,
+    # falling back to the route's run_id. The executor creates its own flow_run_id
+    # in the DB which may differ from the RunManager key.
+    flow_run_id = getattr(executor, "_flow_run_id", None) or run_id
     try:
-        await executor.pause()
+        await executor.pause(flow_run_id)
     except InvalidStateError as e:
         raise FlowstateError(str(e), status_code=409) from e
     return {"status": "paused"}
@@ -287,8 +291,9 @@ async def pause_run(request: Request, run_id: str) -> dict[str, str]:
 async def resume_run(request: Request, run_id: str) -> dict[str, str]:
     """Resume a paused flow."""
     executor = _get_executor_or_error(request, run_id)
+    flow_run_id = getattr(executor, "_flow_run_id", None) or run_id
     try:
-        await executor.resume()
+        await executor.resume(flow_run_id)
     except InvalidStateError as e:
         raise FlowstateError(str(e), status_code=409) from e
     return {"status": "running"}
@@ -298,8 +303,9 @@ async def resume_run(request: Request, run_id: str) -> dict[str, str]:
 async def cancel_run(request: Request, run_id: str) -> dict[str, str]:
     """Cancel a running or paused flow."""
     executor = _get_executor_or_error(request, run_id)
+    flow_run_id = getattr(executor, "_flow_run_id", None) or run_id
     try:
-        await executor.cancel()
+        await executor.cancel(flow_run_id)
     except InvalidStateError as e:
         raise FlowstateError(str(e), status_code=409) from e
     return {"status": "cancelled"}
@@ -309,8 +315,9 @@ async def cancel_run(request: Request, run_id: str) -> dict[str, str]:
 async def retry_task(request: Request, run_id: str, task_id: str) -> dict[str, str]:
     """Retry a failed task execution."""
     executor = _get_executor_or_error(request, run_id)
+    flow_run_id = getattr(executor, "_flow_run_id", None) or run_id
     try:
-        await executor.retry_task(task_id)
+        await executor.retry_task(flow_run_id, task_id)
     except InvalidStateError as e:
         raise FlowstateError(str(e), status_code=409) from e
     return {"status": "running"}
@@ -320,8 +327,9 @@ async def retry_task(request: Request, run_id: str, task_id: str) -> dict[str, s
 async def skip_task(request: Request, run_id: str, task_id: str) -> dict[str, str]:
     """Skip a failed task execution."""
     executor = _get_executor_or_error(request, run_id)
+    flow_run_id = getattr(executor, "_flow_run_id", None) or run_id
     try:
-        await executor.skip_task(task_id)
+        await executor.skip_task(flow_run_id, task_id)
     except InvalidStateError as e:
         raise FlowstateError(str(e), status_code=409) from e
     return {"status": "skipped"}
