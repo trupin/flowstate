@@ -241,13 +241,22 @@ class MockSubprocessManager:
 
         The engine's context assembly injects a marker line like:
             [flowstate:node=<name>]
-        If not found, try to match against configured node names.
+        Orchestrator task instructions use:
+            Execute task "<name>" (generation N).
+        If neither is found, try to match against configured node names.
         """
+        import re
+
         # Look for the flowstate marker
         for line in prompt.splitlines():
             stripped = line.strip()
             if stripped.startswith("[flowstate:node=") and stripped.endswith("]"):
                 return stripped[len("[flowstate:node=") : -1]
+
+        # Look for orchestrator task instruction format
+        m = re.search(r'Execute task "(\w+)"', prompt)
+        if m:
+            return m.group(1)
 
         # Fallback: match against configured behavior keys
         for name in self._behaviors:
@@ -263,21 +272,37 @@ class MockSubprocessManager:
 
     def _write_summary(self, node_name: str, prompt: str, behavior: NodeBehavior) -> None:
         """Write SUMMARY.md to the task directory if summary_content is set."""
+        import re
+
         if not behavior.summary_content:
             return
 
-        # Extract task dir from prompt (the engine includes it)
+        # Look for SUMMARY.md write instruction in the prompt.
+        # The engine includes a line like:
+        #   "When you are done, you MUST write a SUMMARY.md to /path/tasks/node-gen/SUMMARY.md"
+        # Or for orchestrator instructions:
+        #   "Write SUMMARY.md to: /path/tasks/node-gen/SUMMARY.md"
+        m = re.search(r"SUMMARY\.md to[: ]+(.+)/SUMMARY\.md", prompt)
+        if m:
+            task_dir = Path(m.group(1))
+            task_dir.mkdir(parents=True, exist_ok=True)
+            (task_dir / "SUMMARY.md").write_text(behavior.summary_content)
+            return
+
+        # Fallback: scan for task directory paths (/.flowstate/.../tasks/...)
         for line in prompt.splitlines():
             stripped = line.strip()
-            if "/.flowstate/" in stripped and "/tasks/" in stripped:
-                # Try to extract the path
+            if "/.flowstate/" in stripped and "/tasks/" in stripped and "SUMMARY" not in stripped:
                 parts = stripped.split()
                 for part in parts:
                     if "/.flowstate/" in part and "/tasks/" in part:
-                        task_dir = Path(part.rstrip("/").rstrip("."))
-                        if task_dir.exists() or task_dir.parent.exists():
-                            task_dir.mkdir(parents=True, exist_ok=True)
-                            (task_dir / "SUMMARY.md").write_text(behavior.summary_content)
+                        # Only match directory paths, not file paths
+                        candidate = Path(part.rstrip("/").rstrip("."))
+                        if candidate.suffix:
+                            continue  # Skip file paths like INPUT.md
+                        if candidate.exists() or candidate.parent.exists():
+                            candidate.mkdir(parents=True, exist_ok=True)
+                            (candidate / "SUMMARY.md").write_text(behavior.summary_content)
                             return
 
     @staticmethod
@@ -286,7 +311,12 @@ class MockSubprocessManager:
         return _STREAM_TYPE_MAP.get(type_str, StreamEventType.SYSTEM)
 
     async def run_task(
-        self, prompt: str, workspace: str, session_id: str
+        self,
+        prompt: str,
+        workspace: str,
+        session_id: str,
+        *,
+        skip_permissions: bool = False,
     ) -> AsyncGenerator[StreamEvent, None]:
         """Simulate running a task subprocess.
 
@@ -327,7 +357,12 @@ class MockSubprocessManager:
         )
 
     async def run_task_resume(
-        self, prompt: str, workspace: str, resume_session_id: str
+        self,
+        prompt: str,
+        workspace: str,
+        resume_session_id: str,
+        *,
+        skip_permissions: bool = False,
     ) -> AsyncGenerator[StreamEvent, None]:
         """Simulate resuming a task subprocess session.
 
@@ -342,7 +377,9 @@ class MockSubprocessManager:
         async for event in self.run_task(prompt, workspace, resume_session_id):
             yield event
 
-    async def run_judge(self, prompt: str, workspace: str) -> JudgeResult:
+    async def run_judge(
+        self, prompt: str, workspace: str, *, skip_permissions: bool = False
+    ) -> JudgeResult:
         """Simulate running a judge subprocess.
 
         Returns a real JudgeResult matching the SubprocessManager interface.
