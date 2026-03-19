@@ -1,0 +1,33 @@
+// Appendix A.2 — Fork-Join Flow
+flow full_test {
+    budget = 1h
+    on_error = pause
+    context = handoff
+    workspace = "./app"
+
+    entry analyze {
+        prompt = "Read the codebase and identify what needs testing."
+    }
+
+    task test_unit {
+        prompt = "Write unit tests for all untested functions."
+    }
+
+    task test_integration {
+        prompt = "Write integration tests for the API endpoints."
+    }
+
+    task test_e2e {
+        prompt = "Write end-to-end tests for the critical user flows."
+    }
+
+    exit report {
+        prompt = """
+        Run all test suites and generate a coverage report.
+        Write results to TEST_REPORT.md.
+        """
+    }
+
+    analyze -> [test_unit, test_integration, test_e2e]
+    [test_unit, test_integration, test_e2e] -> report
+}

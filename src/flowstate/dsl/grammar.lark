@@ -1,0 +1,78 @@
+// Flowstate DSL Grammar
+
+start: flow_decl
+
+flow_decl: "flow" NAME "{" flow_body "}"
+
+flow_body: flow_stmt*
+
+flow_stmt: flow_attr
+         | param_decl
+         | node_decl
+         | edge_decl
+
+// Flow-level attributes
+flow_attr: "budget" "=" DURATION
+         | "workspace" "=" STRING
+         | "on_error" "=" ERROR_POLICY
+         | "context" "=" CONTEXT_MODE
+         | "schedule" "=" STRING
+         | "on_overlap" "=" OVERLAP_POLICY
+
+ERROR_POLICY.2: "pause" | "abort" | "skip"
+OVERLAP_POLICY.2: "skip" | "queue" | "parallel"
+
+// Parameters
+param_decl: "param" NAME ":" TYPE
+          | "param" NAME ":" TYPE "=" literal
+
+TYPE.2: "string" | "number" | "bool"
+
+literal: STRING
+       | NUMBER
+       | "true" -> true_lit
+       | "false" -> false_lit
+
+// Nodes
+node_decl: entry_node | task_node | exit_node
+
+entry_node: "entry" NAME "{" node_body "}"
+task_node:  "task"  NAME "{" node_body "}"
+exit_node:  "exit"  NAME "{" node_body "}"
+
+node_body: node_attr+
+node_attr: "prompt" "=" string
+         | "cwd" "=" STRING
+
+// Edges
+edge_decl: simple_edge | cond_edge | fork_edge | join_edge
+
+simple_edge: NAME "->" NAME edge_config?
+cond_edge:   NAME "->" NAME "when" string edge_config?
+fork_edge:   NAME "->" "[" name_list "]"
+join_edge:   "[" name_list "]" "->" NAME
+
+name_list: NAME ("," NAME)*
+
+edge_config: "{" edge_attr* "}"
+edge_attr: "context" "=" CONTEXT_MODE
+         | "delay" "=" DURATION
+         | "schedule" "=" STRING
+
+CONTEXT_MODE.2: "handoff" | "session" | "none"
+
+// String literals
+string: STRING | LONG_STRING
+
+LONG_STRING: "\"\"\"" /[\s\S]*?/ "\"\"\""
+STRING: "\"" /[^"]*/ "\""
+
+// Tokens
+DURATION.3: /[0-9]+[smh]/
+NAME: /[a-zA-Z_][a-zA-Z0-9_]*/
+NUMBER: /[0-9]+(\.[0-9]+)?/
+COMMENT: /\/\/[^\n]*/
+
+%import common.WS
+%ignore WS
+%ignore COMMENT

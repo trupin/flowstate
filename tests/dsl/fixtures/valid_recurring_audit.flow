@@ -1,0 +1,27 @@
+// Appendix A.6 — Recurring Weekly Audit
+flow weekly_audit {
+    budget = 1h
+    on_error = pause
+    context = handoff
+    workspace = "./monorepo"
+    schedule = "0 9 * * MON"
+    on_overlap = skip
+
+    entry scan {
+        prompt = """
+        Scan all dependencies for known vulnerabilities.
+        Check for outdated packages.
+        """
+    }
+
+    task fix {
+        prompt = "Update any vulnerable or outdated dependencies. Run tests."
+    }
+
+    exit report {
+        prompt = "Write a dependency audit report to AUDIT.md."
+    }
+
+    scan -> fix
+    fix -> report
+}

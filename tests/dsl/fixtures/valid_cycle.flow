@@ -1,0 +1,40 @@
+// Appendix A.3 — Flow with Cycles
+flow iterative_refactor {
+    budget = 3h
+    on_error = pause
+    context = handoff
+    workspace = "./legacy-app"
+
+    param target: string
+
+    entry plan {
+        prompt = """
+        Analyze {{target}} and create a refactoring plan.
+        Write it to REFACTOR_PLAN.md.
+        """
+    }
+
+    task implement {
+        prompt = """
+        Pick the next item from REFACTOR_PLAN.md that hasn't been done.
+        Implement the refactoring. Mark it as done in the plan.
+        """
+    }
+
+    task verify {
+        prompt = """
+        Run all tests. Review the changes made since last verification.
+        Write your assessment to REVIEW.md with a clear verdict:
+        APPROVED or NEEDS_WORK.
+        """
+    }
+
+    exit complete {
+        prompt = "Write a summary of all refactoring done to CHANGELOG.md."
+    }
+
+    plan -> implement
+    implement -> verify
+    verify -> complete when "all refactoring is done and tests pass"
+    verify -> implement when "more refactoring items remain or tests fail"
+}

@@ -1,0 +1,44 @@
+// Appendix A.5 — Scheduled Deployment with Health Check
+flow deploy_and_monitor {
+    budget = 2h
+    on_error = pause
+    context = handoff
+    workspace = "./app"
+
+    entry prepare {
+        prompt = """
+        Run the full test suite. If all tests pass, build the
+        deployment artifact. If tests fail, stop and report.
+        """
+    }
+
+    task deploy {
+        prompt = "Deploy the built artifact to the staging environment."
+    }
+
+    task check_health {
+        prompt = """
+        Check the staging health endpoint and run smoke tests.
+        Report whether the deployment is healthy.
+        """
+    }
+
+    exit done {
+        prompt = "Write a deployment report with timing and health status."
+    }
+
+    // Deploy at 2am
+    prepare -> deploy {
+        schedule = "0 2 * * *"
+    }
+
+    // Wait 5 minutes for the deployment to stabilize
+    deploy -> check_health {
+        delay = 5m
+    }
+
+    check_health -> done when "deployment is healthy"
+    check_health -> check_health when "still starting up" {
+        delay = 2m
+    }
+}

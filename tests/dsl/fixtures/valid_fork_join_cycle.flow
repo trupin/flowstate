@@ -1,0 +1,54 @@
+// Appendix A.4 — Fork-Join with Review Cycle
+flow feature_development {
+    budget = 2h
+    on_error = pause
+    context = handoff
+    // No flow-level workspace — per-task cwd for multi-repo
+
+    param feature: string
+
+    entry design {
+        cwd = "./backend"
+        prompt = """
+        Design the implementation for: {{feature}}.
+        Consider both the backend (this repo) and the frontend (../frontend).
+        """
+    }
+
+    task impl_backend {
+        cwd = "./backend"
+        prompt = "Implement the backend API changes from the design."
+    }
+
+    task impl_frontend {
+        cwd = "./frontend"
+        prompt = "Implement the frontend UI changes from the design."
+    }
+
+    task integrate {
+        cwd = "./backend"
+        prompt = """
+        Run the integration test suite that exercises both
+        backend and frontend together.
+        """
+    }
+
+    task review {
+        cwd = "./backend"
+        prompt = """
+        Review all changes across both repos.
+        Check code quality, test coverage, and design adherence.
+        """
+    }
+
+    exit ship {
+        cwd = "./backend"
+        prompt = "Write release notes and update documentation."
+    }
+
+    design -> [impl_backend, impl_frontend]
+    [impl_backend, impl_frontend] -> integrate
+    integrate -> review
+    review -> ship when "code is production-ready"
+    review -> design when "significant design changes needed"
+}

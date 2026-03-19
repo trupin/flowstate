@@ -1,0 +1,28 @@
+// Appendix A.1 — Simple Linear Flow
+flow setup_project {
+    budget = 30m
+    on_error = pause
+    context = session
+    workspace = "./new-project"
+
+    entry scaffold {
+        prompt = """
+        Create a new Python project with:
+        - pyproject.toml with Poetry
+        - src/ directory structure
+        - Basic test setup with pytest
+        - .gitignore
+        """
+    }
+
+    task add_ci {
+        prompt = "Add a GitHub Actions CI pipeline that runs tests on push."
+    }
+
+    exit done {
+        prompt = "Initialize a git repo and make the first commit."
+    }
+
+    scaffold -> add_ci
+    add_ci -> done
+}
