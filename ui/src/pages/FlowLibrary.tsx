@@ -4,40 +4,10 @@ import { api } from '../api/client';
 import { useFlowWatcher } from '../hooks/useFlowWatcher';
 import { GraphView } from '../components/GraphView';
 import { ErrorBanner } from '../components/ErrorBanner';
-import type { DiscoveredFlow, FlowEdgeDef } from '../api/types';
+import { StartRunModal } from '../components/StartRunModal';
+import { expandEdges } from '../utils/edges';
+import type { DiscoveredFlow } from '../api/types';
 import './FlowLibrary.css';
-
-// --- Edge expansion for fork/join ---
-
-interface ExpandedEdge {
-  source: string;
-  target: string;
-  edge_type: FlowEdgeDef['edge_type'];
-  condition?: string;
-}
-
-function expandEdges(edgeDefs: FlowEdgeDef[]): ExpandedEdge[] {
-  const result: ExpandedEdge[] = [];
-  for (const e of edgeDefs) {
-    if (e.edge_type === 'fork' && e.source && e.fork_targets) {
-      for (const t of e.fork_targets) {
-        result.push({ source: e.source, target: t, edge_type: 'fork' });
-      }
-    } else if (e.edge_type === 'join' && e.target && e.join_sources) {
-      for (const s of e.join_sources) {
-        result.push({ source: s, target: e.target, edge_type: 'join' });
-      }
-    } else if (e.source && e.target) {
-      result.push({
-        source: e.source,
-        target: e.target,
-        edge_type: e.edge_type,
-        condition: e.condition,
-      });
-    }
-  }
-  return result;
-}
 
 // --- Flow Library page ---
 
@@ -47,6 +17,7 @@ export function FlowLibrary() {
   const { flows } = useFlowWatcher();
   const [selectedFlow, setSelectedFlow] = useState<DiscoveredFlow | null>(null);
   const [fetchError, setFetchError] = useState<string | null>(null);
+  const [showStartModal, setShowStartModal] = useState(false);
 
   // Fetch the selected flow's full details whenever selectedFlowId or flows change
   useEffect(() => {
@@ -136,7 +107,12 @@ export function FlowLibrary() {
             <div className="flow-library-preview-header">
               <h2>{selectedFlow.name}</h2>
               {selectedFlow.is_valid && (
-                <button className="start-run-btn">Start Run</button>
+                <button
+                  className="start-run-btn"
+                  onClick={() => setShowStartModal(true)}
+                >
+                  Start Run
+                </button>
               )}
             </div>
 
@@ -156,6 +132,13 @@ export function FlowLibrary() {
           )
         )}
       </div>
+
+      {showStartModal && selectedFlow && (
+        <StartRunModal
+          flow={selectedFlow}
+          onClose={() => setShowStartModal(false)}
+        />
+      )}
     </div>
   );
 }

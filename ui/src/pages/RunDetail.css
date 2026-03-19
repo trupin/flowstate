@@ -1,0 +1,104 @@
+/* --- RunDetail page: three-panel layout --- */
+
+.run-detail {
+  display: flex;
+  flex-direction: column;
+  height: 100vh;
+}
+
+.run-detail-header {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 8px 16px;
+  background: var(--bg-secondary);
+  border-bottom: 1px solid var(--border);
+  min-height: 44px;
+}
+
+.run-detail-header h1 {
+  font-size: 16px;
+  margin: 0;
+  font-weight: 600;
+}
+
+.run-id {
+  color: var(--text-secondary);
+  font-weight: 400;
+  font-size: 13px;
+}
+
+.run-status {
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  padding: 2px 8px;
+  border-radius: 10px;
+  font-weight: 500;
+}
+
+.run-status.status-running {
+  background: var(--status-running);
+  color: #fff;
+}
+
+.run-status.status-completed {
+  background: var(--status-completed);
+  color: #fff;
+}
+
+.run-status.status-failed {
+  background: var(--status-failed);
+  color: #fff;
+}
+
+.run-status.status-paused {
+  background: var(--status-paused);
+  color: #000;
+}
+
+.run-status.status-cancelled {
+  background: var(--text-secondary);
+  color: #fff;
+}
+
+.run-status.status-created {
+  background: var(--status-pending);
+  color: #fff;
+}
+
+.run-status.status-budget_exceeded {
+  background: var(--warning);
+  color: #000;
+}
+
+.ws-disconnected {
+  font-size: 11px;
+  color: var(--warning);
+  margin-left: auto;
+}
+
+.run-detail-main {
+  display: flex;
+  flex: 1;
+  overflow: hidden;
+}
+
+.run-detail-graph {
+  width: 60%;
+  position: relative;
+}
+
+.run-detail-logs {
+  width: 40%;
+  position: relative;
+  border-left: 1px solid var(--border);
+}
+
+.run-detail-loading {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  height: 100vh;
+  color: var(--text-secondary);
+}
