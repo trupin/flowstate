@@ -190,6 +190,38 @@ export function useFlowRun(runId: string): UseFlowRunReturn {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [ws.lastEvent]);
 
+  // Fetch task logs from the API when a task is selected and we have no logs yet.
+  // This handles the case where the run completed before the page loaded, so
+  // WebSocket log events were never received.
+  useEffect(() => {
+    if (!selectedTask || !run) return;
+    const taskExec = tasks.get(selectedTask);
+    if (!taskExec) return;
+
+    // Only fetch if we don't already have logs for this task
+    const existingLogs = logs.get(taskExec.id);
+    if (existingLogs && existingLogs.length > 0) return;
+
+    api.runs
+      .taskLogs(runId, taskExec.id)
+      .then((resp) => {
+        // The API returns { logs: [...], ... } but client types it as LogEntry[]
+        const logEntries: LogEntry[] = Array.isArray(resp)
+          ? resp
+          : ((resp as unknown as { logs: LogEntry[] }).logs ?? []);
+        if (logEntries.length > 0) {
+          setLogs((prev) => {
+            const next = new Map(prev);
+            next.set(taskExec.id, logEntries);
+            return next;
+          });
+        }
+      })
+      .catch(() => {
+        // Silently ignore fetch errors
+      });
+  }, [selectedTask, tasks, run, runId, logs]);
+
   const selectTask = useCallback((nodeName: string | null) => {
     setSelectedTask(nodeName);
   }, []);

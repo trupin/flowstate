@@ -109,6 +109,7 @@ export function FlowLibrary() {
               {selectedFlow.is_valid && (
                 <button
                   className="start-run-btn"
+                  data-testid="start-run-btn"
                   onClick={() => setShowStartModal(true)}
                 >
                   Start Run

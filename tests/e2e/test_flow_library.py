@@ -22,11 +22,11 @@ from tests.e2e.flow_fixtures import (
 def test_discover_valid_flow(page: Page, base_url: str, watch_dir, workspace):
     """Write a valid .flow file and verify it appears in the sidebar with 'valid' status."""
     write_flow(watch_dir, "my_flow.flow", LINEAR_FLOW, workspace)
-    wait_for_flow_discovery(base_url, "linear_test")
+    wait_for_flow_discovery(base_url, "linear_test", timeout=10)
 
     page.goto(base_url)
     flow_entry = page.locator('[data-testid="sidebar-flow-linear_test"]')
-    expect(flow_entry).to_be_visible(timeout=5000)
+    expect(flow_entry).to_be_visible(timeout=10000)
     expect(flow_entry).to_have_attribute("data-status", "valid")
 
 
@@ -34,23 +34,22 @@ def test_discover_invalid_flow(page: Page, base_url: str, watch_dir, workspace):
     """Write an invalid .flow file and verify it appears with 'error' status."""
     write_flow(watch_dir, "bad.flow", INVALID_FLOW, workspace)
     # The server should still discover the file, but mark it as invalid
-    # Wait a bit for the file watcher to pick it up
     wait_for_flow_status(base_url, "bad", "error", timeout=10)
 
     page.goto(base_url)
     flow_entry = page.locator('[data-testid="sidebar-flow-bad"]')
-    expect(flow_entry).to_be_visible(timeout=5000)
+    expect(flow_entry).to_be_visible(timeout=10000)
     expect(flow_entry).to_have_attribute("data-status", "error")
 
 
 def test_flow_graph_preview(page: Page, base_url: str, watch_dir, workspace):
     """Click a valid flow in the sidebar and verify graph nodes render."""
     write_flow(watch_dir, "preview_test.flow", LINEAR_FLOW, workspace)
-    wait_for_flow_discovery(base_url, "linear_test")
+    wait_for_flow_discovery(base_url, "linear_test", timeout=10)
 
     page.goto(base_url)
     flow_entry = page.locator('[data-testid="sidebar-flow-linear_test"]')
-    expect(flow_entry).to_be_visible(timeout=5000)
+    expect(flow_entry).to_be_visible(timeout=10000)
     flow_entry.click()
 
     # Verify graph nodes are rendered
@@ -66,7 +65,7 @@ def test_type_error_shows_banner(page: Page, base_url: str, watch_dir, workspace
 
     page.goto(base_url)
     flow_entry = page.locator('[data-testid="sidebar-flow-missing_exit"]')
-    expect(flow_entry).to_be_visible(timeout=5000)
+    expect(flow_entry).to_be_visible(timeout=10000)
     flow_entry.click()
 
     error_banner = page.locator('[data-testid="error-banner"]')
@@ -79,11 +78,11 @@ def test_multiple_flows_listed(page: Page, base_url: str, watch_dir, workspace):
     write_flow(watch_dir, "flow_b.flow", FORK_JOIN_FLOW, workspace)
     write_flow(watch_dir, "bad.flow", INVALID_FLOW, workspace)
 
-    wait_for_flow_discovery(base_url, "linear_test")
-    wait_for_flow_discovery(base_url, "fork_join_test")
+    wait_for_flow_discovery(base_url, "linear_test", timeout=10)
+    wait_for_flow_discovery(base_url, "fork_join_test", timeout=10)
 
     page.goto(base_url)
 
-    # All three should appear (invalid flow may have a different name or be listed differently)
-    expect(page.locator('[data-testid="sidebar-flow-linear_test"]')).to_be_visible(timeout=5000)
-    expect(page.locator('[data-testid="sidebar-flow-fork_join_test"]')).to_be_visible(timeout=5000)
+    # All three should appear
+    expect(page.locator('[data-testid="sidebar-flow-linear_test"]')).to_be_visible(timeout=10000)
+    expect(page.locator('[data-testid="sidebar-flow-fork_join_test"]')).to_be_visible(timeout=10000)

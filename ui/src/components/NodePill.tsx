@@ -73,8 +73,7 @@ export function NodePill({ data }: NodeProps<Node<NodePillData>>) {
       className={`node-pill ${statusClass} ${typeClass} ${expanded ? 'expanded' : ''}`}
       data-testid={`node-${data.label}`}
       data-status={data.status}
-      onClick={(e) => {
-        e.stopPropagation();
+      onClick={() => {
         setExpanded(!expanded);
       }}
       title={!expanded ? `${data.label} (${data.status})` : undefined}
