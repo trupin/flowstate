@@ -1416,6 +1416,13 @@ class FlowExecutor:
                     and event.content.get("event") == "process_exit"
                 ):
                     exit_code = event.content.get("exit_code", -1)
+                # Capture real Claude Code session ID from system/init event
+                if (
+                    event.type == StreamEventType.SYSTEM
+                    and event.content.get("subtype") == "init"
+                    and isinstance(event.content.get("session_id"), str)
+                ):
+                    session_id = event.content["session_id"]
 
             elapsed = time.monotonic() - start_time
 

@@ -116,14 +116,29 @@ class OrchestratorManager:
 
         # Initialize session by running the system prompt.
         # We consume the stream to completion to fully initialize the session.
+        # Capture the real Claude Code session_id from the system/init event
+        # (Claude Code assigns its own session ID, different from our UUID).
+        real_session_id: str | None = None
         stream = self._subprocess_mgr.run_task(
             system_prompt,
             cwd,
             session_id,
             skip_permissions=skip_permissions,
         )
-        async for _event in stream:
-            pass  # Consume init stream to completion
+        async for event in stream:
+            if (
+                real_session_id is None
+                and event.content.get("type") == "system"
+                and event.content.get("subtype") == "init"
+                and isinstance(event.content.get("session_id"), str)
+            ):
+                real_session_id = event.content["session_id"]
+
+        # Use the real session ID for resume; fall back to our UUID if not found
+        if real_session_id:
+            session_id = real_session_id
+            # Update the persisted session_id file with the real one
+            (orch_dir / "session_id").write_text(session_id)
 
         return OrchestratorSession(
             session_id=session_id,
