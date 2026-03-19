@@ -1,0 +1,142 @@
+/* --- NodePill: compact pill + expandable node --- */
+
+.node-pill {
+  padding: 6px 14px;
+  border-radius: 20px;
+  font-size: 12px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: all 0.15s ease;
+  min-width: 80px;
+  text-align: center;
+  border: 2px solid transparent;
+  color: #fff;
+  position: relative;
+}
+
+/* Status color fills */
+.node-pill.status-pending {
+  background: var(--status-pending);
+}
+.node-pill.status-waiting {
+  background: var(--status-waiting);
+}
+.node-pill.status-running {
+  background: var(--status-running);
+}
+.node-pill.status-completed {
+  background: var(--status-completed);
+}
+.node-pill.status-failed {
+  background: var(--status-failed);
+}
+.node-pill.status-skipped {
+  background: var(--status-skipped);
+}
+.node-pill.status-paused {
+  background: var(--status-paused);
+  color: #000;
+}
+
+/* Running pulse animation */
+.node-pill.status-running {
+  animation: node-pill-pulse 2s ease-in-out infinite;
+  box-shadow: 0 0 12px rgba(59, 130, 246, 0.5);
+}
+
+@keyframes node-pill-pulse {
+  0%,
+  100% {
+    box-shadow: 0 0 0 0 rgba(59, 130, 246, 0.4);
+  }
+  50% {
+    box-shadow: 0 0 0 8px rgba(59, 130, 246, 0);
+  }
+}
+
+/* Entry node: double border */
+.node-pill.type-entry {
+  border: 2px double rgba(255, 255, 255, 0.6);
+}
+
+/* Exit node: thick border */
+.node-pill.type-exit {
+  border: 3px solid rgba(255, 255, 255, 0.6);
+}
+
+/* Expanded state */
+.node-pill.expanded {
+  border-radius: 12px;
+  padding: 8px 14px;
+}
+
+/* Compact layout */
+.node-pill-compact {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+}
+
+.node-pill-name {
+  max-width: 160px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* Generation badge */
+.node-pill-generation {
+  font-size: 10px;
+  margin-left: 4px;
+  opacity: 0.8;
+  background: rgba(0, 0, 0, 0.2);
+  padding: 1px 4px;
+  border-radius: 8px;
+}
+
+/* Details section */
+.node-pill-details {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  margin-top: 4px;
+  font-size: 10px;
+  opacity: 0.9;
+}
+
+.node-pill-type-badge {
+  font-size: 9px;
+  text-transform: uppercase;
+  letter-spacing: 1px;
+  opacity: 0.7;
+}
+
+.node-pill-elapsed {
+  font-size: 10px;
+}
+
+.node-pill-cwd {
+  font-family: var(--font-mono);
+  font-size: 9px;
+  opacity: 0.7;
+  max-width: 140px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.node-pill-countdown {
+  font-size: 10px;
+  opacity: 0.85;
+}
+
+/* Handles */
+.node-pill-handle {
+  width: 6px !important;
+  height: 6px !important;
+  background: var(--border) !important;
+  border: none !important;
+  min-width: 6px !important;
+  min-height: 6px !important;
+}

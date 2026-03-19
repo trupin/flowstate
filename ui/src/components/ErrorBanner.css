@@ -1,0 +1,71 @@
+/* --- ErrorBanner: persistent error display for invalid flows --- */
+
+.error-banner {
+  background: rgba(239, 68, 68, 0.1);
+  border: 1px solid var(--error);
+  border-radius: 6px;
+  margin: 8px 16px;
+  padding: 10px 14px;
+  font-size: 12px;
+}
+
+.error-banner-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 6px;
+}
+
+.error-banner-title {
+  font-weight: 600;
+  color: var(--error);
+}
+
+.error-banner-dismiss {
+  background: none;
+  border: none;
+  color: var(--text-secondary);
+  font-size: 16px;
+  cursor: pointer;
+  padding: 0 4px;
+  line-height: 1;
+}
+
+.error-banner-dismiss:hover {
+  color: var(--text-primary);
+  background: none;
+}
+
+.error-banner-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.error-banner-item {
+  display: flex;
+  gap: 8px;
+  align-items: baseline;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--text-primary);
+}
+
+.error-banner-location {
+  color: var(--text-secondary);
+  flex-shrink: 0;
+}
+
+.error-banner-message {
+  flex: 1;
+  min-width: 0;
+}
+
+.error-banner-rule {
+  color: var(--text-secondary);
+  flex-shrink: 0;
+  font-size: 10px;
+}

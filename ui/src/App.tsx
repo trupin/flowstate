@@ -1,5 +1,6 @@
 import { BrowserRouter, Routes, Route } from 'react-router-dom';
 import { Sidebar } from './components/Sidebar';
+import { FlowLibrary } from './pages/FlowLibrary';
 
 export function App() {
   return (
@@ -14,7 +15,7 @@ export function App() {
           }}
         >
           <Routes>
-            <Route path="/" element={<div>Flow Library (placeholder)</div>} />
+            <Route path="/" element={<FlowLibrary />} />
             <Route
               path="/runs/:id"
               element={<div>Run Detail (placeholder)</div>}
