@@ -2,7 +2,8 @@ flow discuss_flowstate {
     budget = 30m
     on_error = pause
     context = handoff
-    workspace = "."
+    workspace = "/tmp/flowstate-discuss"
+    skip_permissions = true
 
     entry moderator {
         prompt = """

@@ -277,6 +277,9 @@ class _FlowTransformer(Transformer[Token, Flow]):
     def flow_on_overlap(self, items: list[Token]) -> tuple[str, str]:
         return ("on_overlap", str(items[0]))
 
+    def flow_skip_permissions(self, items: list[Token]) -> tuple[str, bool]:
+        return ("skip_permissions", str(items[0]) == "true")
+
     # -- Flow body and declaration --
 
     def flow_stmt(self, items: list[object]) -> object:
@@ -326,6 +329,7 @@ class _FlowTransformer(Transformer[Token, Flow]):
             workspace=str(attrs["workspace"]) if "workspace" in attrs else None,
             schedule=str(attrs["schedule"]) if "schedule" in attrs else None,
             on_overlap=on_overlap,
+            skip_permissions=bool(attrs.get("skip_permissions", False)),
             params=tuple(params),
             nodes=nodes,
             edges=tuple(edges),

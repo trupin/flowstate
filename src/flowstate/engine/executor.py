@@ -18,6 +18,7 @@ Supports:
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 import logging
 import os
@@ -242,6 +243,10 @@ class FlowExecutor:
             run_id=desired_id,
         )
         data_dir = os.path.expanduser(f"~/.flowstate/runs/{flow_run_id}")
+
+        # Ensure workspace directory exists (ignore errors for test paths)
+        with contextlib.suppress(OSError):
+            os.makedirs(workspace, exist_ok=True)
 
         # Transition to running
         self._db.update_flow_run_status(flow_run_id, "running")
@@ -703,6 +708,7 @@ class FlowExecutor:
                 for e in outgoing
                 if e.edge_type == EdgeType.CONDITIONAL and e.condition and e.target
             ],
+            skip_permissions=flow.skip_permissions,
         )
 
         self._emit(
@@ -838,6 +844,7 @@ class FlowExecutor:
             outgoing_edges=[
                 (e.condition, e.target) for e in conditional_edges if e.condition and e.target
             ],
+            skip_permissions=flow.skip_permissions,
         )
 
         # Emit judge started event
@@ -1268,13 +1275,20 @@ class FlowExecutor:
 
         try:
             session_id = task_exec.claude_session_id or str(uuid.uuid4())
+            skip_perms = flow.skip_permissions
             if task_exec.context_mode == ContextMode.SESSION.value and task_exec.claude_session_id:
                 stream = self._subprocess_mgr.run_task_resume(
-                    task_exec.prompt_text, task_exec.cwd, task_exec.claude_session_id
+                    task_exec.prompt_text,
+                    task_exec.cwd,
+                    task_exec.claude_session_id,
+                    skip_permissions=skip_perms,
                 )
             else:
                 stream = self._subprocess_mgr.run_task(
-                    task_exec.prompt_text, task_exec.cwd, session_id
+                    task_exec.prompt_text,
+                    task_exec.cwd,
+                    session_id,
+                    skip_permissions=skip_perms,
                 )
 
             # Stream events

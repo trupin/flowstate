@@ -63,7 +63,12 @@ class MockSubprocessManager(SubprocessManager):
         self.kill_calls: list[str] = []
 
     async def run_task(
-        self, prompt: str, workspace: str, session_id: str
+        self,
+        prompt: str,
+        workspace: str,
+        session_id: str,
+        *,
+        skip_permissions: bool = False,
     ) -> AsyncGenerator[StreamEvent, None]:
         self.calls.append((prompt, workspace, session_id))
         exit_code, extra_events = self._find_response(prompt)
@@ -91,7 +96,12 @@ class MockSubprocessManager(SubprocessManager):
                 self._concurrent_count -= 1
 
     async def run_task_resume(
-        self, prompt: str, workspace: str, resume_session_id: str
+        self,
+        prompt: str,
+        workspace: str,
+        resume_session_id: str,
+        *,
+        skip_permissions: bool = False,
     ) -> AsyncGenerator[StreamEvent, None]:
         self.resume_calls.append((prompt, workspace, resume_session_id))
         exit_code, extra_events = self._find_response(prompt)
@@ -639,7 +649,7 @@ class TestContextModeHandoff:
         original_run_task = mock_mgr.run_task
 
         async def run_task_with_summary(
-            prompt: str, workspace: str, session_id: str
+            prompt: str, workspace: str, session_id: str, *, skip_permissions: bool = False
         ) -> AsyncGenerator[StreamEvent, None]:
             if "start" in prompt:
                 runs = db.list_flow_runs()
@@ -988,7 +998,7 @@ class TestForkJoinContextAggregation:
         original_run_task = mock_mgr.run_task
 
         async def run_task_with_summaries(
-            prompt: str, workspace: str, session_id: str
+            prompt: str, workspace: str, session_id: str, *, skip_permissions: bool = False
         ) -> AsyncGenerator[StreamEvent, None]:
             # Write SUMMARY.md for fork members
             runs = db.list_flow_runs()

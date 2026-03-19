@@ -85,6 +85,7 @@ class Flow:
     workspace: str | None = None
     schedule: str | None = None
     on_overlap: OverlapPolicy = OverlapPolicy.SKIP
+    skip_permissions: bool = False
     params: tuple[Param, ...] = ()
     nodes: dict[str, Node] = field(default_factory=dict)
     edges: tuple[Edge, ...] = ()
