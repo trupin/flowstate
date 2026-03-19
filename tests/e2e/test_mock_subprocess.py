@@ -10,6 +10,7 @@ import asyncio
 
 import pytest
 
+from flowstate.engine.subprocess_mgr import JudgeResult, StreamEvent, StreamEventType
 from tests.e2e.mock_subprocess import (
     MockSubprocessManager,
     NodeBehavior,
@@ -42,7 +43,9 @@ class TestNodeBehavior:
 
     def test_failure_custom_message(self):
         b = NodeBehavior.failure("Disk full")
-        assert b.stream_lines[1].content["error"]["message"] == "Disk full"
+        error_content = b.stream_lines[1].content["error"]
+        assert isinstance(error_content, dict)
+        assert error_content["message"] == "Disk full"
 
     def test_slow_creates_many_lines(self):
         b = NodeBehavior.slow(duration_lines=10)
@@ -61,7 +64,7 @@ class TestMockSubprocessManager:
     @pytest.mark.asyncio
     async def test_unconfigured_node_uses_default(self, mock):
         """Unconfigured nodes use the default success behavior."""
-        events = []
+        events: list[StreamEvent] = []
         # Inject node name via flowstate marker
         prompt = "[flowstate:node=unknown_node]\nDo something."
         async for event in mock.run_task(prompt, "/tmp", "sess-1"):
@@ -76,7 +79,7 @@ class TestMockSubprocessManager:
         """Configured nodes return their specified behavior."""
         mock.configure_node("analyze", NodeBehavior.failure("Crashed"))
 
-        events = []
+        events: list[StreamEvent] = []
         prompt = "[flowstate:node=analyze]\nAnalyze the code."
         async for event in mock.run_task(prompt, "/tmp", "sess-2"):
             events.append(event)
@@ -92,7 +95,7 @@ class TestMockSubprocessManager:
             NodeBehavior.with_output("first", "second", "third"),
         )
 
-        events = []
+        events: list[StreamEvent] = []
         prompt = "[flowstate:node=test]\nRun tests."
         async for event in mock.run_task(prompt, "/tmp", "sess-3"):
             events.append(event)
@@ -100,18 +103,45 @@ class TestMockSubprocessManager:
         # 3 assistant + 1 result + 1 process_exit = 5
         assert len(events) == 5
         texts = [
-            e.content["message"]["content"][0]["text"] for e in events if e.type == "assistant"
+            e.content["message"]["content"][0]["text"]
+            for e in events
+            if e.type == StreamEventType.ASSISTANT
         ]
         assert texts == ["first", "second", "third"]
 
     @pytest.mark.asyncio
-    async def test_judge_returns_configured_decision(self, mock):
-        """Judge returns the configured decision."""
+    async def test_yields_real_stream_event_types(self, mock):
+        """Mock yields real StreamEvent objects with StreamEventType enum values."""
+        mock.configure_node("test", NodeBehavior.success())
+        prompt = "[flowstate:node=test]\nDo work."
+
+        events: list[StreamEvent] = []
+        async for event in mock.run_task(prompt, "/tmp", "sess-types"):
+            events.append(event)
+
+        # All events should be real StreamEvent instances
+        for event in events:
+            assert isinstance(event, StreamEvent)
+            assert isinstance(event.type, StreamEventType)
+
+        # Verify specific types
+        assert events[0].type == StreamEventType.ASSISTANT
+        assert events[1].type == StreamEventType.RESULT
+        assert events[2].type == StreamEventType.SYSTEM
+
+        # Verify .value works (executor uses event.type.value)
+        assert events[0].type.value == "assistant"
+        assert events[2].type.value == "system"
+
+    @pytest.mark.asyncio
+    async def test_judge_returns_real_judge_result(self, mock):
+        """Judge returns a real JudgeResult object."""
         mock.configure_judge("review", "ship", confidence=0.95, reasoning="All good")
 
         prompt = "[flowstate:node=review]\nJudge this."
         result = await mock.run_judge(prompt, "/tmp")
 
+        assert isinstance(result, JudgeResult)
         assert result.decision == "ship"
         assert result.confidence == 0.95
         assert result.reasoning == "All good"
@@ -159,7 +189,7 @@ class TestMockSubprocessManager:
 
         task = asyncio.create_task(run_task())
 
-        # Give it time — should NOT complete
+        # Give it time -- should NOT complete
         await asyncio.sleep(0.1)
         assert not completed
 
@@ -178,7 +208,7 @@ class TestMockSubprocessManager:
         mock.configure_node("fast_node", NodeBehavior.success())
 
         prompt = "[flowstate:node=fast_node]\nDo work."
-        events = []
+        events: list[StreamEvent] = []
         async for event in mock.run_task(prompt, "/tmp", "sess-5"):
             events.append(event)
 
@@ -222,10 +252,24 @@ class TestMockSubprocessManager:
         mock.configure_node("test", NodeBehavior.success())
         prompt = "[flowstate:node=test]\nContinue."
 
-        events = []
+        events: list[StreamEvent] = []
         async for event in mock.run_task_resume(prompt, "/tmp", "sess-1"):
             events.append(event)
 
         assert len(events) > 0
         # Should have both run_task_resume and run_task in history
         assert any(h["method"] == "run_task_resume" for h in mock.call_history)
+
+    @pytest.mark.asyncio
+    async def test_process_exit_event_is_system_type(self, mock):
+        """Process exit event has StreamEventType.SYSTEM for executor compatibility."""
+        prompt = "[flowstate:node=test]\nDo work."
+        events: list[StreamEvent] = []
+        async for event in mock.run_task(prompt, "/tmp", "sess-exit"):
+            events.append(event)
+
+        exit_event = events[-1]
+        assert exit_event.type == StreamEventType.SYSTEM
+        assert exit_event.content.get("event") == "process_exit"
+        assert "exit_code" in exit_event.content
+        assert "stderr" in exit_event.content

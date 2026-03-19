@@ -12,7 +12,9 @@ import json
 import threading
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
+
+from flowstate.engine.subprocess_mgr import JudgeResult, StreamEvent, StreamEventType
 
 if TYPE_CHECKING:
     from collections.abc import AsyncGenerator
@@ -23,7 +25,7 @@ class MockStreamLine:
     """A single line of simulated stream-json output."""
 
     type: str  # matches StreamEventType values: assistant, tool_use, tool_result, result, error
-    content: dict[str, object]
+    content: dict[str, Any]
 
 
 @dataclass
@@ -129,23 +131,15 @@ class JudgeDecision:
     confidence: float = 0.9
 
 
-@dataclass
-class _StreamEvent:
-    """Internal representation matching the real StreamEvent interface."""
-
-    type: str
-    content: dict[str, object]
-    raw: str
-
-
-@dataclass
-class _JudgeResult:
-    """Internal representation matching the real JudgeResult interface."""
-
-    decision: str
-    reasoning: str
-    confidence: float
-    raw_output: str
+# Map MockStreamLine type strings to StreamEventType enum values.
+_STREAM_TYPE_MAP: dict[str, StreamEventType] = {
+    "assistant": StreamEventType.ASSISTANT,
+    "tool_use": StreamEventType.TOOL_USE,
+    "tool_result": StreamEventType.TOOL_RESULT,
+    "result": StreamEventType.RESULT,
+    "error": StreamEventType.ERROR,
+    "system": StreamEventType.SYSTEM,
+}
 
 
 class MockSubprocessManager:
@@ -153,6 +147,10 @@ class MockSubprocessManager:
 
     Provides the same async interface as SubprocessManager but returns deterministic,
     configurable output without spawning real Claude Code processes.
+
+    Yields real ``StreamEvent`` objects (with ``StreamEventType`` enum values) and
+    returns real ``JudgeResult`` objects so the engine's executor can consume them
+    identically to a real subprocess manager.
 
     Usage:
         mock = MockSubprocessManager()
@@ -192,7 +190,7 @@ class MockSubprocessManager:
     ) -> None:
         """Set a single judge decision for a node.
 
-        For sequential decisions (cycles), call this multiple times — decisions
+        For sequential decisions (cycles), call this multiple times -- decisions
         are stored in a list and consumed in order.
 
         Args:
@@ -282,12 +280,17 @@ class MockSubprocessManager:
                             (task_dir / "SUMMARY.md").write_text(behavior.summary_content)
                             return
 
+    @staticmethod
+    def _to_stream_event_type(type_str: str) -> StreamEventType:
+        """Convert a string type to the real StreamEventType enum."""
+        return _STREAM_TYPE_MAP.get(type_str, StreamEventType.SYSTEM)
+
     async def run_task(
         self, prompt: str, workspace: str, session_id: str
-    ) -> AsyncGenerator[_StreamEvent, None]:
+    ) -> AsyncGenerator[StreamEvent, None]:
         """Simulate running a task subprocess.
 
-        Yields StreamEvent objects matching the real SubprocessManager interface.
+        Yields real StreamEvent objects matching the SubprocessManager interface.
         """
         node_name = self._extract_node_name(prompt)
         behavior = self._get_behavior(node_name)
@@ -304,7 +307,8 @@ class MockSubprocessManager:
         # Stream the configured lines
         for line in behavior.stream_lines:
             raw = json.dumps(line.content)
-            yield _StreamEvent(type=line.type, content=line.content, raw=raw)
+            event_type = self._to_stream_event_type(line.type)
+            yield StreamEvent(type=event_type, content=line.content, raw=raw)
             if behavior.line_delay > 0:
                 await asyncio.sleep(behavior.line_delay)
 
@@ -312,8 +316,8 @@ class MockSubprocessManager:
         self._write_summary(node_name, prompt, behavior)
 
         # Yield process exit event
-        yield _StreamEvent(
-            type="system",
+        yield StreamEvent(
+            type=StreamEventType.SYSTEM,
             content={
                 "event": "process_exit",
                 "exit_code": behavior.exit_code,
@@ -324,7 +328,7 @@ class MockSubprocessManager:
 
     async def run_task_resume(
         self, prompt: str, workspace: str, resume_session_id: str
-    ) -> AsyncGenerator[_StreamEvent, None]:
+    ) -> AsyncGenerator[StreamEvent, None]:
         """Simulate resuming a task subprocess session.
 
         Behaves identically to run_task for mock purposes.
@@ -338,10 +342,10 @@ class MockSubprocessManager:
         async for event in self.run_task(prompt, workspace, resume_session_id):
             yield event
 
-    async def run_judge(self, prompt: str, workspace: str) -> _JudgeResult:
+    async def run_judge(self, prompt: str, workspace: str) -> JudgeResult:
         """Simulate running a judge subprocess.
 
-        Returns the configured JudgeDecision for the source node.
+        Returns a real JudgeResult matching the SubprocessManager interface.
         Supports sequential decisions for cycle tests.
         """
         node_name = self._extract_node_name(prompt)
@@ -370,7 +374,7 @@ class MockSubprocessManager:
             }
         )
 
-        return _JudgeResult(
+        return JudgeResult(
             decision=decision.target,
             reasoning=decision.reasoning,
             confidence=decision.confidence,
