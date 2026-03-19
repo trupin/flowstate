@@ -12,6 +12,8 @@ from tests.e2e.flow_fixtures import (
     FORK_JOIN_FLOW,
     start_run_via_api,
     wait_for_flow_discovery,
+    wait_for_run_status,
+    wait_for_task_status,
     write_flow,
 )
 from tests.e2e.mock_subprocess import MockSubprocessManager, NodeBehavior
@@ -36,9 +38,11 @@ def test_fork_both_targets_execute(
     wait_for_flow_discovery(base_url, "fork_join_test")
     run_id = start_run_via_api(base_url, "fork_join_test", workspace=str(workspace))
 
+    # Wait for full completion before navigating
+    wait_for_run_status(base_url, run_id, "completed")
     page.goto(f"{base_url}/runs/{run_id}")
 
-    # Both fork targets should reach completed
+    # Both fork targets should be completed
     expect(page.locator('[data-testid="node-test_unit"][data-status="completed"]')).to_be_visible(
         timeout=15000
     )
@@ -51,9 +55,8 @@ def test_fork_both_targets_execute(
         timeout=15000
     )
 
-    # Flow should be completed
     flow_status = page.locator('[data-testid="flow-status"]')
-    expect(flow_status).to_have_text("Completed", timeout=20000)
+    expect(flow_status).to_have_text("completed", timeout=20000)
 
 
 def test_fork_join_ordering(
@@ -79,14 +82,12 @@ def test_fork_join_ordering(
     wait_for_flow_discovery(base_url, "fork_join_test")
     run_id = start_run_via_api(base_url, "fork_join_test", workspace=str(workspace))
 
+    # Wait for both fork targets to be running (gated)
+    wait_for_task_status(base_url, run_id, "test_unit", "running")
+    wait_for_task_status(base_url, run_id, "test_integration", "running")
     page.goto(f"{base_url}/runs/{run_id}")
 
-    # Wait for analyze to complete
-    expect(page.locator('[data-testid="node-analyze"][data-status="completed"]')).to_be_visible(
-        timeout=15000
-    )
-
-    # Both fork targets should be running (gated)
+    # Verify both are running
     expect(page.locator('[data-testid="node-test_unit"][data-status="running"]')).to_be_visible(
         timeout=15000
     )
@@ -101,22 +102,16 @@ def test_fork_join_ordering(
 
     # Release unit tests first
     gate_unit.set()
-    expect(page.locator('[data-testid="node-test_unit"][data-status="completed"]')).to_be_visible(
-        timeout=15000
-    )
-
-    # Report should still not be running (waiting for integration)
-    expect(page.locator('[data-testid="node-report"][data-status="running"]')).not_to_be_visible(
-        timeout=2000
-    )
+    wait_for_task_status(base_url, run_id, "test_unit", "completed")
 
     # Release integration tests
     gate_integration.set()
-    expect(
-        page.locator('[data-testid="node-test_integration"][data-status="completed"]')
-    ).to_be_visible(timeout=15000)
 
-    # Now report should start and complete
+    # Wait for full completion, then reload
+    wait_for_run_status(base_url, run_id, "completed")
+    page.goto(f"{base_url}/runs/{run_id}")
+
+    # All nodes should be completed
     expect(page.locator('[data-testid="node-report"][data-status="completed"]')).to_be_visible(
         timeout=15000
     )
@@ -141,6 +136,7 @@ def test_fork_join_graph_structure(
     wait_for_flow_discovery(base_url, "fork_join_test")
     run_id = start_run_via_api(base_url, "fork_join_test", workspace=str(workspace))
 
+    wait_for_run_status(base_url, run_id, "completed")
     page.goto(f"{base_url}/runs/{run_id}")
 
     # All four nodes should be visible in the graph

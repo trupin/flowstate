@@ -57,6 +57,7 @@ def build_prompt_handoff(
 
     return (
         "You are executing a task in a Flowstate workflow.\n"
+        f"[flowstate:node={node.name}]\n"
         "\n"
         "## Context from previous task\n"
         f"{context_section}\n"
@@ -83,6 +84,7 @@ def build_prompt_session(node: Node, task_dir: str) -> str:
     conversation context is already present in the resumed session.
     """
     return (
+        f"[flowstate:node={node.name}]\n"
         f"## Next task: {node.name}\n"
         f"{node.prompt}\n"
         "\n"
@@ -95,6 +97,7 @@ def build_prompt_none(node: Node, task_dir: str, cwd: str) -> str:
     """Build prompt with no upstream context (fresh session, self-contained task)."""
     return (
         "You are executing a task in a Flowstate workflow.\n"
+        f"[flowstate:node={node.name}]\n"
         "\n"
         "## Your task\n"
         f"{node.prompt}\n"
@@ -131,6 +134,7 @@ def build_prompt_join(
 
     return (
         "You are executing a task in a Flowstate workflow.\n"
+        f"[flowstate:node={node.name}]\n"
         "\n"
         "## Context from parallel tasks\n"
         "\n"

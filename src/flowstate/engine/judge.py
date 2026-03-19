@@ -57,6 +57,7 @@ class JudgePauseError(Exception):
 
 JUDGE_PROMPT_TEMPLATE = """\
 You are a routing judge for the Flowstate orchestration system.
+[flowstate:node={node_name}]
 
 ## Completed Task
 - Name: {node_name}

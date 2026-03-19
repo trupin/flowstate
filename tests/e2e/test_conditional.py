@@ -13,6 +13,7 @@ from tests.e2e.flow_fixtures import (
     CONDITIONAL_FLOW,
     start_run_via_api,
     wait_for_flow_discovery,
+    wait_for_run_status,
     write_flow,
 )
 from tests.e2e.mock_subprocess import MockSubprocessManager, NodeBehavior
@@ -37,15 +38,17 @@ def test_conditional_to_exit(
     wait_for_flow_discovery(base_url, "conditional_test")
     run_id = start_run_via_api(base_url, "conditional_test", workspace=str(workspace))
 
+    # Wait for completion, then navigate
+    wait_for_run_status(base_url, run_id, "completed")
     page.goto(f"{base_url}/runs/{run_id}")
 
-    # Flow should reach ship (exit) and complete
+    # Flow should have reached ship (exit) and completed
     expect(page.locator('[data-testid="node-ship"][data-status="completed"]')).to_be_visible(
         timeout=20000
     )
 
     flow_status = page.locator('[data-testid="flow-status"]')
-    expect(flow_status).to_have_text("Completed", timeout=20000)
+    expect(flow_status).to_have_text("completed", timeout=20000)
 
 
 def test_conditional_cycle_back(
@@ -69,6 +72,8 @@ def test_conditional_cycle_back(
     wait_for_flow_discovery(base_url, "conditional_test")
     run_id = start_run_via_api(base_url, "conditional_test", workspace=str(workspace))
 
+    # Wait for completion (may take longer due to cycle)
+    wait_for_run_status(base_url, run_id, "completed", timeout=30.0)
     page.goto(f"{base_url}/runs/{run_id}")
 
     # Flow should eventually complete via ship
@@ -77,7 +82,7 @@ def test_conditional_cycle_back(
     )
 
     flow_status = page.locator('[data-testid="flow-status"]')
-    expect(flow_status).to_have_text("Completed", timeout=30000)
+    expect(flow_status).to_have_text("completed", timeout=30000)
 
 
 def test_judge_decision_visible(
@@ -95,17 +100,13 @@ def test_judge_decision_visible(
     mock_subprocess.configure_judge("review", "ship", confidence=0.95)
 
     write_flow(watch_dir, "cond_test.flow", CONDITIONAL_FLOW, workspace)
-    wait_for_flow_discovery(base_url, "conditional_test")
+    wait_for_flow_discovery(base_url, "conditional_test", timeout=10.0)
     run_id = start_run_via_api(base_url, "conditional_test", workspace=str(workspace))
 
+    wait_for_run_status(base_url, run_id, "completed")
     page.goto(f"{base_url}/runs/{run_id}")
 
-    # Wait for completion — the chosen path (review → ship) should be visible
-    expect(page.locator('[data-testid="node-ship"][data-status="completed"]')).to_be_visible(
-        timeout=20000
-    )
-
     # All nodes in the flow should be visible in the graph
-    expect(page.locator('[data-testid="node-implement"]')).to_be_visible(timeout=5000)
-    expect(page.locator('[data-testid="node-review"]')).to_be_visible(timeout=5000)
-    expect(page.locator('[data-testid="node-ship"]')).to_be_visible(timeout=5000)
+    expect(page.locator('[data-testid="node-implement"]')).to_be_visible(timeout=15000)
+    expect(page.locator('[data-testid="node-review"]')).to_be_visible(timeout=15000)
+    expect(page.locator('[data-testid="node-ship"]')).to_be_visible(timeout=15000)

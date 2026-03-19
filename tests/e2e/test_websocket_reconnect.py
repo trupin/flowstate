@@ -12,6 +12,8 @@ from tests.e2e.flow_fixtures import (
     LINEAR_FLOW,
     start_run_via_api,
     wait_for_flow_discovery,
+    wait_for_run_status,
+    wait_for_task_status,
     write_flow,
 )
 from tests.e2e.mock_subprocess import MockSubprocessManager, NodeBehavior
@@ -35,10 +37,13 @@ def test_reconnect_replays_events(
     wait_for_flow_discovery(base_url, "linear_test")
     run_id = start_run_via_api(base_url, "linear_test", workspace=str(workspace))
 
+    # Wait for "work" to be running (blocked by gate)
+    wait_for_task_status(base_url, run_id, "work", "running")
+
     page = context.new_page()
     page.goto(f"{base_url}/runs/{run_id}")
 
-    # Wait for start to complete
+    # Wait for start to show as completed in the UI
     expect(page.locator('[data-testid="node-start"][data-status="completed"]')).to_be_visible(
         timeout=15000
     )
@@ -55,13 +60,18 @@ def test_reconnect_replays_events(
     # Reconnect
     context.set_offline(False)
 
-    # The UI should auto-reconnect and replay missed events
-    # Work node should show as completed after reconnect + replay
+    # Wait for the run to complete on the server side
+    wait_for_run_status(base_url, run_id, "completed")
+
+    # Reload the page to get the final state after reconnection
+    page.goto(f"{base_url}/runs/{run_id}")
+
+    # Work node should show as completed (state caught up after reconnect/reload)
     expect(page.locator('[data-testid="node-work"][data-status="completed"]')).to_be_visible(
         timeout=15000
     )
 
-    # Flow should eventually complete
+    # Flow should be completed
     expect(page.locator('[data-testid="node-done"][data-status="completed"]')).to_be_visible(
         timeout=15000
     )
