@@ -1,0 +1,116 @@
+:root {
+  /* Backgrounds */
+  --bg-primary: #0f0f0f;
+  --bg-secondary: #1a1a1a;
+  --bg-tertiary: #252525;
+
+  /* Text */
+  --text-primary: #e0e0e0;
+  --text-secondary: #888;
+
+  /* Borders */
+  --border: #333;
+
+  /* Accent */
+  --accent: #3b82f6;
+
+  /* Semantic */
+  --success: #22c55e;
+  --error: #ef4444;
+  --warning: #eab308;
+
+  /* Node status colors (from specs.md Section 10.4) */
+  --status-pending: #9ca3af;
+  --status-waiting: #a855f7;
+  --status-running: #3b82f6;
+  --status-completed: #22c55e;
+  --status-failed: #ef4444;
+  --status-skipped: #f97316;
+  --status-paused: #eab308;
+
+  /* Typography */
+  --font-sans:
+    -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu,
+    Cantarell, 'Fira Sans', 'Droid Sans', 'Helvetica Neue', sans-serif;
+  --font-mono:
+    'SF Mono', 'Fira Code', 'Fira Mono', 'Roboto Mono', 'Menlo', 'Consolas',
+    'DejaVu Sans Mono', monospace;
+
+  /* Sizing */
+  --sidebar-width: 240px;
+  --control-panel-height: 56px;
+}
+
+/* Reset */
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  padding: 0;
+  background-color: var(--bg-primary);
+  color: var(--text-primary);
+  font-family: var(--font-sans);
+  font-size: 14px;
+  line-height: 1.5;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+/* Scrollbar styling for dark theme */
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+
+::-webkit-scrollbar-track {
+  background: var(--bg-secondary);
+}
+
+::-webkit-scrollbar-thumb {
+  background: var(--border);
+  border-radius: 4px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: var(--text-secondary);
+}
+
+/* Base link styles */
+a {
+  color: var(--accent);
+  text-decoration: none;
+}
+
+a:hover {
+  text-decoration: underline;
+}
+
+/* Button reset */
+button {
+  font-family: inherit;
+  font-size: inherit;
+  cursor: pointer;
+  border: 1px solid var(--border);
+  background: var(--bg-tertiary);
+  color: var(--text-primary);
+  padding: 6px 12px;
+  border-radius: 4px;
+}
+
+button:hover {
+  background: var(--border);
+}
+
+button:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+/* Utility: monospace text */
+.mono {
+  font-family: var(--font-mono);
+}
