@@ -9,6 +9,7 @@ Supports:
 - Linear (sequential) flows (ENGINE-005)
 - Fork-join parallel execution (ENGINE-006)
 - Conditional branching with judge protocol (ENGINE-007)
+- Default edge: 1 unconditional + N conditional; falls back to default on no match
 - Cycle re-entry with generation tracking (ENGINE-007)
 - Pause/resume/cancel/retry/skip control operations (ENGINE-008)
 - Full event emission at every state change (ENGINE-009)
@@ -93,6 +94,13 @@ def _is_fork(edges: list[Edge]) -> bool:
 def _is_conditional(edges: list[Edge]) -> bool:
     """Check if any outgoing edge is conditional."""
     return any(e.edge_type == EdgeType.CONDITIONAL for e in edges)
+
+
+def _has_default_edge(edges: list[Edge]) -> bool:
+    """Check if edges form a default-edge pattern: exactly 1 unconditional + 1+ conditional."""
+    unconditional = sum(1 for e in edges if e.edge_type == EdgeType.UNCONDITIONAL)
+    conditional = sum(1 for e in edges if e.edge_type == EdgeType.CONDITIONAL)
+    return unconditional == 1 and conditional >= 1
 
 
 def _find_join_node(flow: Flow, fork_targets: tuple[str, ...]) -> str:
@@ -392,6 +400,20 @@ class FlowExecutor:
                 fork_edge,
                 completed_id,
                 task_exec.generation,
+                flow_run_id,
+                flow,
+                expanded_prompts,
+                data_dir,
+                pending,
+            )
+
+        # Handle default edge pattern: 1 unconditional + N conditional
+        # Must come BEFORE _is_conditional because that returns True for any conditional edge
+        elif _has_default_edge(outgoing):
+            await self._handle_default_edge(
+                outgoing,
+                completed_id,
+                task_exec,
                 flow_run_id,
                 flow,
                 expanded_prompts,
@@ -758,6 +780,184 @@ class FlowExecutor:
         pending.add(next_task_id)
 
         # Record edge transition
+        self._db.create_edge_transition(
+            flow_run_id=flow_run_id,
+            from_task_id=completed_id,
+            to_task_id=next_task_id,
+            edge_type="conditional",
+            condition_text=chosen_edge.condition,
+            judge_decision=decision.target,
+            judge_reasoning=decision.reasoning,
+            judge_confidence=decision.confidence,
+        )
+
+        self._emit(
+            FlowEvent(
+                type=EventType.EDGE_TRANSITION,
+                flow_run_id=flow_run_id,
+                timestamp=_now_iso(),
+                payload={
+                    "from_node": task_exec.node_name,
+                    "to_node": decision.target,
+                    "edge_type": "conditional",
+                    "condition": chosen_edge.condition,
+                    "judge_reasoning": decision.reasoning,
+                },
+            )
+        )
+
+    async def _handle_default_edge(
+        self,
+        outgoing: list[Edge],
+        completed_id: str,
+        task_exec: object,
+        flow_run_id: str,
+        flow: Flow,
+        expanded_prompts: dict[str, str],
+        data_dir: str,
+        pending: set[str],
+    ) -> None:
+        """Invoke judge on conditional edges; fall back to default edge if no match."""
+        from flowstate.state.models import TaskExecutionRow
+
+        assert isinstance(task_exec, TaskExecutionRow)
+
+        # Separate default and conditional edges
+        default_edge = next(e for e in outgoing if e.edge_type == EdgeType.UNCONDITIONAL)
+        conditional_edges = [e for e in outgoing if e.edge_type == EdgeType.CONDITIONAL]
+
+        # Build judge context with only conditional edges
+        summary = read_summary(task_exec.task_dir)
+        judge_context = JudgeContext(
+            node_name=task_exec.node_name,
+            task_prompt=task_exec.prompt_text,
+            exit_code=task_exec.exit_code or 0,
+            summary=summary,
+            task_cwd=task_exec.cwd,
+            run_id=flow_run_id,
+            outgoing_edges=[
+                (e.condition, e.target) for e in conditional_edges if e.condition and e.target
+            ],
+        )
+
+        # Emit judge started event
+        self._emit(
+            FlowEvent(
+                type=EventType.JUDGE_STARTED,
+                flow_run_id=flow_run_id,
+                timestamp=_now_iso(),
+                payload={
+                    "from_node": task_exec.node_name,
+                    "conditions": [c for c, _ in judge_context.outgoing_edges],
+                },
+            )
+        )
+
+        try:
+            decision = await self._judge.evaluate(judge_context)
+        except JudgePauseError as e:
+            self._pause_flow(flow_run_id, f"Judge failed: {e.reason}")
+            return
+
+        self._emit(
+            FlowEvent(
+                type=EventType.JUDGE_DECIDED,
+                flow_run_id=flow_run_id,
+                timestamp=_now_iso(),
+                payload={
+                    "from_node": task_exec.node_name,
+                    "to_node": decision.target,
+                    "reasoning": decision.reasoning,
+                    "confidence": decision.confidence,
+                },
+            )
+        )
+
+        # On __none__ or low confidence, follow the DEFAULT edge instead of pausing
+        if decision.is_none or decision.is_low_confidence:
+            assert default_edge.target is not None
+            is_cycle = _has_been_executed(flow_run_id, default_edge.target, self._db)
+            target_gen = (
+                _get_next_generation(flow_run_id, default_edge.target, self._db) if is_cycle else 1
+            )
+            ctx_mode = get_context_mode(default_edge, flow)
+            target_node = flow.nodes[default_edge.target]
+
+            next_task_id = self._create_task_execution_conditional(
+                flow_run_id=flow_run_id,
+                target_node=target_node,
+                generation=target_gen,
+                flow=flow,
+                expanded_prompt=expanded_prompts[default_edge.target],
+                data_dir=data_dir,
+                context_mode=ctx_mode,
+                source_task=task_exec,
+                judge_decision=decision,
+                is_cycle=is_cycle,
+            )
+            pending.add(next_task_id)
+
+            self._db.create_edge_transition(
+                flow_run_id=flow_run_id,
+                from_task_id=completed_id,
+                to_task_id=next_task_id,
+                edge_type="unconditional",
+                condition_text=None,
+                judge_decision=default_edge.target,
+                judge_reasoning=(
+                    decision.reasoning
+                    if not decision.is_none
+                    else "No condition matched, following default edge"
+                ),
+                judge_confidence=decision.confidence if not decision.is_none else 0.0,
+            )
+
+            self._emit(
+                FlowEvent(
+                    type=EventType.EDGE_TRANSITION,
+                    flow_run_id=flow_run_id,
+                    timestamp=_now_iso(),
+                    payload={
+                        "from_node": task_exec.node_name,
+                        "to_node": default_edge.target,
+                        "edge_type": "unconditional",
+                        "condition": None,
+                        "judge_reasoning": (
+                            decision.reasoning
+                            if not decision.is_none
+                            else "No condition matched, following default edge"
+                        ),
+                    },
+                )
+            )
+            return
+
+        # Judge matched a condition -> follow that conditional edge
+        chosen_edge = next(
+            e
+            for e in conditional_edges
+            if e.edge_type == EdgeType.CONDITIONAL and e.target == decision.target
+        )
+
+        is_cycle = _has_been_executed(flow_run_id, decision.target, self._db)
+        target_gen = _get_next_generation(flow_run_id, decision.target, self._db) if is_cycle else 1
+        ctx_mode = get_context_mode(chosen_edge, flow)
+        target_node = flow.nodes[decision.target]
+
+        next_task_id = self._create_task_execution_conditional(
+            flow_run_id=flow_run_id,
+            target_node=target_node,
+            generation=target_gen,
+            flow=flow,
+            expanded_prompt=expanded_prompts[decision.target],
+            data_dir=data_dir,
+            context_mode=ctx_mode,
+            source_task=task_exec,
+            judge_decision=decision,
+            is_cycle=is_cycle,
+        )
+        pending.add(next_task_id)
+
         self._db.create_edge_transition(
             flow_run_id=flow_run_id,
             from_task_id=completed_id,

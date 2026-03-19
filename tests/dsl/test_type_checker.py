@@ -403,7 +403,8 @@ class TestE1SingleEdgeMustBeUnconditional:
 
 
 class TestE2MultipleEdgesAllConditionalOrSingleFork:
-    def test_mixed_unconditional_and_conditional(self) -> None:
+    def test_mixed_unconditional_and_conditional_default_edge(self) -> None:
+        """1 unconditional + 1 conditional is a valid default-edge pattern (no E2)."""
         nodes = {
             "start": Node(name="start", node_type=NodeType.ENTRY, prompt="begin"),
             "a": Node(name="a", node_type=NodeType.TASK, prompt="a"),
@@ -413,6 +414,25 @@ class TestE2MultipleEdgesAllConditionalOrSingleFork:
         edges = (
             Edge(edge_type=EdgeType.UNCONDITIONAL, source="start", target="a"),
             Edge(edge_type=EdgeType.CONDITIONAL, source="start", target="b", condition="maybe"),
+            Edge(edge_type=EdgeType.UNCONDITIONAL, source="a", target="end"),
+            Edge(edge_type=EdgeType.UNCONDITIONAL, source="b", target="end"),
+        )
+        flow = _minimal_flow(nodes=nodes, edges=edges)
+        errors = check_flow(flow)
+        e2 = _errors_with_rule(errors, "E2")
+        assert len(e2) == 0
+
+    def test_two_unconditional_triggers_e2(self) -> None:
+        """2 unconditional edges (no conditional) should trigger E2."""
+        nodes = {
+            "start": Node(name="start", node_type=NodeType.ENTRY, prompt="begin"),
+            "a": Node(name="a", node_type=NodeType.TASK, prompt="a"),
+            "b": Node(name="b", node_type=NodeType.TASK, prompt="b"),
+            "end": Node(name="end", node_type=NodeType.EXIT, prompt="done"),
+        }
+        edges = (
+            Edge(edge_type=EdgeType.UNCONDITIONAL, source="start", target="a"),
+            Edge(edge_type=EdgeType.UNCONDITIONAL, source="start", target="b"),
             Edge(edge_type=EdgeType.UNCONDITIONAL, source="a", target="end"),
             Edge(edge_type=EdgeType.UNCONDITIONAL, source="b", target="end"),
         )
@@ -798,21 +818,23 @@ class TestC1CycleTargetOutsideForkGroup:
 
 class TestC2CycleMustHaveConditionalEdge:
     def test_unconditional_cycle(self) -> None:
-        """A cycle with no conditional edges should trigger C2."""
+        """A purely unconditional cycle (no conditional edges, no default-edge pattern)
+        should trigger C2.
+
+        The cycle is start -> a -> start. Both nodes have only 1 unconditional
+        outgoing edge, so neither has a default-edge pattern. The cycle nodes may
+        also trigger S4 (can't reach exit) but C2 must still fire.
+        """
         nodes = {
             "start": Node(name="start", node_type=NodeType.ENTRY, prompt="begin"),
             "a": Node(name="a", node_type=NodeType.TASK, prompt="a"),
-            "b": Node(name="b", node_type=NodeType.TASK, prompt="b"),
             "end": Node(name="end", node_type=NodeType.EXIT, prompt="done"),
         }
         edges = (
             Edge(edge_type=EdgeType.UNCONDITIONAL, source="start", target="a"),
-            Edge(edge_type=EdgeType.UNCONDITIONAL, source="a", target="b"),
-            Edge(edge_type=EdgeType.UNCONDITIONAL, source="b", target="a"),
-            # Needs an exit path for S4 to pass (but this node won't reach exit)
-            Edge(edge_type=EdgeType.CONDITIONAL, source="a", target="end", condition="done"),
+            Edge(edge_type=EdgeType.UNCONDITIONAL, source="a", target="start"),
         )
-        flow = _minimal_flow(nodes=nodes, edges=edges)
+        flow = _minimal_flow(nodes=nodes, edges=edges, budget_seconds=1800)
         errors = check_flow(flow)
         c2 = _errors_with_rule(errors, "C2")
         assert len(c2) >= 1
@@ -1105,3 +1127,232 @@ class TestCycleAppendixFlows:
         errors = check_flow(flow)
         c_errors = [e for e in errors if e.rule.startswith("C")]
         assert c_errors == []
+
+
+# ===========================================================================
+# Default-edge pattern tests (1 unconditional + 1+ conditional)
+# ===========================================================================
+
+
+class TestDefaultEdgeE2:
+    """E2 rule: default-edge pattern (1 unconditional + 1+ conditional) is valid."""
+
+    def test_default_edge_valid_e2(self) -> None:
+        """Node with 1 unconditional + 1 conditional should NOT trigger E2."""
+        nodes = {
+            "start": Node(name="start", node_type=NodeType.ENTRY, prompt="entry"),
+            "a": Node(name="a", node_type=NodeType.TASK, prompt="task a"),
+            "b": Node(name="b", node_type=NodeType.TASK, prompt="task b"),
+            "end": Node(name="end", node_type=NodeType.EXIT, prompt="exit"),
+        }
+        edges = (
+            Edge(edge_type=EdgeType.UNCONDITIONAL, source="start", target="a"),
+            # Node 'a' has 1 unconditional (default) + 1 conditional
+            Edge(edge_type=EdgeType.UNCONDITIONAL, source="a", target="b"),
+            Edge(
+                edge_type=EdgeType.CONDITIONAL,
+                source="a",
+                target="end",
+                condition="all done",
+            ),
+            Edge(edge_type=EdgeType.UNCONDITIONAL, source="b", target="end"),
+        )
+        flow = _minimal_flow(nodes=nodes, edges=edges)
+        errors = check_flow(flow)
+        e2 = _errors_with_rule(errors, "E2")
+        assert len(e2) == 0
+
+    def test_default_edge_multiple_conditionals_valid(self) -> None:
+        """1 unconditional + 2+ conditional is valid (no E2)."""
+        nodes = {
+            "start": Node(name="start", node_type=NodeType.ENTRY, prompt="entry"),
+            "hub": Node(name="hub", node_type=NodeType.TASK, prompt="decision hub"),
+            "a": Node(name="a", node_type=NodeType.TASK, prompt="path a"),
+            "b": Node(name="b", node_type=NodeType.TASK, prompt="path b"),
+            "fallback": Node(name="fallback", node_type=NodeType.TASK, prompt="fallback"),
+            "end": Node(name="end", node_type=NodeType.EXIT, prompt="exit"),
+        }
+        edges = (
+            Edge(edge_type=EdgeType.UNCONDITIONAL, source="start", target="hub"),
+            # hub has 1 unconditional (default) + 2 conditional
+            Edge(edge_type=EdgeType.UNCONDITIONAL, source="hub", target="fallback"),
+            Edge(
+                edge_type=EdgeType.CONDITIONAL,
+                source="hub",
+                target="a",
+                condition="path a",
+            ),
+            Edge(
+                edge_type=EdgeType.CONDITIONAL,
+                source="hub",
+                target="b",
+                condition="path b",
+            ),
+            Edge(edge_type=EdgeType.UNCONDITIONAL, source="a", target="end"),
+            Edge(edge_type=EdgeType.UNCONDITIONAL, source="b", target="end"),
+            Edge(edge_type=EdgeType.UNCONDITIONAL, source="fallback", target="end"),
+        )
+        flow = _minimal_flow(nodes=nodes, edges=edges)
+        errors = check_flow(flow)
+        e2 = _errors_with_rule(errors, "E2")
+        assert len(e2) == 0
+
+    def test_two_unconditional_plus_conditional_invalid(self) -> None:
+        """2 unconditional + 1 conditional should still trigger E2."""
+        nodes = {
+            "start": Node(name="start", node_type=NodeType.ENTRY, prompt="entry"),
+            "hub": Node(name="hub", node_type=NodeType.TASK, prompt="hub"),
+            "a": Node(name="a", node_type=NodeType.TASK, prompt="a"),
+            "b": Node(name="b", node_type=NodeType.TASK, prompt="b"),
+            "c": Node(name="c", node_type=NodeType.TASK, prompt="c"),
+            "end": Node(name="end", node_type=NodeType.EXIT, prompt="exit"),
+        }
+        edges = (
+            Edge(edge_type=EdgeType.UNCONDITIONAL, source="start", target="hub"),
+            # hub has 2 unconditional + 1 conditional — invalid
+            Edge(edge_type=EdgeType.UNCONDITIONAL, source="hub", target="a"),
+            Edge(edge_type=EdgeType.UNCONDITIONAL, source="hub", target="b"),
+            Edge(
+                edge_type=EdgeType.CONDITIONAL,
+                source="hub",
+                target="c",
+                condition="cond",
+            ),
+            Edge(edge_type=EdgeType.UNCONDITIONAL, source="a", target="end"),
+            Edge(edge_type=EdgeType.UNCONDITIONAL, source="b", target="end"),
+            Edge(edge_type=EdgeType.UNCONDITIONAL, source="c", target="end"),
+        )
+        flow = _minimal_flow(nodes=nodes, edges=edges)
+        errors = check_flow(flow)
+        e2 = _errors_with_rule(errors, "E2")
+        assert len(e2) == 1
+        assert "hub" in e2[0].message
+
+
+class TestDefaultEdgeS6:
+    """S6 rule: unconditional back-edges to entry with default-edge pattern."""
+
+    def test_default_edge_to_entry_s6(self) -> None:
+        """Unconditional back-edge to entry when entry has default-edge pattern: no S6."""
+        nodes = {
+            "moderator": Node(name="moderator", node_type=NodeType.ENTRY, prompt="moderate"),
+            "worker": Node(name="worker", node_type=NodeType.TASK, prompt="work"),
+            "done": Node(name="done", node_type=NodeType.EXIT, prompt="done"),
+        }
+        edges = (
+            # moderator has default-edge pattern: 1 unconditional + 1 conditional
+            Edge(edge_type=EdgeType.UNCONDITIONAL, source="moderator", target="worker"),
+            Edge(
+                edge_type=EdgeType.CONDITIONAL,
+                source="moderator",
+                target="done",
+                condition="finished",
+            ),
+            # unconditional back-edge to entry
+            Edge(edge_type=EdgeType.UNCONDITIONAL, source="worker", target="moderator"),
+        )
+        flow = _minimal_flow(nodes=nodes, edges=edges, budget_seconds=1800)
+        errors = check_flow(flow)
+        s6 = _errors_with_rule(errors, "S6")
+        assert len(s6) == 0
+
+    def test_unconditional_to_entry_no_default_s6(self) -> None:
+        """Unconditional back-edge to entry without default-edge pattern: triggers S6."""
+        nodes = {
+            "start": Node(name="start", node_type=NodeType.ENTRY, prompt="entry"),
+            "worker": Node(name="worker", node_type=NodeType.TASK, prompt="work"),
+            "end": Node(name="end", node_type=NodeType.EXIT, prompt="exit"),
+        }
+        edges = (
+            # start has only 1 unconditional outgoing edge (no default-edge pattern)
+            Edge(edge_type=EdgeType.UNCONDITIONAL, source="start", target="worker"),
+            # unconditional back-edge to entry without default-edge pattern
+            Edge(edge_type=EdgeType.UNCONDITIONAL, source="worker", target="start"),
+            # worker also goes to end (so exit is reachable)
+            Edge(
+                edge_type=EdgeType.CONDITIONAL,
+                source="worker",
+                target="end",
+                condition="done",
+            ),
+        )
+        flow = _minimal_flow(nodes=nodes, edges=edges, budget_seconds=1800)
+        errors = check_flow(flow)
+        s6 = _errors_with_rule(errors, "S6")
+        assert len(s6) == 1
+        assert "start" in s6[0].message
+
+
+class TestDefaultEdgeC2:
+    """C2 rule: cycles through nodes with default-edge pattern."""
+
+    def test_cycle_with_default_edge_c2(self) -> None:
+        """Cycle through a node with default-edge pattern should NOT trigger C2."""
+        nodes = {
+            "moderator": Node(name="moderator", node_type=NodeType.ENTRY, prompt="moderate"),
+            "worker": Node(name="worker", node_type=NodeType.TASK, prompt="work"),
+            "done": Node(name="done", node_type=NodeType.EXIT, prompt="done"),
+        }
+        edges = (
+            # moderator has default-edge pattern (conditional checkpoint)
+            Edge(edge_type=EdgeType.UNCONDITIONAL, source="moderator", target="worker"),
+            Edge(
+                edge_type=EdgeType.CONDITIONAL,
+                source="moderator",
+                target="done",
+                condition="finished",
+            ),
+            # unconditional back-edge closes the cycle
+            Edge(edge_type=EdgeType.UNCONDITIONAL, source="worker", target="moderator"),
+        )
+        flow = _minimal_flow(nodes=nodes, edges=edges, budget_seconds=1800)
+        errors = check_flow(flow)
+        c2 = _errors_with_rule(errors, "C2")
+        assert len(c2) == 0
+
+    def test_cycle_no_conditional_no_default_c2(self) -> None:
+        """Pure unconditional cycle (no default-edge node) should still trigger C2."""
+        nodes = {
+            "start": Node(name="start", node_type=NodeType.ENTRY, prompt="entry"),
+            "a": Node(name="a", node_type=NodeType.TASK, prompt="a"),
+            "end": Node(name="end", node_type=NodeType.EXIT, prompt="exit"),
+        }
+        edges = (
+            Edge(edge_type=EdgeType.UNCONDITIONAL, source="start", target="a"),
+            Edge(edge_type=EdgeType.UNCONDITIONAL, source="a", target="start"),
+        )
+        flow = _minimal_flow(nodes=nodes, edges=edges, budget_seconds=1800)
+        errors = check_flow(flow)
+        c2 = _errors_with_rule(errors, "C2")
+        assert len(c2) >= 1
+
+
+class TestDefaultEdgeFullScenario:
+    """Full integration scenario for default-edge support."""
+
+    def test_full_default_edge_scenario(self) -> None:
+        """The full user scenario: moderator loop with default edge. Zero type errors."""
+        nodes = {
+            "moderator": Node(name="moderator", node_type=NodeType.ENTRY, prompt="moderate"),
+            "alice": Node(name="alice", node_type=NodeType.TASK, prompt="alice works"),
+            "bob": Node(name="bob", node_type=NodeType.TASK, prompt="bob works"),
+            "done": Node(name="done", node_type=NodeType.EXIT, prompt="finished"),
+        }
+        edges = (
+            # moderator -> alice (unconditional, the default)
+            Edge(edge_type=EdgeType.UNCONDITIONAL, source="moderator", target="alice"),
+            # moderator -> done when "condition" (conditional exit)
+            Edge(
+                edge_type=EdgeType.CONDITIONAL,
+                source="moderator",
+                target="done",
+                condition="condition",
+            ),
+            # alice -> bob (unconditional)
+            Edge(edge_type=EdgeType.UNCONDITIONAL, source="alice", target="bob"),
+            # bob -> moderator (unconditional back-edge)
+            Edge(edge_type=EdgeType.UNCONDITIONAL, source="bob", target="moderator"),
+        )
+        flow = _minimal_flow(nodes=nodes, edges=edges, budget_seconds=1800)
+        errors = check_flow(flow)
+        assert len(errors) == 0, f"Expected zero errors, got: {errors}"

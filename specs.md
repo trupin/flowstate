@@ -35,7 +35,6 @@ An individual developer using Flowstate as an internal tool to orchestrate compl
 - Flow versioning or migration tooling
 - Dynamic flow modification at runtime
 - Nested / sub-flows (a node that is itself a flow)
-- `otherwise` fallback edges (judge returns "no match" → flow pauses)
 - Per-task model or tool overrides
 
 ---
@@ -424,7 +423,7 @@ The type checker validates a parsed flow AST before execution. All rules produce
 | S3 | All nodes reachable from `entry` | No dead/orphan nodes |
 | S4 | At least one `exit` reachable from every node | Every node can eventually lead to termination |
 | S5 | No duplicate node names | Names are identifiers used in edges |
-| S6 | `entry` node has no incoming edges | Nothing transitions into the start |
+| S6 | `entry` node has no incoming unconditional edges (conditional back-edges allowed; unconditional back-edges allowed when entry has a default edge) | Nothing transitions into the start without a judge decision |
 | S7 | `exit` nodes have no outgoing edges | Nothing transitions out of a terminal |
 | S8 | Every node must have a resolvable cwd (own `cwd` or flow-level `workspace`) | Tasks need a working directory |
 
@@ -433,7 +432,7 @@ The type checker validates a parsed flow AST before execution. All rules produce
 | # | Rule | Rationale |
 |---|------|-----------|
 | E1 | Node with 1 outgoing edge: must be unconditional | No judge needed for a single path |
-| E2 | Node with 2+ outgoing edges: all must be conditional (`when`) OR all must be a single fork | No ambiguity in edge semantics |
+| E2 | Node with 2+ outgoing edges: all must be conditional (`when`), a single fork, or exactly 1 unconditional (default) + 1+ conditional | No ambiguity in edge semantics |
 | E3 | Fork and conditional edges cannot be mixed from the same node | A node is either a branch-point or a fork-point |
 | E4 | Every edge references existing nodes | No dangling references |
 | E5 | Fork target set must have exactly one matching join with the same node set | Every fork must close |
@@ -442,12 +441,14 @@ The type checker validates a parsed flow AST before execution. All rules produce
 | E8 | `delay` and `schedule` are mutually exclusive on an edge | An edge can wait for a duration or a cron match, not both |
 | E9 | `schedule` (cron) on an edge must be a valid cron expression | Prevents runtime errors from bad cron syntax |
 
+**Default edge pattern**: A node may have exactly one unconditional edge (the "default") plus one or more conditional edges. The engine invokes the judge on the conditional edges; if no condition matches, the unconditional edge is followed as a fallback. The node is considered a conditional checkpoint for cycle analysis (C2) because the judge evaluates at that node every iteration and can exit the cycle via a conditional edge.
+
 ### 4.3 Cycle Rules
 
 | # | Rule | Rationale |
 |---|------|-----------|
 | C1 | Cycle targets must be outside any fork-join group | Cycling into the middle of a fork group creates ambiguous join semantics |
-| C2 | Every cycle must pass through at least one conditional edge | Prevents unconditional infinite loops — a judge must decide to re-enter |
+| C2 | Every cycle must pass through at least one conditional edge or a node with a default edge | Prevents unconditional infinite loops — a judge must decide to re-enter |
 | C3 | Flows with cycles must declare a `budget` | Time guard is mandatory for potentially-infinite execution |
 
 **C1 explained**: If nodes B and C are forked (`A -> [B, C]`) and joined (`[B, C] -> D`), no cycle edge may target B or C directly. The cycle must target A (the fork source) or any node before A.
@@ -673,6 +674,17 @@ async def execute_flow(flow_ast, params):
                 for target in outgoing.targets:
                     enqueue_task(run, target, generation=next_gen(task),
                                 fork_group=group, edge=outgoing_for(target))
+
+            elif has_default_edge(outgoing):  # 1 unconditional + N conditional
+                default = get_default_edge(outgoing)
+                conditionals = get_conditional_edges(outgoing)
+                decision = await invoke_judge(run, task, conditionals)
+                if decision == "__none__":
+                    enqueue_task(run, default.target, generation=next_gen(task),
+                                edge=default)  # follow default
+                else:
+                    enqueue_task(run, decision.target, generation=next_gen(task),
+                                edge=decision.edge)
 
             elif is_conditional(outgoing):
                 decision = await invoke_judge(run, task, outgoing)
@@ -1857,7 +1869,6 @@ flow weekly_audit {
 
 ### Appendix C: Future Enhancements (Post-MVP)
 
-- `otherwise` fallback edges for unmatched judge conditions
 - Per-task model and tool overrides
 - Nested sub-flows (a node that is itself a flow)
 - Visual DSL editor in the web UI (drag-and-drop)

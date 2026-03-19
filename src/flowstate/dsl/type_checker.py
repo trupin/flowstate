@@ -123,6 +123,20 @@ def _build_outgoing_edges(flow: Flow) -> dict[str, list[Edge]]:
     return result
 
 
+def _has_default_edge(edges: list[Edge]) -> bool:
+    """Check if edges form a default-edge pattern: exactly 1 unconditional + 1+ conditional."""
+    unconditional = sum(1 for e in edges if e.edge_type == EdgeType.UNCONDITIONAL)
+    conditional = sum(1 for e in edges if e.edge_type == EdgeType.CONDITIONAL)
+    return unconditional == 1 and conditional >= 1
+
+
+def _get_default_edge(edges: list[Edge]) -> Edge | None:
+    """Return the default (unconditional) edge if the pattern matches, else None."""
+    if not _has_default_edge(edges):
+        return None
+    return next(e for e in edges if e.edge_type == EdgeType.UNCONDITIONAL)
+
+
 # ---------------------------------------------------------------------------
 # S1-S8: Structural rules
 # ---------------------------------------------------------------------------
@@ -181,6 +195,14 @@ def _check_structural(flow: Flow) -> list[FlowTypeError]:
                     unconditional_sources.append(edge.source)
                 elif targets_entry and edge.join_sources:
                     unconditional_sources.extend(edge.join_sources)
+
+            # Suppress S6 if entry has a default-edge pattern — it's a conditional
+            # checkpoint, so unconditional back-edges are safe (the judge evaluates
+            # conditional exits at the entry node).
+            outgoing_edges_map = _build_outgoing_edges(flow)
+            if unconditional_sources and _has_default_edge(outgoing_edges_map.get(entry_name, [])):
+                unconditional_sources = []
+
             if unconditional_sources:
                 sources = ", ".join(unconditional_sources)
                 errors.append(
@@ -323,8 +345,12 @@ def _check_edges(flow: Flow) -> list[FlowTypeError]:
             # E2: Multiple outgoing edges must be all conditional
             # (A fork is a single Edge object, so 2+ edges should all be conditional)
             all_conditional = all(e.edge_type == EdgeType.CONDITIONAL for e in edges)
-            # Skip if E3 already caught a fork+conditional mix
-            if not all_conditional and not (has_fork and has_conditional):
+            # Skip if E3 already caught a fork+conditional mix, or if default-edge pattern
+            if (
+                not all_conditional
+                and not (has_fork and has_conditional)
+                and not _has_default_edge(edges)
+            ):
                 errors.append(
                     FlowTypeError(
                         "E2",
@@ -492,11 +518,18 @@ def _find_edge_between(flow: Flow, source: str, target: str) -> Edge | None:
 
 
 def _forward_path_has_conditional(
-    flow: Flow, start: str, end: str, outgoing: dict[str, list[str]]
+    flow: Flow,
+    start: str,
+    end: str,
+    outgoing: dict[str, list[str]],
+    outgoing_edges_map: dict[str, list[Edge]] | None = None,
 ) -> bool:
     """Check if any path from start to end passes through a conditional edge.
 
     Uses BFS tracking whether we've seen a conditional edge on the path.
+    A node with a default-edge pattern (1 unconditional + 1+ conditional) is
+    treated as a conditional checkpoint — visiting it counts as seeing a
+    conditional edge.
     """
     visited: set[tuple[str, bool]] = set()
     queue: deque[tuple[str, bool]] = deque([(start, False)])
@@ -511,6 +544,12 @@ def _forward_path_has_conditional(
         if state in visited:
             continue
         visited.add(state)
+
+        # A node with the default-edge pattern acts as a conditional checkpoint
+        if not seen_cond and outgoing_edges_map is not None:
+            node_edges = outgoing_edges_map.get(node, [])
+            if _has_default_edge(node_edges):
+                seen_cond = True
 
         for neighbor in outgoing.get(node, []):
             edge = _find_edge_between(flow, node, neighbor)
@@ -585,6 +624,11 @@ def _check_cycles(flow: Flow) -> list[FlowTypeError]:
     # Identify unique cycles by their back-edges (edges where target can reach source).
     # For each such edge, check if the cycle path contains a conditional edge.
     # Deduplicate by (source, target) pair of the cycle-closing edge.
+    #
+    # A node with a default-edge pattern (1 unconditional + 1+ conditional) acts
+    # as a conditional checkpoint — the judge evaluates conditional exits there.
+    outgoing_edges_map = _build_outgoing_edges(flow)
+
     c2_reported: set[tuple[str, str]] = set()
     for source, target in cycle_edges:
         # Check if the edge itself is conditional
@@ -592,8 +636,13 @@ def _check_cycles(flow: Flow) -> list[FlowTypeError]:
         if edge_obj and edge_obj.edge_type == EdgeType.CONDITIONAL:
             continue  # This edge in the cycle is conditional
 
+        # Check if source node has default-edge pattern (conditional checkpoint)
+        source_edges = outgoing_edges_map.get(source, [])
+        if _has_default_edge(source_edges):
+            continue
+
         # Check the rest of the cycle path (from target back to source)
-        if _forward_path_has_conditional(flow, target, source, outgoing):
+        if _forward_path_has_conditional(flow, target, source, outgoing, outgoing_edges_map):
             continue  # The cycle has a conditional edge somewhere
 
         # This edge is part of an all-unconditional cycle

@@ -1809,3 +1809,205 @@ class TestConditionalEventSequence:
         ]
         assert len(edge_after_judge) >= 1
         assert edge_after_judge[0] > judge_decided_idx
+
+
+# ---------------------------------------------------------------------------
+# Tests: Default edge pattern (1 unconditional + N conditional)
+# ---------------------------------------------------------------------------
+
+
+def _make_default_edge_flow() -> Flow:
+    """Build a flow with a default-edge pattern at the moderator node.
+
+    moderator -> alice (unconditional, default)
+    moderator -> done  when "all tasks complete" (conditional)
+    alice -> bob (unconditional)
+    bob -> moderator (unconditional, back-edge / cycle)
+    """
+    nodes: dict[str, Node] = {
+        "moderator": Node(
+            name="moderator", node_type=NodeType.ENTRY, prompt="Do the moderator step"
+        ),
+        "alice": Node(name="alice", node_type=NodeType.TASK, prompt="Do the alice step"),
+        "bob": Node(name="bob", node_type=NodeType.TASK, prompt="Do the bob step"),
+        "done": Node(name="done", node_type=NodeType.EXIT, prompt="Do the done step"),
+    }
+
+    edges: list[Edge] = [
+        # Default (unconditional) edge from moderator -> alice
+        Edge(
+            edge_type=EdgeType.UNCONDITIONAL,
+            source="moderator",
+            target="alice",
+        ),
+        # Conditional edge from moderator -> done
+        Edge(
+            edge_type=EdgeType.CONDITIONAL,
+            source="moderator",
+            target="done",
+            condition="all tasks complete",
+        ),
+        # alice -> bob (unconditional)
+        Edge(
+            edge_type=EdgeType.UNCONDITIONAL,
+            source="alice",
+            target="bob",
+        ),
+        # bob -> moderator (unconditional back-edge)
+        Edge(
+            edge_type=EdgeType.UNCONDITIONAL,
+            source="bob",
+            target="moderator",
+        ),
+    ]
+
+    return Flow(
+        name="default-edge-flow",
+        budget_seconds=1800,
+        on_error=ErrorPolicy.PAUSE,
+        context=ContextMode.HANDOFF,
+        workspace="/workspace",
+        nodes=nodes,
+        edges=tuple(edges),
+    )
+
+
+class TestDefaultEdgeConditionMatches:
+    """Mock judge returns matching condition. Flow follows the conditional edge."""
+
+    async def test_default_edge_condition_matches(self) -> None:
+        db = _make_db()
+        events, callback = _collect_events()
+        mock_mgr = MockSubprocessManager()
+        mock_judge = MockJudgeProtocol()
+        # Judge matches the condition on the first evaluation
+        mock_judge.add_decision(
+            JudgeDecision(target="done", reasoning="All tasks are complete", confidence=0.95)
+        )
+
+        executor = FlowExecutor(db, callback, mock_mgr, judge=mock_judge)
+
+        flow = _make_default_edge_flow()
+        flow_run_id = await executor.execute(flow, {}, "/workspace")
+
+        run = db.get_flow_run(flow_run_id)
+        assert run is not None
+        assert run.status == "completed"
+
+        tasks = db.list_task_executions(flow_run_id)
+        task_names = [t.node_name for t in tasks]
+        # Should go: moderator -> done (via conditional edge)
+        assert "moderator" in task_names
+        assert "done" in task_names
+        # alice and bob should NOT have been visited (judge matched immediately)
+        assert "alice" not in task_names
+        assert "bob" not in task_names
+
+        # Verify judge events were emitted
+        judge_started = [e for e in events if e.type == EventType.JUDGE_STARTED]
+        assert len(judge_started) == 1
+        judge_decided = [e for e in events if e.type == EventType.JUDGE_DECIDED]
+        assert len(judge_decided) == 1
+        assert judge_decided[0].payload["to_node"] == "done"
+
+
+class TestDefaultEdgeNoneFollowsDefault:
+    """Mock judge returns __none__. Flow follows the default (unconditional) edge."""
+
+    async def test_default_edge_none_follows_default(self) -> None:
+        db = _make_db()
+        events, callback = _collect_events()
+        mock_mgr = MockSubprocessManager()
+        mock_judge = MockJudgeProtocol()
+        # First call: no match -> follow default edge to alice
+        mock_judge.add_decision(
+            JudgeDecision(target="__none__", reasoning="No match", confidence=0.8)
+        )
+        # After alice -> bob -> moderator cycle, judge matches on second call
+        mock_judge.add_decision(
+            JudgeDecision(target="done", reasoning="All done now", confidence=0.95)
+        )
+
+        executor = FlowExecutor(db, callback, mock_mgr, judge=mock_judge)
+
+        flow = _make_default_edge_flow()
+        flow_run_id = await executor.execute(flow, {}, "/workspace")
+
+        run = db.get_flow_run(flow_run_id)
+        assert run is not None
+        assert run.status == "completed"
+
+        tasks = db.list_task_executions(flow_run_id)
+        task_names = [t.node_name for t in tasks]
+        # Should have visited: moderator, alice, bob, moderator (cycle), done
+        assert task_names.count("moderator") == 2
+        assert "alice" in task_names
+        assert "bob" in task_names
+        assert "done" in task_names
+
+        # Flow should NOT have paused -- __none__ follows default edge
+        status_events = [e for e in events if e.type == EventType.FLOW_STATUS_CHANGED]
+        pause_events = [e for e in status_events if e.payload.get("new_status") == "paused"]
+        assert len(pause_events) == 0
+
+
+class TestDefaultEdgeLowConfidenceFollowsDefault:
+    """Mock judge returns low confidence. Flow follows the default edge."""
+
+    async def test_default_edge_low_confidence_follows_default(self) -> None:
+        db = _make_db()
+        events, callback = _collect_events()
+        mock_mgr = MockSubprocessManager()
+        mock_judge = MockJudgeProtocol()
+        # First call: low confidence -> follow default edge
+        mock_judge.add_decision(
+            JudgeDecision(target="done", reasoning="Maybe done?", confidence=0.3)
+        )
+        # After cycle, judge matches with high confidence
+        mock_judge.add_decision(
+            JudgeDecision(target="done", reasoning="Definitely done", confidence=0.95)
+        )
+
+        executor = FlowExecutor(db, callback, mock_mgr, judge=mock_judge)
+
+        flow = _make_default_edge_flow()
+        flow_run_id = await executor.execute(flow, {}, "/workspace")
+
+        run = db.get_flow_run(flow_run_id)
+        assert run is not None
+        assert run.status == "completed"
+
+        tasks = db.list_task_executions(flow_run_id)
+        task_names = [t.node_name for t in tasks]
+        # Low confidence should follow default edge (alice), not pause
+        assert "alice" in task_names
+        assert "bob" in task_names
+        assert task_names.count("moderator") == 2
+
+        # Flow should NOT have paused
+        status_events = [e for e in events if e.type == EventType.FLOW_STATUS_CHANGED]
+        pause_events = [e for e in status_events if e.payload.get("new_status") == "paused"]
+        assert len(pause_events) == 0
+
+
+class TestDefaultEdgeJudgeFailurePauses:
+    """Judge raises JudgePauseError. Flow should pause (not follow default)."""
+
+    async def test_default_edge_judge_failure_pauses(self) -> None:
+        db = _make_db()
+        events, callback = _collect_events()
+        mock_mgr = MockSubprocessManager()
+        mock_judge = MockJudgeProtocol()
+        mock_judge.add_decision(JudgePauseError("Subprocess crashed"))
+
+        executor = FlowExecutor(db, callback, mock_mgr, judge=mock_judge)
+
+        flow = _make_default_edge_flow()
+        flow_run_id = await executor.execute(flow, {}, "/workspace")
+
+        run = db.get_flow_run(flow_run_id)
+        assert run is not None
+        assert run.status == "paused"
+
+        status_events = [e for e in events if e.type == EventType.FLOW_STATUS_CHANGED]
+        assert any("Judge failed" in str(e.payload.get("reason", "")) for e in status_events)
