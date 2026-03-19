@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import uuid
+from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from fastapi import APIRouter, Request
@@ -11,6 +12,9 @@ from flowstate.dsl.parser import parse_flow
 from flowstate.engine.executor import FlowExecutor
 from flowstate.server.app import FlowstateError
 from flowstate.server.models import (
+    OrchestratorLogEntry,
+    OrchestratorLogsResponse,
+    OrchestratorSession,
     RunSummary,
     ScheduleResponse,
     StartRunRequest,
@@ -641,3 +645,106 @@ async def trigger_schedule(request: Request, schedule_id: str) -> dict[str, str]
     await run_manager.start_run(run_id, executor, execute_coro)
 
     return {"flow_run_id": run_id}
+
+
+# ---------------------------------------------------------------------------
+# Orchestrator session endpoints
+# ---------------------------------------------------------------------------
+
+
+def _discover_orchestrator_sessions(data_dir: str) -> list[OrchestratorSession]:
+    """Scan the orchestrator/ subdirectory of a run's data_dir.
+
+    Returns a list of OrchestratorSession objects, one per subdirectory that
+    contains at least a ``session_id`` file. Missing files are handled
+    gracefully (empty string for system_prompt if file is absent).
+    """
+    orch_dir = Path(data_dir) / "orchestrator"
+    if not orch_dir.is_dir():
+        return []
+
+    sessions: list[OrchestratorSession] = []
+    for child in sorted(orch_dir.iterdir()):
+        if not child.is_dir():
+            continue
+
+        session_id_path = child / "session_id"
+        if not session_id_path.is_file():
+            continue
+
+        session_id = session_id_path.read_text().strip()
+        if not session_id:
+            continue
+
+        system_prompt = ""
+        prompt_path = child / "system_prompt.md"
+        if prompt_path.is_file():
+            system_prompt = prompt_path.read_text()
+
+        sessions.append(
+            OrchestratorSession(
+                key=child.name,
+                session_id=session_id,
+                system_prompt=system_prompt,
+                data_dir=str(child),
+            )
+        )
+
+    return sessions
+
+
+@router.get("/runs/{run_id}/orchestrators")
+async def list_orchestrators(request: Request, run_id: str) -> list[OrchestratorSession]:
+    """List orchestrator sessions for a run.
+
+    Scans ``{data_dir}/orchestrator/`` for subdirectories containing a
+    ``session_id`` file. Returns an empty list if the directory does not exist
+    or the run has no orchestrator sessions.
+    """
+    db = _get_db(request)
+    run = db.get_flow_run(run_id)
+    if not run:
+        raise FlowstateError(f"Run '{run_id}' not found", status_code=404)
+
+    return _discover_orchestrator_sessions(run.data_dir)
+
+
+@router.get("/runs/{run_id}/orchestrators/{session_id}/logs")
+async def get_orchestrator_logs(
+    request: Request,
+    run_id: str,
+    session_id: str,
+) -> OrchestratorLogsResponse:
+    """Get logs for a specific orchestrator session.
+
+    Queries the ``task_logs`` table by joining with ``task_executions`` where
+    ``claude_session_id`` matches the given *session_id*. Returns logs ordered
+    by timestamp ascending.
+    """
+    db = _get_db(request)
+    run = db.get_flow_run(run_id)
+    if not run:
+        raise FlowstateError(f"Run '{run_id}' not found", status_code=404)
+
+    # Query task_logs joined with task_executions matching the session_id
+    rows = db.connection.execute(
+        """SELECT tl.id, tl.task_execution_id, tl.log_type, tl.content, tl.timestamp
+           FROM task_logs tl
+           JOIN task_executions te ON tl.task_execution_id = te.id
+           WHERE te.flow_run_id = ? AND te.claude_session_id = ?
+           ORDER BY tl.timestamp ASC, tl.id ASC""",
+        (run_id, session_id),
+    ).fetchall()
+
+    logs = [
+        OrchestratorLogEntry(
+            id=row[0],
+            task_execution_id=row[1],
+            log_type=row[2],
+            content=row[3],
+            timestamp=row[4],
+        )
+        for row in rows
+    ]
+
+    return OrchestratorLogsResponse(logs=logs)

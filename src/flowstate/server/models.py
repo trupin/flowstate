@@ -101,3 +101,33 @@ class ScheduleResponse(BaseModel):
     next_run_at: str | None  # ISO 8601, None if paused
     last_run_at: str | None  # ISO 8601, None if never run
     overlap_policy: str  # "skip", "queue", "parallel"
+
+
+# ---------------------------------------------------------------------------
+# Orchestrator Sessions
+# ---------------------------------------------------------------------------
+
+
+class OrchestratorSession(BaseModel):
+    """An orchestrator session discovered from the run's data directory."""
+
+    key: str  # Directory name under orchestrator/
+    session_id: str  # Claude Code session ID from session_id file
+    system_prompt: str  # Contents of system_prompt.md
+    data_dir: str  # Full path to the orchestrator session directory
+
+
+class OrchestratorLogEntry(BaseModel):
+    """A single log entry from an orchestrator session."""
+
+    id: int
+    task_execution_id: str
+    log_type: str
+    content: str
+    timestamp: str  # ISO 8601
+
+
+class OrchestratorLogsResponse(BaseModel):
+    """Response body for GET /api/runs/:id/orchestrators/:session_id/logs."""
+
+    logs: list[OrchestratorLogEntry]

@@ -136,6 +136,13 @@ export interface FlowSchedule {
   created_at: string;
 }
 
+export interface OrchestratorInfo {
+  key: string;
+  session_id: string;
+  system_prompt: string;
+  data_dir: string;
+}
+
 export interface StartRunRequest {
   params?: Record<string, string | number | boolean>;
 }

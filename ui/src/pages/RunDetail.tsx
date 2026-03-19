@@ -1,13 +1,15 @@
-import { useMemo } from 'react';
+import { useMemo, useState, useEffect } from 'react';
 import { useParams } from 'react-router-dom';
 import { useFlowRun } from '../hooks/useFlowRun';
 import { GraphView } from '../components/GraphView';
 import { LogViewer } from '../components/LogViewer';
 import { ControlPanel } from '../components/ControlPanel';
+import { OrchestratorConsole } from '../components/OrchestratorConsole';
 import { expandEdges } from '../utils/edges';
 import { api } from '../api/client';
 import type {
   TaskStatus,
+  OrchestratorInfo,
   FlowRunDetail as FlowRunDetailType,
 } from '../api/types';
 import './RunDetail.css';
@@ -24,6 +26,18 @@ export function RunDetail() {
     isConnected,
     send,
   } = useFlowRun(id!);
+
+  const [showOrchestrator, setShowOrchestrator] = useState(false);
+  const [orchestrators, setOrchestrators] = useState<OrchestratorInfo[]>([]);
+
+  // Fetch orchestrators once the run is available
+  const runLoaded = run !== null;
+  useEffect(() => {
+    if (!runLoaded) return;
+    api.runs.orchestrators(id!).then((result) => {
+      setOrchestrators(result);
+    });
+  }, [runLoaded, id]);
 
   // Build task status map for the graph
   const taskStatuses = useMemo(() => {
@@ -167,6 +181,14 @@ export function RunDetail() {
           <span className={`run-status status-${run.status}`}>
             {run.status}
           </span>
+          {orchestrators.length > 0 && (
+            <button
+              className={`orchestrator-toggle-btn ${showOrchestrator ? 'active' : ''}`}
+              onClick={() => setShowOrchestrator((prev) => !prev)}
+            >
+              Orchestrator
+            </button>
+          )}
           {!isConnected && (
             <span className="ws-disconnected">Reconnecting...</span>
           )}
@@ -206,7 +228,14 @@ export function RunDetail() {
         </div>
 
         <div className="run-detail-logs">
-          <LogViewer logs={selectedLogs} taskName={selectedTask} />
+          {showOrchestrator ? (
+            <OrchestratorConsole
+              runId={id!}
+              isActive={run.status === 'running' || run.status === 'paused'}
+            />
+          ) : (
+            <LogViewer logs={selectedLogs} taskName={selectedTask} />
+          )}
         </div>
       </div>
 

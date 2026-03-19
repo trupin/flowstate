@@ -1,0 +1,112 @@
+.orchestrator-console {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  background: var(--bg-primary);
+}
+
+.orchestrator-header {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 12px;
+  background: var(--bg-secondary);
+  border-bottom: 1px solid var(--border);
+  min-height: 36px;
+}
+
+.orchestrator-header-title {
+  font-weight: 600;
+  font-size: 13px;
+  flex-shrink: 0;
+}
+
+.orchestrator-selector {
+  font-size: 12px;
+  padding: 3px 8px;
+  background: var(--bg-tertiary);
+  color: var(--text-primary);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  font-family: var(--font-sans);
+  cursor: pointer;
+  max-width: 200px;
+}
+
+.orchestrator-selector:hover {
+  border-color: var(--text-secondary);
+}
+
+.orchestrator-cwd {
+  font-size: 11px;
+  color: var(--text-secondary);
+  font-family: var(--font-mono);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  margin-left: auto;
+}
+
+/* --- Collapsible system prompt --- */
+
+.orchestrator-system-prompt {
+  border-bottom: 1px solid var(--border);
+}
+
+.orchestrator-system-prompt-header {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 12px;
+  cursor: pointer;
+  font-size: 12px;
+  color: var(--text-secondary);
+  user-select: none;
+  background: var(--bg-secondary);
+}
+
+.orchestrator-system-prompt-header:hover {
+  color: var(--text-primary);
+}
+
+.orchestrator-system-prompt-chevron {
+  font-size: 10px;
+  transition: transform 0.15s ease;
+  display: inline-block;
+}
+
+.orchestrator-system-prompt-chevron.expanded {
+  transform: rotate(90deg);
+}
+
+.orchestrator-system-prompt-content {
+  max-height: 200px;
+  overflow-y: auto;
+  white-space: pre-wrap;
+  word-break: break-word;
+  font-size: 12px;
+  font-family: var(--font-mono);
+  line-height: 1.5;
+  background: var(--bg-primary);
+  padding: 8px 12px;
+  border-top: 1px solid var(--border);
+  color: var(--text-secondary);
+}
+
+/* --- Log area --- */
+
+.orchestrator-logs {
+  flex: 1;
+  overflow: hidden;
+}
+
+/* --- Empty state --- */
+
+.orchestrator-empty {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  height: 100%;
+  color: var(--text-secondary);
+  font-size: 13px;
+}

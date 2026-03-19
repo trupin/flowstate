@@ -4,6 +4,7 @@ import type {
   FlowRunDetail,
   FlowSchedule,
   LogEntry,
+  OrchestratorInfo,
   StartRunRequest,
 } from './types';
 
@@ -78,6 +79,28 @@ export const api = {
       get<LogEntry[]>(
         `/api/runs/${runId}/tasks/${taskId}/logs${after ? `?after=${after}` : ''}`,
       ),
+    orchestrators: async (runId: string): Promise<OrchestratorInfo[]> => {
+      try {
+        return await get<OrchestratorInfo[]>(
+          `/api/runs/${runId}/orchestrators`,
+        );
+      } catch {
+        return [];
+      }
+    },
+    orchestratorLogs: async (
+      runId: string,
+      sessionId: string,
+    ): Promise<LogEntry[]> => {
+      try {
+        const data = await get<{ logs: LogEntry[] }>(
+          `/api/runs/${runId}/orchestrators/${sessionId}/logs`,
+        );
+        return data.logs ?? [];
+      } catch {
+        return [];
+      }
+    },
   },
   schedules: {
     list: () => get<FlowSchedule[]>('/api/schedules'),
