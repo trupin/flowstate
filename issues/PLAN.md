@@ -122,20 +122,20 @@
 
 | Issue   | Title                          | Domain | Priority | Depends On                   | Status |
 | ------- | ------------------------------ | ------ | -------- | ---------------------------- | ------ |
-| E2E-001 | Mock Subprocess Manager        | e2e    | P0       | ENGINE-001, ENGINE-005       | todo   |
-| E2E-002 | E2E Fixture Infrastructure     | e2e    | P0       | E2E-001, SERVER-001          | todo   |
-| E2E-003 | Test: Flow Library             | e2e    | P0       | E2E-002, UI-010, SERVER-002  | todo   |
-| E2E-004 | Test: Start Run                | e2e    | P0       | E2E-002, UI-012, SERVER-003  | todo   |
-| E2E-005 | Test: Run Detail               | e2e    | P0       | E2E-002, UI-011, SERVER-005  | todo   |
-| E2E-006 | Test: Flow Controls            | e2e    | P0       | E2E-005, UI-007, ENGINE-008  | todo   |
-| E2E-007 | Test: Failed Task              | e2e    | P0       | E2E-005, UI-007, ENGINE-008  | todo   |
-| E2E-008 | Test: Fork-Join                | e2e    | P0       | E2E-005, ENGINE-006          | todo   |
-| E2E-009 | Test: Conditional Branching    | e2e    | P0       | E2E-005, ENGINE-007          | todo   |
-| E2E-010 | Test: File Watcher             | e2e    | P0       | E2E-003, SERVER-006, UI-013  | todo   |
-| E2E-011 | Test: Cycles                   | e2e    | P1       | E2E-009                      | todo   |
-| E2E-012 | Test: Budget Warnings          | e2e    | P1       | E2E-005, ENGINE-002          | todo   |
-| E2E-013 | Test: WebSocket Reconnection   | e2e    | P1       | E2E-005, SERVER-005          | todo   |
-| E2E-014 | Test: Sidebar Navigation       | e2e    | P1       | E2E-003, UI-003              | todo   |
+| E2E-001 | Mock Subprocess Manager        | e2e    | P0       | ENGINE-001, ENGINE-005       | done   |
+| E2E-002 | E2E Fixture Infrastructure     | e2e    | P0       | E2E-001, SERVER-001          | done   |
+| E2E-003 | Test: Flow Library             | e2e    | P0       | E2E-002, UI-010, SERVER-002  | done   |
+| E2E-004 | Test: Start Run                | e2e    | P0       | E2E-002, UI-012, SERVER-003  | done   |
+| E2E-005 | Test: Run Detail               | e2e    | P0       | E2E-002, UI-011, SERVER-005  | done   |
+| E2E-006 | Test: Flow Controls            | e2e    | P0       | E2E-005, UI-007, ENGINE-008  | done   |
+| E2E-007 | Test: Failed Task              | e2e    | P0       | E2E-005, UI-007, ENGINE-008  | done   |
+| E2E-008 | Test: Fork-Join                | e2e    | P0       | E2E-005, ENGINE-006          | done   |
+| E2E-009 | Test: Conditional Branching    | e2e    | P0       | E2E-005, ENGINE-007          | done   |
+| E2E-010 | Test: File Watcher             | e2e    | P0       | E2E-003, SERVER-006, UI-013  | done   |
+| E2E-011 | Test: Cycles                   | e2e    | P1       | E2E-009                      | done   |
+| E2E-012 | Test: Budget Warnings          | e2e    | P1       | E2E-005, ENGINE-002          | done   |
+| E2E-013 | Test: WebSocket Reconnection   | e2e    | P1       | E2E-005, SERVER-005          | done   |
+| E2E-014 | Test: Sidebar Navigation       | e2e    | P1       | E2E-003, UI-003              | done   |
 
 
 ---
