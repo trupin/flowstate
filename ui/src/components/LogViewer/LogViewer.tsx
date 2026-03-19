@@ -1,5 +1,6 @@
 import { useRef, useEffect, useState, useMemo } from 'react';
 import type { LogEntry } from '../../api/types';
+import { ToolCallBlock } from './ToolCallBlock';
 import './LogViewer.css';
 
 export interface LogViewerProps {
@@ -28,11 +29,14 @@ interface ParsedAssistant {
 interface ParsedToolUse {
   kind: 'tool_use';
   toolName: string;
+  toolId: string;
+  input: Record<string, unknown>;
   inputSummary: string;
 }
 
 interface ParsedToolResult {
   kind: 'tool_result';
+  content: string;
   summary: string;
 }
 
@@ -132,14 +136,16 @@ function parseLogContent(content: string): ParsedContent {
         ) {
           const b = block as Record<string, unknown>;
           const toolName = typeof b.name === 'string' ? b.name : 'unknown tool';
-          const input = b.input;
-          let inputSummary = '';
-          if (input != null && typeof input === 'object') {
-            const keys = Object.keys(input as Record<string, unknown>);
-            inputSummary = keys.slice(0, 3).join(', ');
-            if (keys.length > 3) inputSummary += ', ...';
-          }
-          return { kind: 'tool_use', toolName, inputSummary };
+          const toolId = typeof b.id === 'string' ? b.id : '';
+          const rawInput = b.input;
+          const input: Record<string, unknown> =
+            rawInput != null && typeof rawInput === 'object'
+              ? (rawInput as Record<string, unknown>)
+              : {};
+          const keys = Object.keys(input);
+          let inputSummary = keys.slice(0, 3).join(', ');
+          if (keys.length > 3) inputSummary += ', ...';
+          return { kind: 'tool_use', toolName, toolId, input, inputSummary };
         }
       }
     }
@@ -152,17 +158,26 @@ function parseLogContent(content: string): ParsedContent {
     if (message && Array.isArray(message.content)) {
       const text = extractTextFromContent(message.content);
       if (text) {
-        return { kind: 'tool_result', summary: truncateStr(text, 200) };
+        return {
+          kind: 'tool_result',
+          content: text,
+          summary: truncateStr(text, 200),
+        };
       }
     }
     // Also handle direct content field
     if (typeof obj.content === 'string') {
       return {
         kind: 'tool_result',
+        content: obj.content,
         summary: truncateStr(obj.content, 200),
       };
     }
-    return { kind: 'tool_result', summary: 'Tool completed' };
+    return {
+      kind: 'tool_result',
+      content: 'Tool completed',
+      summary: 'Tool completed',
+    };
   }
 
   if (eventType === 'result') {
@@ -262,6 +277,90 @@ function shouldHideEntry(content: string): boolean {
   return false;
 }
 
+// --- Grouped log entry types ---
+
+interface GroupedToolCall {
+  type: 'tool_call';
+  toolUse: ParsedToolUse;
+  toolResult: ParsedToolResult | null;
+  timestamp: string;
+  ids: number[];
+}
+
+interface GroupedSingle {
+  type: 'single';
+  entry: LogEntry;
+}
+
+type GroupedEntry = GroupedToolCall | GroupedSingle;
+
+function groupLogEntries(logs: LogEntry[]): GroupedEntry[] {
+  const result: GroupedEntry[] = [];
+  let i = 0;
+
+  while (i < logs.length) {
+    const entry = logs[i];
+    if (!entry) {
+      i++;
+      continue;
+    }
+
+    const parsed = parseLogContent(entry.content);
+
+    if (parsed.kind === 'tool_use') {
+      // Look at the next non-hidden entry for a matching tool_result
+      const nextEntry = logs[i + 1];
+      if (nextEntry) {
+        const nextParsed = parseLogContent(nextEntry.content);
+        if (nextParsed.kind === 'tool_result') {
+          result.push({
+            type: 'tool_call',
+            toolUse: parsed,
+            toolResult: nextParsed,
+            timestamp: entry.timestamp,
+            ids: [entry.id, nextEntry.id],
+          });
+          i += 2;
+          continue;
+        }
+      }
+      // No matching result yet — tool is still running
+      result.push({
+        type: 'tool_call',
+        toolUse: parsed,
+        toolResult: null,
+        timestamp: entry.timestamp,
+        ids: [entry.id],
+      });
+      i++;
+      continue;
+    }
+
+    // Skip standalone tool_results that were already consumed in a group.
+    // This handles the case where the render loop already grouped them above.
+    // However, standalone tool_results (not preceded by a tool_use) still render.
+    if (parsed.kind === 'tool_result') {
+      // Check if this was already consumed by the previous group
+      if (result.length > 0) {
+        const lastGroup = result[result.length - 1];
+        if (
+          lastGroup &&
+          lastGroup.type === 'tool_call' &&
+          lastGroup.ids.includes(entry.id)
+        ) {
+          i++;
+          continue;
+        }
+      }
+    }
+
+    result.push({ type: 'single', entry });
+    i++;
+  }
+
+  return result;
+}
+
 export function LogViewer({ logs, taskName, onClear }: LogViewerProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const [pinned, setPinned] = useState(true);
@@ -271,12 +370,17 @@ export function LogViewer({ logs, taskName, onClear }: LogViewerProps) {
     [logs],
   );
 
+  const groupedEntries = useMemo(
+    () => groupLogEntries(visibleLogs),
+    [visibleLogs],
+  );
+
   // Auto-scroll when pinned and new logs arrive
   useEffect(() => {
     if (pinned && containerRef.current) {
       containerRef.current.scrollTop = containerRef.current.scrollHeight;
     }
-  }, [visibleLogs, pinned]);
+  }, [groupedEntries, pinned]);
 
   // Reset pin state when task changes
   useEffect(() => {
@@ -330,20 +434,42 @@ export function LogViewer({ logs, taskName, onClear }: LogViewerProps) {
         ref={containerRef}
         onScroll={handleScroll}
       >
-        {visibleLogs.length === 0 ? (
+        {groupedEntries.length === 0 ? (
           <div className="log-viewer-no-output">No output yet</div>
         ) : (
-          visibleLogs.map((entry) => (
-            <div
-              key={entry.id}
-              className={`log-line log-type-${entry.log_type}`}
-            >
-              <span className="log-timestamp">
-                {formatTimestamp(entry.timestamp)}
-              </span>
-              <LogEntryContent content={entry.content} />
-            </div>
-          ))
+          groupedEntries.map((grouped) => {
+            if (grouped.type === 'tool_call') {
+              const key = grouped.ids.join('-');
+              return (
+                <div key={key} className="log-line log-type-tool_use">
+                  <span className="log-timestamp">
+                    {formatTimestamp(grouped.timestamp)}
+                  </span>
+                  <ToolCallBlock
+                    toolName={grouped.toolUse.toolName}
+                    input={grouped.toolUse.input}
+                    result={
+                      grouped.toolResult !== null
+                        ? grouped.toolResult.content
+                        : null
+                    }
+                    timestamp={grouped.timestamp}
+                  />
+                </div>
+              );
+            }
+            return (
+              <div
+                key={grouped.entry.id}
+                className={`log-line log-type-${grouped.entry.log_type}`}
+              >
+                <span className="log-timestamp">
+                  {formatTimestamp(grouped.entry.timestamp)}
+                </span>
+                <LogEntryContent content={grouped.entry.content} />
+              </div>
+            );
+          })
         )}
       </div>
     </div>
