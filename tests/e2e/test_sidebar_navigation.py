@@ -91,12 +91,16 @@ def test_click_active_run_opens_detail(
 
     page.goto(base_url)
 
-    # Click the active run
+    # Click the active run in sidebar
     run_entry = page.locator(f'[data-testid="sidebar-run-{run_id}"]')
     expect(run_entry).to_be_visible(timeout=10000)
     run_entry.click()
 
-    # Should navigate to Run Detail — graph nodes visible
+    # Wait for navigation to the run detail URL
+    page.wait_for_url(f"**/runs/{run_id}", timeout=5000)
+
+    # Wait for the run detail page to finish loading and render the graph
+    expect(page.locator(".run-detail-header")).to_be_visible(timeout=10000)
     expect(page.locator('[data-testid="node-start"]')).to_be_visible(timeout=10000)
 
     # Release gate

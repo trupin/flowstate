@@ -195,16 +195,24 @@ class FlowExecutor:
             logger.exception("Event callback raised an exception for event %s", event.type)
 
     async def execute(
-        self, flow: Flow, params: dict[str, str | float | bool], workspace: str
+        self,
+        flow: Flow,
+        params: dict[str, str | float | bool],
+        workspace: str,
+        flow_run_id: str | None = None,
     ) -> str:
         """Execute a flow and return the flow_run_id.
 
         Creates the flow run record, expands template variables, enqueues the
         entry node, and processes tasks through the main loop until the exit
         node completes, the flow is paused, or it is cancelled.
+
+        If *flow_run_id* is provided it is used as the database primary key
+        for the run; otherwise a new UUID is generated.  Passing the ID from
+        the route handler ensures the RunManager key matches the DB key.
         """
-        flow_run_id = str(uuid.uuid4())
-        data_dir = os.path.expanduser(f"~/.flowstate/runs/{flow_run_id}")
+        desired_id = flow_run_id or str(uuid.uuid4())
+        data_dir = os.path.expanduser(f"~/.flowstate/runs/{desired_id}")
 
         # 1. Look up or create flow definition
         flow_def = self._db.get_flow_definition_by_name(flow.name)
@@ -223,6 +231,7 @@ class FlowExecutor:
             on_error=flow.on_error.value,
             default_workspace=workspace,
             params_json=json.dumps(params) if params else None,
+            run_id=desired_id,
         )
         data_dir = os.path.expanduser(f"~/.flowstate/runs/{flow_run_id}")
 

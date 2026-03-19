@@ -144,7 +144,7 @@ class FlowRegistry:
                     {
                         "name": p.name,
                         "type": p.type.value,
-                        "default": p.default,
+                        "default_value": p.default,
                     }
                     for p in flow_ast.params
                 ]
@@ -153,7 +153,7 @@ class FlowRegistry:
 
         discovered = DiscoveredFlow(
             id=flow_id,
-            name=flow_name,
+            name=flow_name or flow_id,
             file_path=str(path),
             source_dsl=source,
             status="valid" if not errors else "error",

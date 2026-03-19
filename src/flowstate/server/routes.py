@@ -11,13 +11,10 @@ from flowstate.dsl.parser import parse_flow
 from flowstate.engine.executor import FlowExecutor
 from flowstate.server.app import FlowstateError
 from flowstate.server.models import (
-    EdgeTransitionResponse,
-    RunDetailResponse,
     RunSummary,
     ScheduleResponse,
     StartRunRequest,
     StartRunResponse,
-    TaskExecutionResponse,
     TaskLogEntry,
     TaskLogsResponse,
 )
@@ -36,22 +33,93 @@ router = APIRouter(prefix="/api")
 # ---------------------------------------------------------------------------
 
 
+def _flow_to_frontend(f: DiscoveredFlow, include_detail: bool = False) -> dict[str, Any]:
+    """Convert a DiscoveredFlow to the frontend DiscoveredFlow contract.
+
+    The frontend expects ``is_valid`` (bool), ``errors`` as structured objects,
+    ``nodes`` as a flat array, and ``edges`` as a flat array.
+    """
+    import os
+
+    is_valid = f.status == "valid"
+
+    # Convert error strings to structured FlowError objects
+    errors_out: list[dict[str, Any]] = []
+    for err_str in f.errors:
+        errors_out.append({"line": 0, "column": 0, "message": str(err_str)})
+
+    # Build nodes/edges arrays from ast_json when available
+    nodes_out: list[dict[str, Any]] = []
+    edges_out: list[dict[str, Any]] = []
+    if f.ast_json:
+        raw_nodes = f.ast_json.get("nodes", {})
+        if isinstance(raw_nodes, dict):
+            for n in raw_nodes.values():
+                nodes_out.append(
+                    {
+                        "name": n.get("name", ""),
+                        "type": n.get("node_type", "task"),
+                        "prompt": n.get("prompt", ""),
+                        "cwd": n.get("cwd"),
+                    }
+                )
+        elif isinstance(raw_nodes, list):
+            for n in raw_nodes:
+                nodes_out.append(
+                    {
+                        "name": n.get("name", ""),
+                        "type": n.get("node_type", "task"),
+                        "prompt": n.get("prompt", ""),
+                        "cwd": n.get("cwd"),
+                    }
+                )
+        for e in f.ast_json.get("edges", []):
+            edges_out.append(
+                {
+                    "source": e.get("source"),
+                    "target": e.get("target"),
+                    "edge_type": e.get("edge_type", "unconditional"),
+                    "condition": e.get("condition"),
+                    "fork_targets": e.get("fork_targets"),
+                    "join_sources": e.get("join_sources"),
+                }
+            )
+
+    # Derive last_modified from the file path's mtime
+    last_modified = ""
+    try:
+        mtime = os.path.getmtime(f.file_path)
+        from datetime import UTC, datetime
+
+        last_modified = datetime.fromtimestamp(mtime, tz=UTC).isoformat()
+    except OSError:
+        pass
+
+    result: dict[str, Any] = {
+        "id": f.id,
+        "name": f.name,
+        "file_path": f.file_path,
+        "is_valid": is_valid,
+        "errors": errors_out,
+        "params": f.params,
+        "nodes": nodes_out,
+        "edges": edges_out,
+        "last_modified": last_modified,
+        # Keep "status" for backward compat with API-only consumers
+        "status": f.status,
+    }
+    if include_detail:
+        result["source_dsl"] = f.source_dsl
+        result["ast_json"] = f.ast_json
+    return result
+
+
 @router.get("/flows")
 async def list_flows(request: Request) -> list[dict[str, Any]]:
     """List all discovered flows from the watch directory."""
     registry: FlowRegistry = request.app.state.flow_registry
     flows = registry.list_flows()
-    return [
-        {
-            "id": f.id,
-            "name": f.name,
-            "file_path": f.file_path,
-            "status": f.status,
-            "errors": f.errors,
-            "params": f.params,
-        }
-        for f in flows
-    ]
+    return [_flow_to_frontend(f) for f in flows]
 
 
 @router.get("/flows/{flow_id}")
@@ -61,16 +129,7 @@ async def get_flow(request: Request, flow_id: str) -> dict[str, Any]:
     flow = registry.get_flow(flow_id)
     if not flow:
         raise FlowstateError(f"Flow '{flow_id}' not found", status_code=404)
-    return {
-        "id": flow.id,
-        "name": flow.name,
-        "file_path": flow.file_path,
-        "source_dsl": flow.source_dsl,
-        "status": flow.status,
-        "errors": flow.errors,
-        "ast_json": flow.ast_json,
-        "params": flow.params,
-    }
+    return _flow_to_frontend(flow, include_detail=True)
 
 
 # ---------------------------------------------------------------------------
@@ -143,13 +202,11 @@ async def start_run(
     db = _get_db(request)
     config = request.app.state.config
     subprocess_mgr = request.app.state.subprocess_manager
-
-    def _noop_callback(event: object) -> None:
-        pass
+    ws_hub = request.app.state.ws_hub
 
     executor = FlowExecutor(
         db=db,
-        event_callback=_noop_callback,
+        event_callback=ws_hub.on_flow_event,
         subprocess_mgr=subprocess_mgr,
         max_concurrent=config.max_concurrent_tasks,
     )
@@ -157,12 +214,12 @@ async def start_run(
     # Determine workspace from flow AST
     workspace = flow_ast.workspace or "."
 
-    # Create the execute coroutine
-    execute_coro = executor.execute(flow_ast, body.params, workspace)
-
-    # Register and start as background task
+    # Register and start as background task with a single shared run_id
     run_manager = _get_run_manager(request)
     run_id = str(uuid.uuid4())
+
+    # Pass run_id to execute so DB uses the same key as RunManager
+    execute_coro = executor.execute(flow_ast, body.params, workspace, flow_run_id=run_id)
     await run_manager.start_run(run_id, executor, execute_coro)
 
     return StartRunResponse(flow_run_id=run_id)
@@ -197,8 +254,12 @@ async def list_runs(
 
 
 @router.get("/runs/{run_id}")
-async def get_run(request: Request, run_id: str) -> RunDetailResponse:
-    """Get full details of a single flow run including tasks and edge transitions."""
+async def get_run(request: Request, run_id: str) -> dict[str, Any]:
+    """Get full details of a single flow run including tasks and edge transitions.
+
+    Also includes the flow definition (nodes, edges) so the UI can render the
+    graph without a separate API call.
+    """
     db = _get_db(request)
     run = db.get_flow_run(run_id)
     if not run:
@@ -213,37 +274,101 @@ async def get_run(request: Request, run_id: str) -> RunDetailResponse:
     # Build task_id -> node_name mapping for edge transitions
     task_node_map: dict[str, str] = {t.id: t.node_name for t in tasks}
 
-    return RunDetailResponse(
-        id=run.id,
-        flow_name=flow_name,
-        status=run.status,
-        started_at=run.started_at,
-        elapsed_seconds=run.elapsed_seconds,
-        budget_seconds=run.budget_seconds,
-        tasks=[
-            TaskExecutionResponse(
-                id=t.id,
-                node_name=t.node_name,
-                status=t.status,
-                generation=t.generation,
-                started_at=t.started_at,
-                elapsed_seconds=t.elapsed_seconds,
-                exit_code=t.exit_code,
-            )
+    # Build flow definition for the UI graph
+    flow_data: dict[str, Any] | None = None
+    if flow_def:
+        # Try the flow registry first for richer data
+        registry: FlowRegistry = request.app.state.flow_registry
+        discovered = (
+            next((f for f in registry.list_flows() if f.name == flow_name), None)
+            if flow_name != "unknown"
+            else None
+        )
+        if discovered:
+            flow_data = _flow_to_frontend(discovered, include_detail=True)
+        else:
+            # Fallback: reconstruct from DB's ast_json
+            import json as json_mod
+
+            ast = json_mod.loads(flow_def.ast_json) if flow_def.ast_json else {}
+            nodes_out: list[dict[str, Any]] = []
+            edges_out: list[dict[str, Any]] = []
+            raw_nodes = ast.get("nodes", {})
+            if isinstance(raw_nodes, dict):
+                for n in raw_nodes.values():
+                    nodes_out.append(
+                        {
+                            "name": n.get("name", ""),
+                            "type": n.get("node_type", "task"),
+                            "prompt": n.get("prompt", ""),
+                            "cwd": n.get("cwd"),
+                        }
+                    )
+            for e_def in ast.get("edges", []):
+                edges_out.append(
+                    {
+                        "source": e_def.get("source"),
+                        "target": e_def.get("target"),
+                        "edge_type": e_def.get("edge_type", "unconditional"),
+                        "condition": e_def.get("condition"),
+                        "fork_targets": e_def.get("fork_targets"),
+                        "join_sources": e_def.get("join_sources"),
+                    }
+                )
+            flow_data = {
+                "id": flow_def.id,
+                "name": flow_def.name,
+                "file_path": "",
+                "is_valid": True,
+                "errors": [],
+                "params": [],
+                "nodes": nodes_out,
+                "edges": edges_out,
+                "last_modified": flow_def.updated_at,
+            }
+
+    return {
+        "id": run.id,
+        "flow_name": flow_name,
+        "flow_definition_id": run.flow_definition_id,
+        "status": run.status,
+        "started_at": run.started_at,
+        "elapsed_seconds": run.elapsed_seconds,
+        "budget_seconds": run.budget_seconds,
+        "created_at": run.created_at if hasattr(run, "created_at") else run.started_at,
+        "flow": flow_data,
+        "tasks": [
+            {
+                "id": t.id,
+                "flow_run_id": run_id,
+                "node_name": t.node_name,
+                "node_type": "task",  # default, overridden below if possible
+                "status": t.status,
+                "generation": t.generation,
+                "context_mode": "handoff",
+                "cwd": ".",
+                "started_at": t.started_at,
+                "elapsed_seconds": t.elapsed_seconds,
+                "exit_code": t.exit_code,
+            }
             for t in tasks
         ],
-        edges=[
-            EdgeTransitionResponse(
-                from_node=task_node_map.get(e.from_task_id, "unknown"),
-                to_node=task_node_map.get(e.to_task_id, "unknown") if e.to_task_id else None,
-                edge_type=e.edge_type,
-                condition=e.condition_text,
-                judge_reasoning=e.judge_reasoning,
-                transitioned_at=e.created_at,
-            )
+        "edges": [
+            {
+                "id": f"{task_node_map.get(e.from_task_id, 'unknown')}-"
+                f"{task_node_map.get(e.to_task_id, 'unknown') if e.to_task_id else 'none'}-"
+                f"{e.created_at}",
+                "flow_run_id": run_id,
+                "from_node": task_node_map.get(e.from_task_id, "unknown"),
+                "to_node": task_node_map.get(e.to_task_id, "unknown") if e.to_task_id else None,
+                "edge_type": e.edge_type,
+                "condition": e.condition_text,
+                "judge_reasoning": e.judge_reasoning,
+                "created_at": e.created_at,
+            }
             for e in edges
         ],
-    )
+    }
 
 
 def _get_executor_or_error(request: Request, run_id: str) -> Any:
@@ -498,22 +623,19 @@ async def trigger_schedule(request: Request, schedule_id: str) -> dict[str, str]
     # Create executor and start run
     config = request.app.state.config
     subprocess_mgr = request.app.state.subprocess_manager
-
-    def _noop_callback(event: object) -> None:
-        pass
+    ws_hub = request.app.state.ws_hub
 
     executor = FlowExecutor(
         db=db,
-        event_callback=_noop_callback,
+        event_callback=ws_hub.on_flow_event,
         subprocess_mgr=subprocess_mgr,
         max_concurrent=config.max_concurrent_tasks,
     )
 
     workspace = flow_ast.workspace or "."
-    execute_coro = executor.execute(flow_ast, {}, workspace)
-
     run_manager = _get_run_manager(request)
     run_id = str(uuid.uuid4())
+    execute_coro = executor.execute(flow_ast, {}, workspace, flow_run_id=run_id)
     await run_manager.start_run(run_id, executor, execute_coro)
 
     return {"flow_run_id": run_id}

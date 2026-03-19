@@ -164,9 +164,14 @@ class FlowstateDB:
         on_error: str,
         default_workspace: str | None = None,
         params_json: str | None = None,
+        run_id: str | None = None,
     ) -> str:
-        """Create a new flow run with status 'created' and return its UUID."""
-        id = str(uuid.uuid4())
+        """Create a new flow run with status 'created' and return its UUID.
+
+        If *run_id* is provided it is used as the primary key; otherwise a new
+        UUID is generated.
+        """
+        id = run_id or str(uuid.uuid4())
         now = datetime.now(UTC).isoformat()
         self._execute(
             """INSERT INTO flow_runs
