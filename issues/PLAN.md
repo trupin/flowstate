@@ -64,13 +64,13 @@
 | ENGINE-002 | Budget Guard                                         | engine | P0       | —                                                        | done   |
 | ENGINE-003 | Context Assembly (handoff/session/none + SUMMARY.md) | engine | P0       | SHARED-001                                               | done   |
 | ENGINE-004 | Judge Protocol                                       | engine | P0       | ENGINE-001                                               | done   |
-| ENGINE-005 | Executor — Linear Flows                              | engine | P0       | ENGINE-001, ENGINE-002, ENGINE-003, STATE-003, STATE-004 | todo   |
-| ENGINE-006 | Executor — Fork-Join                                 | engine | P0       | ENGINE-005, STATE-005                                    | todo   |
-| ENGINE-007 | Executor — Conditional + Cycles                      | engine | P0       | ENGINE-004, ENGINE-005                                   | todo   |
-| ENGINE-008 | Executor — Pause/Resume/Cancel/Retry/Skip            | engine | P0       | ENGINE-005                                               | todo   |
-| ENGINE-009 | Event System                                         | engine | P0       | ENGINE-005                                               | todo   |
-| ENGINE-010 | Edge Delay Scheduling                                | engine | P1       | ENGINE-005, STATE-006                                    | todo   |
-| ENGINE-011 | Recurring Flow Scheduling                            | engine | P1       | ENGINE-005, STATE-006                                    | todo   |
+| ENGINE-005 | Executor — Linear Flows                              | engine | P0       | ENGINE-001, ENGINE-002, ENGINE-003, STATE-003, STATE-004 | done   |
+| ENGINE-006 | Executor — Fork-Join                                 | engine | P0       | ENGINE-005, STATE-005                                    | done   |
+| ENGINE-007 | Executor — Conditional + Cycles                      | engine | P0       | ENGINE-004, ENGINE-005                                   | done   |
+| ENGINE-008 | Executor — Pause/Resume/Cancel/Retry/Skip            | engine | P0       | ENGINE-005                                               | done   |
+| ENGINE-009 | Event System                                         | engine | P0       | ENGINE-005                                               | done   |
+| ENGINE-010 | Edge Delay Scheduling                                | engine | P1       | ENGINE-005, STATE-006                                    | done   |
+| ENGINE-011 | Recurring Flow Scheduling                            | engine | P1       | ENGINE-005, STATE-006                                    | done   |
 
 
 ### Phase 3 — Web Server + CLI
@@ -79,11 +79,11 @@
 | Issue      | Title                                                      | Domain | Priority | Depends On                   | Status |
 | ---------- | ---------------------------------------------------------- | ------ | -------- | ---------------------------- | ------ |
 | SERVER-001 | FastAPI App + Config Loading                               | server | P0       | SHARED-002                   | done   |
-| SERVER-002 | REST API — Flow Discovery (file watcher)                   | server | P0       | SERVER-001, DSL-002, DSL-003 | todo   |
-| SERVER-003 | REST API — Run Management                                  | server | P0       | SERVER-001, ENGINE-005       | todo   |
-| SERVER-004 | REST API — Task Logs + Schedules                           | server | P1       | SERVER-003, ENGINE-010       | todo   |
-| SERVER-005 | WebSocket Hub (event broadcasting + reconnection)          | server | P0       | SERVER-001, ENGINE-009       | todo   |
-| SERVER-006 | WebSocket File Watcher Events                              | server | P1       | SERVER-002, SERVER-005       | todo   |
+| SERVER-002 | REST API — Flow Discovery (file watcher)                   | server | P0       | SERVER-001, DSL-002, DSL-003 | done   |
+| SERVER-003 | REST API — Run Management                                  | server | P0       | SERVER-001, ENGINE-005       | done   |
+| SERVER-004 | REST API — Task Logs + Schedules                           | server | P1       | SERVER-003, ENGINE-010       | done   |
+| SERVER-005 | WebSocket Hub (event broadcasting + reconnection)          | server | P0       | SERVER-001, ENGINE-009       | done   |
+| SERVER-006 | WebSocket File Watcher Events                              | server | P1       | SERVER-002, SERVER-005       | done   |
 | SERVER-007 | CLI (check, server, run, runs, status, schedules, trigger) | server | P1       | SERVER-001, DSL-002          | done   |
 | SERVER-008 | Static File Serving (React build)                          | server | P2       | SERVER-001                   | done   |
 
