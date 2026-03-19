@@ -107,6 +107,9 @@
 | UI-012 | Start Run Modal                                         | ui     | P1       | UI-009, UI-010                         | done   |
 | UI-013 | Error Banner (file watcher errors)                      | ui     | P1       | UI-008, UI-010                         | done   |
 | UI-014 | Flow Watcher Hook (live file change events)             | ui     | P1       | UI-008                                 | done   |
+| UI-015 | Rich Tool Call Rendering in Log Viewer                  | ui     | P1       | UI-006                                 | done   |
+| UI-016 | Orchestrator Console in Run Detail                     | ui     | P1       | UI-011, ENGINE-015                     | done   |
+| UI-017 | Edge Animation Persists After State Transition         | ui     | P0       | UI-004                                 | done   |
 
 
 ### Phase 5 — Integration
