@@ -25,8 +25,8 @@
 
 | Issue      | Title                                               | Domain | Priority | Depends On | Status |
 | ---------- | --------------------------------------------------- | ------ | -------- | ---------- | ------ |
-| SHARED-001 | AST Definitions (shared contract)                   | shared | P0       | —          | todo   |
-| SHARED-002 | Project Setup (pyproject.toml, directory structure) | shared | P0       | —          | todo   |
+| SHARED-001 | AST Definitions (shared contract)                   | shared | P0       | —          | done   |
+| SHARED-002 | Project Setup (pyproject.toml, directory structure) | shared | P0       | —          | done   |
 
 
 ### Phase 1 — DSL
@@ -61,7 +61,7 @@
 | Issue      | Title                                                | Domain | Priority | Depends On                                               | Status |
 | ---------- | ---------------------------------------------------- | ------ | -------- | -------------------------------------------------------- | ------ |
 | ENGINE-001 | Subprocess Manager (Claude Code lifecycle)           | engine | P0       | SHARED-001                                               | todo   |
-| ENGINE-002 | Budget Guard                                         | engine | P0       | —                                                        | todo   |
+| ENGINE-002 | Budget Guard                                         | engine | P0       | —                                                        | done   |
 | ENGINE-003 | Context Assembly (handoff/session/none + SUMMARY.md) | engine | P0       | SHARED-001                                               | todo   |
 | ENGINE-004 | Judge Protocol                                       | engine | P0       | ENGINE-001                                               | todo   |
 | ENGINE-005 | Executor — Linear Flows                              | engine | P0       | ENGINE-001, ENGINE-002, ENGINE-003, STATE-003, STATE-004 | todo   |
@@ -93,7 +93,7 @@
 
 | Issue  | Title                                                   | Domain | Priority | Depends On                             | Status |
 | ------ | ------------------------------------------------------- | ------ | -------- | -------------------------------------- | ------ |
-| UI-001 | Project Scaffold (Vite + React + TypeScript)            | ui     | P0       | —                                      | todo   |
+| UI-001 | Project Scaffold (Vite + React + TypeScript)            | ui     | P0       | —                                      | done   |
 | UI-002 | Dark Theme + CSS Variables                              | ui     | P0       | UI-001                                 | todo   |
 | UI-003 | Sidebar Component (Flows, Active Runs, Schedules)       | ui     | P0       | UI-002                                 | todo   |
 | UI-004 | Graph Visualization (React Flow + dagre)                | ui     | P0       | UI-002                                 | todo   |

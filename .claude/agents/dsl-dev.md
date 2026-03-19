@@ -51,6 +51,10 @@ Escalate to the orchestrator:
 
 **You must NEVER run any git commands.** No `git commit`, `git push`, `git checkout`, `git reset`, `git stash`, `git add`, or any other state-changing git command. You only write files and run tests. The orchestrator is the sole owner of git state and will commit your work after verification.
 
+## Lint Discipline
+
+**Never fix lint warnings by disabling rules.** Always fix the underlying code. Only add an inline suppression (`# noqa`) as a last resort when no code fix exists — and include a comment explaining why.
+
 ## Parallelism
 
 When working on multiple issues or an issue with independent sub-tasks, look for opportunities to split work across sub-agents running in parallel. For example, if implementing multiple type checker rules that don't share code, spawn separate agents for each rule. Minimize sequential execution — only serialize when there's a real data dependency.

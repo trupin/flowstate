@@ -207,6 +207,10 @@ Every module must have tests. Test files mirror source structure:
 - **Server tests**: Use FastAPI's `TestClient`. Mock the `FlowExecutor`.
 - **UI tests**: Minimal for MVP. Components should render without crashing.
 
+## Lint Discipline
+
+**Never fix lint warnings by disabling rules.** Always fix the underlying code first. Only add an inline suppression comment (`# noqa`, `// eslint-disable-next-line`) as a last resort when no code fix is possible — and include a comment explaining why.
+
 ## Code Organization
 
 **Colocate code by component/feature, not by class type.** Multiple agents work in parallel on different features. If a feature's code is spread across many directories, agents working on different features will conflict on the same files.
