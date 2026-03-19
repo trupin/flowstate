@@ -1,10 +1,12 @@
 """Tests for FlowstateDB repository CRUD operations.
 
 Covers flow definitions, flow runs, task executions, edge transitions,
-and compound transaction atomicity. All tests use in-memory SQLite.
+compound transaction atomicity, fork groups, task logs, flow schedules,
+recovery, and waiting tasks. All tests use in-memory SQLite.
 """
 
 import sqlite3
+from datetime import UTC, datetime
 
 import pytest
 
@@ -701,3 +703,504 @@ class TestCompoundTransactions:
             )
 
         assert db._in_transaction is False
+
+
+# ================================================================== #
+# Fork Group Tests (STATE-005)
+# ================================================================== #
+
+
+class TestForkGroups:
+    """Tests for fork group CRUD operations."""
+
+    def _create_task(self, db: FlowstateDB, flow_run_id: str, name: str) -> str:
+        """Helper to create a task execution and return its ID."""
+        return db.create_task_execution(
+            flow_run_id, name, "task", 1, "handoff", "/tmp", f"/tmp/{name}-1", f"do {name}"
+        )
+
+    def test_create_fork_group_with_members(self, db: FlowstateDB, flow_run_id: str) -> None:
+        """Create 3 tasks, create a fork group with 2 members, verify group and members."""
+        t1 = self._create_task(db, flow_run_id, "a")
+        t2 = self._create_task(db, flow_run_id, "b")
+        t3 = self._create_task(db, flow_run_id, "c")
+
+        group_id = db.create_fork_group(flow_run_id, t1, "join_node", 1, [t2, t3])
+
+        group = db.get_fork_group(group_id)
+        assert group is not None
+        assert group.flow_run_id == flow_run_id
+        assert group.source_task_id == t1
+        assert group.join_node_name == "join_node"
+        assert group.generation == 1
+        assert group.status == "active"
+        assert group.created_at is not None
+
+        members = db.get_fork_group_members(group_id)
+        assert len(members) == 2
+        member_ids = {m.id for m in members}
+        assert member_ids == {t2, t3}
+
+    def test_fork_group_creation_atomicity(self, db: FlowstateDB, flow_run_id: str) -> None:
+        """If a member insert fails, the group row is also rolled back."""
+        t1 = self._create_task(db, flow_run_id, "a")
+
+        with pytest.raises(sqlite3.IntegrityError):
+            db.create_fork_group(flow_run_id, t1, "join_node", 1, [t1, "nonexistent-id"])
+
+        # Verify no fork group was created
+        groups = db.get_active_fork_groups(flow_run_id)
+        assert len(groups) == 0
+
+    def test_get_fork_group_not_found(self, db: FlowstateDB) -> None:
+        """get_fork_group with bogus ID returns None."""
+        result = db.get_fork_group("nonexistent-id")
+        assert result is None
+
+    def test_get_active_fork_groups(self, db: FlowstateDB, flow_run_id: str) -> None:
+        """Create 2 groups, mark one 'joined', get_active returns only the active one."""
+        t1 = self._create_task(db, flow_run_id, "a")
+        t2 = self._create_task(db, flow_run_id, "b")
+
+        g1 = db.create_fork_group(flow_run_id, t1, "join1", 1, [t2])
+        g2 = db.create_fork_group(flow_run_id, t1, "join2", 1, [t2])
+
+        db.update_fork_group_status(g1, "joined")
+
+        active = db.get_active_fork_groups(flow_run_id)
+        assert len(active) == 1
+        assert active[0].id == g2
+
+    def test_get_active_fork_groups_empty(self, db: FlowstateDB, flow_run_id: str) -> None:
+        """get_active_fork_groups returns empty list when none are active."""
+        active = db.get_active_fork_groups(flow_run_id)
+        assert active == []
+
+    def test_update_fork_group_status(self, db: FlowstateDB, flow_run_id: str) -> None:
+        """Update fork group status from 'active' to 'joined'."""
+        t1 = self._create_task(db, flow_run_id, "a")
+        group_id = db.create_fork_group(flow_run_id, t1, "join_node", 1, [])
+
+        db.update_fork_group_status(group_id, "joined")
+
+        group = db.get_fork_group(group_id)
+        assert group is not None
+        assert group.status == "joined"
+
+    def test_create_fork_group_empty_members(self, db: FlowstateDB, flow_run_id: str) -> None:
+        """Fork group with no members is technically valid."""
+        t1 = self._create_task(db, flow_run_id, "a")
+        group_id = db.create_fork_group(flow_run_id, t1, "join_node", 1, [])
+
+        group = db.get_fork_group(group_id)
+        assert group is not None
+        assert group.status == "active"
+
+        members = db.get_fork_group_members(group_id)
+        assert members == []
+
+    def test_get_fork_group_members_empty(self, db: FlowstateDB, flow_run_id: str) -> None:
+        """get_fork_group_members returns empty list for group with no members."""
+        t1 = self._create_task(db, flow_run_id, "a")
+        group_id = db.create_fork_group(flow_run_id, t1, "join_node", 1, [])
+
+        members = db.get_fork_group_members(group_id)
+        assert members == []
+
+
+# ================================================================== #
+# Task Log Tests (STATE-005)
+# ================================================================== #
+
+
+class TestTaskLogs:
+    """Tests for task log insertion and retrieval."""
+
+    def _create_task(self, db: FlowstateDB, flow_run_id: str, name: str = "a") -> str:
+        """Helper to create a task execution and return its ID."""
+        return db.create_task_execution(
+            flow_run_id, name, "task", 1, "handoff", "/tmp", f"/tmp/{name}-1", f"do {name}"
+        )
+
+    def test_insert_and_get_task_logs(self, db: FlowstateDB, flow_run_id: str) -> None:
+        """Insert 3 logs, get_task_logs returns all 3 in order."""
+        task_id = self._create_task(db, flow_run_id)
+
+        db.insert_task_log(task_id, "stdout", "line 1")
+        db.insert_task_log(task_id, "stderr", "error 1")
+        db.insert_task_log(task_id, "assistant_message", "thinking...")
+
+        logs = db.get_task_logs(task_id)
+        assert len(logs) == 3
+        assert logs[0].log_type == "stdout"
+        assert logs[0].content == "line 1"
+        assert logs[1].log_type == "stderr"
+        assert logs[1].content == "error 1"
+        assert logs[2].log_type == "assistant_message"
+        assert logs[2].content == "thinking..."
+
+    def test_get_task_logs_with_limit(self, db: FlowstateDB, flow_run_id: str) -> None:
+        """Insert 5 logs, get with limit=2 returns first 2."""
+        task_id = self._create_task(db, flow_run_id)
+        for i in range(5):
+            db.insert_task_log(task_id, "stdout", f"line {i}")
+
+        logs = db.get_task_logs(task_id, limit=2)
+        assert len(logs) == 2
+
+    def test_get_task_logs_after_timestamp(self, db: FlowstateDB, flow_run_id: str) -> None:
+        """Insert logs, filter by after_timestamp to get only newer entries."""
+        task_id = self._create_task(db, flow_run_id)
+        db.insert_task_log(task_id, "stdout", "old line")
+
+        logs_before = db.get_task_logs(task_id)
+        cutoff = logs_before[0].timestamp  # timestamp of the first log
+
+        db.insert_task_log(task_id, "stdout", "new line")
+
+        logs_after = db.get_task_logs(task_id, after_timestamp=cutoff)
+        # Should contain only the second log (timestamp strictly > cutoff)
+        assert all(log.content != "old line" for log in logs_after)
+
+    def test_task_log_ordering_by_id(self, db: FlowstateDB, flow_run_id: str) -> None:
+        """Logs inserted in rapid succession maintain insertion order via id tiebreaker."""
+        task_id = self._create_task(db, flow_run_id)
+        for i in range(10):
+            db.insert_task_log(task_id, "stdout", f"line {i}")
+
+        logs = db.get_task_logs(task_id)
+        assert [log.content for log in logs] == [f"line {i}" for i in range(10)]
+
+    def test_get_task_logs_empty(self, db: FlowstateDB, flow_run_id: str) -> None:
+        """get_task_logs on task with no logs returns empty list."""
+        task_id = self._create_task(db, flow_run_id)
+        logs = db.get_task_logs(task_id)
+        assert logs == []
+
+    def test_get_task_logs_limit_zero(self, db: FlowstateDB, flow_run_id: str) -> None:
+        """get_task_logs with limit=0 returns empty list."""
+        task_id = self._create_task(db, flow_run_id)
+        db.insert_task_log(task_id, "stdout", "line 1")
+
+        logs = db.get_task_logs(task_id, limit=0)
+        assert logs == []
+
+    def test_task_log_timestamp_is_set(self, db: FlowstateDB, flow_run_id: str) -> None:
+        """Inserted log has a non-null timestamp set by SQLite."""
+        task_id = self._create_task(db, flow_run_id)
+        db.insert_task_log(task_id, "stdout", "hello")
+
+        logs = db.get_task_logs(task_id)
+        assert len(logs) == 1
+        assert logs[0].timestamp is not None
+        assert logs[0].id is not None
+
+
+# ================================================================== #
+# Flow Schedule Tests (STATE-006)
+# ================================================================== #
+
+
+class TestFlowSchedules:
+    """Tests for flow schedule CRUD operations."""
+
+    def test_create_and_get_flow_schedule(self, db: FlowstateDB, flow_def_id: str) -> None:
+        """Create a schedule, get by ID, verify fields."""
+        schedule_id = db.create_flow_schedule(flow_def_id, "0 * * * *")
+
+        schedule = db.get_flow_schedule(schedule_id)
+        assert schedule is not None
+        assert schedule.id == schedule_id
+        assert schedule.flow_definition_id == flow_def_id
+        assert schedule.cron_expression == "0 * * * *"
+        assert schedule.on_overlap == "skip"
+        assert schedule.enabled == 1
+        assert schedule.last_triggered_at is None
+        assert schedule.next_trigger_at is None
+        assert schedule.created_at is not None
+
+    def test_get_flow_schedule_not_found(self, db: FlowstateDB) -> None:
+        """get_flow_schedule with bogus ID returns None."""
+        result = db.get_flow_schedule("nonexistent-id")
+        assert result is None
+
+    def test_list_flow_schedules(self, db: FlowstateDB, flow_def_id: str) -> None:
+        """Create 2 schedules, list returns both."""
+        db.create_flow_schedule(flow_def_id, "0 * * * *")
+        db.create_flow_schedule(flow_def_id, "0 0 * * *")
+
+        schedules = db.list_flow_schedules()
+        assert len(schedules) == 2
+
+    def test_list_flow_schedules_empty(self, db: FlowstateDB) -> None:
+        """list_flow_schedules on empty table returns empty list."""
+        schedules = db.list_flow_schedules()
+        assert schedules == []
+
+    def test_list_flow_schedules_by_definition(self, db: FlowstateDB, flow_def_id: str) -> None:
+        """Filter schedules by flow_definition_id."""
+        other_def_id = db.create_flow_definition("other-flow", "source2", "{}")
+        db.create_flow_schedule(flow_def_id, "0 * * * *")
+        db.create_flow_schedule(other_def_id, "0 0 * * *")
+
+        schedules = db.list_flow_schedules(flow_definition_id=flow_def_id)
+        assert len(schedules) == 1
+        assert schedules[0].flow_definition_id == flow_def_id
+
+    def test_update_flow_schedule(self, db: FlowstateDB, flow_def_id: str) -> None:
+        """Update cron_expression and enabled status."""
+        schedule_id = db.create_flow_schedule(flow_def_id, "0 * * * *")
+
+        db.update_flow_schedule(schedule_id, cron_expression="0 0 * * *", enabled=0)
+
+        schedule = db.get_flow_schedule(schedule_id)
+        assert schedule is not None
+        assert schedule.cron_expression == "0 0 * * *"
+        assert schedule.enabled == 0
+
+    def test_update_flow_schedule_last_triggered(self, db: FlowstateDB, flow_def_id: str) -> None:
+        """Update last_triggered_at and next_trigger_at."""
+        schedule_id = db.create_flow_schedule(flow_def_id, "0 * * * *")
+        now = datetime.now(UTC).isoformat()
+
+        db.update_flow_schedule(
+            schedule_id, last_triggered_at=now, next_trigger_at="2099-01-01T00:00:00"
+        )
+
+        schedule = db.get_flow_schedule(schedule_id)
+        assert schedule is not None
+        assert schedule.last_triggered_at == now
+        assert schedule.next_trigger_at == "2099-01-01T00:00:00"
+
+    def test_update_flow_schedule_invalid_kwarg(self, db: FlowstateDB, flow_def_id: str) -> None:
+        """Unknown kwarg raises ValueError."""
+        schedule_id = db.create_flow_schedule(flow_def_id, "0 * * * *")
+
+        with pytest.raises(ValueError, match="Unknown schedule field: nonexistent_field"):
+            db.update_flow_schedule(schedule_id, nonexistent_field="value")
+
+    def test_update_flow_schedule_no_kwargs(self, db: FlowstateDB, flow_def_id: str) -> None:
+        """Update with no kwargs is a no-op."""
+        schedule_id = db.create_flow_schedule(flow_def_id, "0 * * * *")
+        db.update_flow_schedule(schedule_id)  # Should not raise
+
+        schedule = db.get_flow_schedule(schedule_id)
+        assert schedule is not None
+        assert schedule.cron_expression == "0 * * * *"
+
+    def test_delete_flow_schedule(self, db: FlowstateDB, flow_def_id: str) -> None:
+        """Delete a schedule, verify it's gone."""
+        schedule_id = db.create_flow_schedule(flow_def_id, "0 * * * *")
+        db.delete_flow_schedule(schedule_id)
+
+        assert db.get_flow_schedule(schedule_id) is None
+
+    def test_delete_flow_schedule_nonexistent(self, db: FlowstateDB) -> None:
+        """Deleting a non-existent ID is a no-op."""
+        db.delete_flow_schedule("nonexistent-id")  # Should not raise
+
+    def test_get_due_schedules(self, db: FlowstateDB, flow_def_id: str) -> None:
+        """Create schedules with different next_trigger_at, verify due filtering."""
+        past = "2020-01-01T00:00:00"
+        future = "2099-01-01T00:00:00"
+        s1 = db.create_flow_schedule(flow_def_id, "0 * * * *", next_trigger_at=past)
+        _s2 = db.create_flow_schedule(flow_def_id, "0 0 * * *", next_trigger_at=future)
+
+        now = datetime.now(UTC).isoformat()
+        due = db.get_due_schedules(now=now)
+        assert len(due) == 1
+        assert due[0].id == s1
+
+    def test_get_due_schedules_excludes_disabled(self, db: FlowstateDB, flow_def_id: str) -> None:
+        """Disabled schedules are not returned even if due."""
+        past = "2020-01-01T00:00:00"
+        schedule_id = db.create_flow_schedule(flow_def_id, "0 * * * *", next_trigger_at=past)
+        db.update_flow_schedule(schedule_id, enabled=0)
+
+        due = db.get_due_schedules()
+        assert len(due) == 0
+
+    def test_get_due_schedules_excludes_null_trigger(
+        self, db: FlowstateDB, flow_def_id: str
+    ) -> None:
+        """Schedules with NULL next_trigger_at are not returned."""
+        db.create_flow_schedule(flow_def_id, "0 * * * *")  # next_trigger_at defaults to None
+        due = db.get_due_schedules()
+        assert len(due) == 0
+
+    def test_get_due_schedules_empty(self, db: FlowstateDB) -> None:
+        """get_due_schedules with no schedules returns empty list."""
+        due = db.get_due_schedules()
+        assert due == []
+
+    def test_create_schedule_invalid_definition_id(self, db: FlowstateDB) -> None:
+        """Creating schedule with non-existent flow_definition_id raises IntegrityError."""
+        with pytest.raises(sqlite3.IntegrityError):
+            db.create_flow_schedule("nonexistent-id", "0 * * * *")
+
+    def test_create_schedule_with_next_trigger(self, db: FlowstateDB, flow_def_id: str) -> None:
+        """Create a schedule with explicit next_trigger_at."""
+        next_at = "2025-06-01T12:00:00"
+        schedule_id = db.create_flow_schedule(flow_def_id, "0 * * * *", next_trigger_at=next_at)
+
+        schedule = db.get_flow_schedule(schedule_id)
+        assert schedule is not None
+        assert schedule.next_trigger_at == next_at
+
+
+# ================================================================== #
+# Recovery Tests (STATE-006)
+# ================================================================== #
+
+
+class TestRecovery:
+    """Tests for crash recovery query methods."""
+
+    def test_get_running_flow_runs(self, db: FlowstateDB, flow_def_id: str) -> None:
+        """Create a 'running' flow run, verify get_running_flow_runs finds it."""
+        run_id = db.create_flow_run(
+            flow_definition_id=flow_def_id,
+            data_dir="/tmp/test-run",
+            budget_seconds=3600,
+            on_error="pause",
+        )
+        db.update_flow_run_status(run_id, "running")
+
+        running = db.get_running_flow_runs()
+        assert len(running) == 1
+        assert running[0].id == run_id
+
+    def test_get_running_flow_runs_excludes_completed(
+        self, db: FlowstateDB, flow_def_id: str
+    ) -> None:
+        """Completed flow runs are not returned by get_running_flow_runs."""
+        run_id = db.create_flow_run(
+            flow_definition_id=flow_def_id,
+            data_dir="/tmp/test-run",
+            budget_seconds=3600,
+            on_error="pause",
+        )
+        db.update_flow_run_status(run_id, "running")
+        db.update_flow_run_status(run_id, "completed")
+
+        running = db.get_running_flow_runs()
+        assert len(running) == 0
+
+    def test_get_running_flow_runs_excludes_created(
+        self, db: FlowstateDB, flow_def_id: str
+    ) -> None:
+        """Flow runs with status 'created' are not returned by get_running_flow_runs."""
+        db.create_flow_run(
+            flow_definition_id=flow_def_id,
+            data_dir="/tmp/test-run",
+            budget_seconds=3600,
+            on_error="pause",
+        )
+
+        running = db.get_running_flow_runs()
+        assert len(running) == 0
+
+    def test_get_running_flow_runs_empty(self, db: FlowstateDB) -> None:
+        """get_running_flow_runs returns empty list when no flows are running."""
+        running = db.get_running_flow_runs()
+        assert running == []
+
+    def test_get_running_tasks(self, db: FlowstateDB, flow_run_id: str) -> None:
+        """Create a 'running' task, verify get_running_tasks finds it."""
+        task_id = db.create_task_execution(
+            flow_run_id, "a", "task", 1, "handoff", "/tmp", "/tmp/a-1", "do a"
+        )
+        db.update_task_status(task_id, "running", started_at=datetime.now(UTC).isoformat())
+
+        running = db.get_running_tasks(flow_run_id)
+        assert len(running) == 1
+        assert running[0].id == task_id
+
+    def test_get_running_tasks_excludes_completed(self, db: FlowstateDB, flow_run_id: str) -> None:
+        """Completed tasks are not returned by get_running_tasks."""
+        task_id = db.create_task_execution(
+            flow_run_id, "a", "task", 1, "handoff", "/tmp", "/tmp/a-1", "do a"
+        )
+        db.update_task_status(task_id, "running", started_at=datetime.now(UTC).isoformat())
+        db.update_task_status(task_id, "completed", completed_at=datetime.now(UTC).isoformat())
+
+        running = db.get_running_tasks(flow_run_id)
+        assert len(running) == 0
+
+    def test_get_running_tasks_excludes_pending(self, db: FlowstateDB, flow_run_id: str) -> None:
+        """Pending tasks are not returned by get_running_tasks."""
+        db.create_task_execution(flow_run_id, "a", "task", 1, "handoff", "/tmp", "/tmp/a-1", "do a")
+
+        running = db.get_running_tasks(flow_run_id)
+        assert len(running) == 0
+
+    def test_get_running_tasks_empty(self, db: FlowstateDB, flow_run_id: str) -> None:
+        """get_running_tasks returns empty list for flow with no running tasks."""
+        running = db.get_running_tasks(flow_run_id)
+        assert running == []
+
+
+# ================================================================== #
+# Waiting Task Tests (STATE-006)
+# ================================================================== #
+
+
+class TestWaitingTasks:
+    """Tests for waiting task query methods."""
+
+    def test_get_waiting_tasks(self, db: FlowstateDB, flow_run_id: str) -> None:
+        """Create a waiting task with past wait_until, verify it's found."""
+        task_id = db.create_task_execution(
+            flow_run_id, "a", "task", 1, "handoff", "/tmp", "/tmp/a-1", "do a"
+        )
+        past = "2020-01-01T00:00:00"
+        db.update_task_status(task_id, "waiting", wait_until=past)
+
+        waiting = db.get_waiting_tasks(flow_run_id)
+        assert len(waiting) == 1
+        assert waiting[0].id == task_id
+
+    def test_get_waiting_tasks_excludes_future(self, db: FlowstateDB, flow_run_id: str) -> None:
+        """Waiting tasks with future wait_until are not returned."""
+        task_id = db.create_task_execution(
+            flow_run_id, "a", "task", 1, "handoff", "/tmp", "/tmp/a-1", "do a"
+        )
+        future = "2099-01-01T00:00:00"
+        db.update_task_status(task_id, "waiting", wait_until=future)
+
+        waiting = db.get_waiting_tasks(flow_run_id)
+        assert len(waiting) == 0
+
+    def test_get_waiting_tasks_excludes_non_waiting(
+        self, db: FlowstateDB, flow_run_id: str
+    ) -> None:
+        """Only tasks with status 'waiting' are returned."""
+        db.create_task_execution(flow_run_id, "a", "task", 1, "handoff", "/tmp", "/tmp/a-1", "do a")
+        # Task is 'pending', not 'waiting'
+
+        waiting = db.get_waiting_tasks(flow_run_id)
+        assert len(waiting) == 0
+
+    def test_get_waiting_tasks_empty(self, db: FlowstateDB, flow_run_id: str) -> None:
+        """get_waiting_tasks returns empty list when no tasks are waiting."""
+        waiting = db.get_waiting_tasks(flow_run_id)
+        assert waiting == []
+
+    def test_get_waiting_tasks_with_explicit_now(self, db: FlowstateDB, flow_run_id: str) -> None:
+        """get_waiting_tasks with explicit now parameter filters correctly."""
+        task_id = db.create_task_execution(
+            flow_run_id, "a", "task", 1, "handoff", "/tmp", "/tmp/a-1", "do a"
+        )
+        db.update_task_status(task_id, "waiting", wait_until="2025-06-01T12:00:00")
+
+        # Before the wait_until time
+        waiting_before = db.get_waiting_tasks(flow_run_id, now="2025-06-01T11:00:00")
+        assert len(waiting_before) == 0
+
+        # Exactly at the wait_until time
+        waiting_at = db.get_waiting_tasks(flow_run_id, now="2025-06-01T12:00:00")
+        assert len(waiting_at) == 1
+
+        # After the wait_until time
+        waiting_after = db.get_waiting_tasks(flow_run_id, now="2025-06-01T13:00:00")
+        assert len(waiting_after) == 1

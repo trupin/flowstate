@@ -15,7 +15,10 @@ from flowstate.state.database import FlowstateDB as _DatabaseBase
 from flowstate.state.models import (
     FlowDefinitionRow,
     FlowRunRow,
+    FlowScheduleRow,
+    ForkGroupRow,
     TaskExecutionRow,
+    TaskLogRow,
 )
 
 
@@ -366,3 +369,285 @@ class FlowstateDB:
         )
         self._commit()
         return id
+
+    # ================================================================== #
+    # Fork Groups
+    # ================================================================== #
+
+    def create_fork_group(
+        self,
+        flow_run_id: str,
+        source_task_id: str,
+        join_node_name: str,
+        generation: int,
+        member_task_ids: list[str],
+    ) -> str:
+        """Create a fork group and all its members atomically.
+
+        The fork group row and all fork_group_members rows are inserted in a
+        single transaction. If any member insert fails (e.g., invalid task ID),
+        the entire group is rolled back.
+
+        Args:
+            flow_run_id: The flow run this fork group belongs to.
+            source_task_id: The task that triggered the fork.
+            join_node_name: The node where forked branches rejoin.
+            generation: The generation number.
+            member_task_ids: Task execution IDs that are members of this fork group.
+
+        Returns:
+            The UUID of the newly created fork group.
+        """
+        id = str(uuid.uuid4())
+        now = datetime.now(UTC).isoformat()
+        with self._transaction():
+            self._execute(
+                """INSERT INTO fork_groups
+                   (id, flow_run_id, source_task_id, join_node_name, generation, status, created_at)
+                   VALUES (?, ?, ?, ?, ?, 'active', ?)""",
+                (id, flow_run_id, source_task_id, join_node_name, generation, now),
+            )
+            for task_id in member_task_ids:
+                self._execute(
+                    "INSERT INTO fork_group_members (fork_group_id, task_execution_id)"
+                    " VALUES (?, ?)",
+                    (id, task_id),
+                )
+        return id
+
+    def get_fork_group(self, id: str) -> ForkGroupRow | None:
+        """Retrieve a fork group by ID, or None if not found."""
+        row = self._fetchone("SELECT * FROM fork_groups WHERE id = ?", (id,))
+        return ForkGroupRow(**dict(row)) if row else None
+
+    def get_active_fork_groups(self, flow_run_id: str) -> list[ForkGroupRow]:
+        """Return fork groups with status 'active' for a given flow run."""
+        rows = self._fetchall(
+            "SELECT * FROM fork_groups WHERE flow_run_id = ? AND status = 'active'"
+            " ORDER BY created_at",
+            (flow_run_id,),
+        )
+        return [ForkGroupRow(**dict(r)) for r in rows]
+
+    def get_fork_group_members(self, fork_group_id: str) -> list[TaskExecutionRow]:
+        """Get task executions that are members of a fork group.
+
+        Joins fork_group_members with task_executions to return full task rows.
+        """
+        rows = self._fetchall(
+            """SELECT te.* FROM task_executions te
+               JOIN fork_group_members fgm ON te.id = fgm.task_execution_id
+               WHERE fgm.fork_group_id = ?
+               ORDER BY te.created_at""",
+            (fork_group_id,),
+        )
+        return [TaskExecutionRow(**dict(r)) for r in rows]
+
+    def update_fork_group_status(self, id: str, status: str) -> None:
+        """Update the status of a fork group (e.g., 'active' -> 'joined')."""
+        self._execute(
+            "UPDATE fork_groups SET status = ? WHERE id = ?",
+            (status, id),
+        )
+        self._commit()
+
+    # ================================================================== #
+    # Task Logs
+    # ================================================================== #
+
+    def insert_task_log(self, task_execution_id: str, log_type: str, content: str) -> None:
+        """Insert a log entry. Uses individual transaction (high frequency, loss acceptable).
+
+        The timestamp column uses DEFAULT CURRENT_TIMESTAMP, so SQLite sets it
+        automatically. This avoids clock skew between Python and SQLite.
+        """
+        self._execute(
+            """INSERT INTO task_logs (task_execution_id, log_type, content)
+               VALUES (?, ?, ?)""",
+            (task_execution_id, log_type, content),
+        )
+        self._commit()
+
+    def get_task_logs(
+        self,
+        task_execution_id: str,
+        after_timestamp: str | None = None,
+        limit: int = 1000,
+    ) -> list[TaskLogRow]:
+        """Get logs for a task, optionally filtering by timestamp.
+
+        Logs are ordered by (timestamp ASC, id ASC). The id tiebreaker is
+        important because multiple entries can share the same timestamp
+        (CURRENT_TIMESTAMP has second-level precision).
+
+        Args:
+            task_execution_id: The task to get logs for.
+            after_timestamp: If provided, only return logs with timestamp > this value.
+            limit: Maximum number of log entries to return (default 1000).
+        """
+        if after_timestamp:
+            rows = self._fetchall(
+                """SELECT * FROM task_logs
+                   WHERE task_execution_id = ? AND timestamp > ?
+                   ORDER BY timestamp ASC, id ASC
+                   LIMIT ?""",
+                (task_execution_id, after_timestamp, limit),
+            )
+        else:
+            rows = self._fetchall(
+                """SELECT * FROM task_logs
+                   WHERE task_execution_id = ?
+                   ORDER BY timestamp ASC, id ASC
+                   LIMIT ?""",
+                (task_execution_id, limit),
+            )
+        return [TaskLogRow(**dict(r)) for r in rows]
+
+    # ================================================================== #
+    # Flow Schedules
+    # ================================================================== #
+
+    def create_flow_schedule(
+        self,
+        flow_definition_id: str,
+        cron_expression: str,
+        on_overlap: str = "skip",
+        next_trigger_at: str | None = None,
+    ) -> str:
+        """Create a new flow schedule and return its UUID.
+
+        Args:
+            flow_definition_id: The flow definition to schedule.
+            cron_expression: Cron expression for recurring execution.
+            on_overlap: Overlap policy ('skip', 'queue', or 'parallel'). Defaults to 'skip'.
+            next_trigger_at: ISO 8601 timestamp for the next trigger. Defaults to None.
+
+        Returns:
+            The UUID of the newly created schedule.
+        """
+        id = str(uuid.uuid4())
+        now = datetime.now(UTC).isoformat()
+        self._execute(
+            """INSERT INTO flow_schedules
+               (id, flow_definition_id, cron_expression, on_overlap, enabled, next_trigger_at,
+                created_at)
+               VALUES (?, ?, ?, ?, 1, ?, ?)""",
+            (id, flow_definition_id, cron_expression, on_overlap, next_trigger_at, now),
+        )
+        self._commit()
+        return id
+
+    def get_flow_schedule(self, id: str) -> FlowScheduleRow | None:
+        """Retrieve a flow schedule by ID, or None if not found."""
+        row = self._fetchone("SELECT * FROM flow_schedules WHERE id = ?", (id,))
+        return FlowScheduleRow(**dict(row)) if row else None
+
+    def list_flow_schedules(self, flow_definition_id: str | None = None) -> list[FlowScheduleRow]:
+        """List all flow schedules, optionally filtered by flow_definition_id."""
+        if flow_definition_id:
+            rows = self._fetchall(
+                "SELECT * FROM flow_schedules WHERE flow_definition_id = ? ORDER BY created_at",
+                (flow_definition_id,),
+            )
+        else:
+            rows = self._fetchall("SELECT * FROM flow_schedules ORDER BY created_at")
+        return [FlowScheduleRow(**dict(r)) for r in rows]
+
+    def update_flow_schedule(self, id: str, **kwargs: object) -> None:
+        """Update mutable schedule fields.
+
+        Accepted kwargs: cron_expression, on_overlap, enabled,
+        last_triggered_at, next_trigger_at
+
+        Raises:
+            ValueError: If an unknown kwarg is passed.
+        """
+        allowed = {
+            "cron_expression",
+            "on_overlap",
+            "enabled",
+            "last_triggered_at",
+            "next_trigger_at",
+        }
+        updates: dict[str, object] = {}
+        for key, value in kwargs.items():
+            if key not in allowed:
+                raise ValueError(f"Unknown schedule field: {key}")
+            updates[key] = value
+        if not updates:
+            return
+        set_clause = ", ".join(f"{k} = ?" for k in updates)
+        values = [*list(updates.values()), id]
+        self._execute(
+            f"UPDATE flow_schedules SET {set_clause} WHERE id = ?",
+            tuple(values),
+        )
+        self._commit()
+
+    def delete_flow_schedule(self, id: str) -> None:
+        """Delete a flow schedule by ID. No-op if the ID does not exist."""
+        self._execute("DELETE FROM flow_schedules WHERE id = ?", (id,))
+        self._commit()
+
+    def get_due_schedules(self, now: str | None = None) -> list[FlowScheduleRow]:
+        """Get enabled schedules whose next_trigger_at is at or before the given time.
+
+        Args:
+            now: ISO 8601 timestamp. Defaults to current UTC time.
+        """
+        if now is None:
+            now = datetime.now(UTC).isoformat()
+        rows = self._fetchall(
+            """SELECT * FROM flow_schedules
+               WHERE enabled = 1 AND next_trigger_at IS NOT NULL AND next_trigger_at <= ?
+               ORDER BY next_trigger_at ASC""",
+            (now,),
+        )
+        return [FlowScheduleRow(**dict(r)) for r in rows]
+
+    # ================================================================== #
+    # Recovery
+    # ================================================================== #
+
+    def get_running_flow_runs(self) -> list[FlowRunRow]:
+        """Find flow runs with status 'running'. Used for crash recovery."""
+        rows = self._fetchall(
+            "SELECT * FROM flow_runs WHERE status = 'running' ORDER BY created_at"
+        )
+        return [FlowRunRow(**dict(r)) for r in rows]
+
+    def get_running_tasks(self, flow_run_id: str) -> list[TaskExecutionRow]:
+        """Find task executions with status 'running' for a given flow run.
+
+        Used for crash recovery to detect orphaned tasks.
+        """
+        rows = self._fetchall(
+            "SELECT * FROM task_executions WHERE flow_run_id = ? AND status = 'running'"
+            " ORDER BY created_at",
+            (flow_run_id,),
+        )
+        return [TaskExecutionRow(**dict(r)) for r in rows]
+
+    # ================================================================== #
+    # Waiting Tasks
+    # ================================================================== #
+
+    def get_waiting_tasks(self, flow_run_id: str, now: str | None = None) -> list[TaskExecutionRow]:
+        """Find tasks with status 'waiting' whose wait_until has passed.
+
+        Delayed edges set wait_until on a task and status to 'waiting'. The
+        engine periodically checks for tasks ready to execute.
+
+        Args:
+            flow_run_id: The flow run to check.
+            now: ISO 8601 timestamp. Defaults to current UTC time.
+        """
+        if now is None:
+            now = datetime.now(UTC).isoformat()
+        rows = self._fetchall(
+            """SELECT * FROM task_executions
+               WHERE flow_run_id = ? AND status = 'waiting' AND wait_until <= ?
+               ORDER BY wait_until ASC""",
+            (flow_run_id, now),
+        )
+        return [TaskExecutionRow(**dict(r)) for r in rows]
