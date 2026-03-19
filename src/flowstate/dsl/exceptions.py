@@ -1,3 +1,6 @@
+from dataclasses import dataclass
+
+
 class FlowParseError(Exception):
     """Raised when the DSL source text cannot be parsed into a valid AST."""
 
@@ -10,3 +13,18 @@ class FlowParseError(Exception):
             if column is not None:
                 loc += f", column {column}"
         super().__init__(f"Parse error{loc}: {message}")
+
+
+@dataclass
+class FlowTypeError:
+    """A type checking error found during static analysis of a Flow AST.
+
+    Attributes:
+        rule: The rule ID (e.g., "S1", "E3", "C2", "F1").
+        message: Human-readable description of the error.
+        location: Node name, edge description, or empty string.
+    """
+
+    rule: str
+    message: str
+    location: str
