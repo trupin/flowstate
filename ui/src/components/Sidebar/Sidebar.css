@@ -1,0 +1,149 @@
+.sidebar {
+  width: var(--sidebar-width);
+  height: 100vh;
+  position: fixed;
+  left: 0;
+  top: 0;
+  background: var(--bg-secondary);
+  border-right: 1px solid var(--border);
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  z-index: 10;
+}
+
+.sidebar-brand {
+  padding: 16px;
+  font-size: 13px;
+  font-weight: 700;
+  letter-spacing: 2px;
+  color: var(--text-secondary);
+  border-bottom: 1px solid var(--border);
+}
+
+.sidebar-section {
+  border-bottom: 1px solid var(--border);
+}
+
+.sidebar-section-header {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 10px 12px;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 1px;
+  color: var(--text-secondary);
+  cursor: pointer;
+  user-select: none;
+}
+
+.sidebar-section-header:hover {
+  background: var(--bg-tertiary);
+}
+
+.collapse-arrow {
+  display: inline-block;
+  font-size: 8px;
+  transition: transform 0.15s ease;
+  transform: rotate(90deg);
+}
+
+.collapse-arrow.collapsed {
+  transform: rotate(0deg);
+}
+
+.sidebar-section-content {
+  padding-bottom: 4px;
+}
+
+.sidebar-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 12px 6px 20px;
+  cursor: pointer;
+  font-size: 13px;
+  color: var(--text-primary);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.sidebar-item:hover {
+  background: var(--bg-tertiary);
+}
+
+.sidebar-item-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  flex: 1;
+  min-width: 0;
+}
+
+.sidebar-item-meta {
+  font-size: 11px;
+  color: var(--text-secondary);
+  flex-shrink: 0;
+}
+
+.sidebar-empty {
+  padding: 8px 12px 8px 20px;
+  font-size: 12px;
+  color: var(--text-secondary);
+  font-style: italic;
+}
+
+/* Validity dots */
+.validity-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+
+.validity-dot.valid {
+  background: var(--success);
+}
+
+.validity-dot.invalid {
+  border: 1.5px solid var(--text-secondary);
+  background: transparent;
+}
+
+/* Status dots */
+.status-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+
+.status-dot.status-running {
+  background-color: var(--status-running);
+}
+
+.status-dot.status-paused {
+  background-color: var(--status-paused);
+}
+
+.status-dot.status-completed {
+  background-color: var(--status-completed);
+}
+
+.status-dot.status-failed {
+  background-color: var(--status-failed);
+}
+
+.status-dot.status-created {
+  background-color: var(--status-pending);
+}
+
+.status-dot.status-cancelled {
+  background-color: var(--text-secondary);
+}
+
+.status-dot.status-budget_exceeded {
+  background-color: var(--warning);
+}
