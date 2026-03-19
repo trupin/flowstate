@@ -117,7 +117,19 @@
 | SERVER-009 | End-to-End Integration Test | server | P1       | SERVER-005, ENGINE-008 | done   |
 
 
-### Phase 6 — E2E Testing
+### Phase 6 — Long-Lived Orchestrator Agents
+
+
+| Issue      | Title                                              | Domain | Priority | Depends On              | Status |
+| ---------- | -------------------------------------------------- | ------ | -------- | ----------------------- | ------ |
+| ENGINE-012 | File Communication Protocol                        | engine | P0       | —                       | done   |
+| ENGINE-013 | Orchestrator Prompt Template                       | engine | P0       | ENGINE-012              | done   |
+| ENGINE-014 | Orchestrator Session Manager                       | engine | P0       | ENGINE-013              | done   |
+| ENGINE-015 | Orchestrator as Task Executor                      | engine | P0       | ENGINE-012, ENGINE-014  | done   |
+| ENGINE-016 | Orchestrator as Judge                              | engine | P0       | ENGINE-012, ENGINE-014  | done   |
+
+
+### Phase 7 — E2E Testing
 
 
 | Issue   | Title                          | Domain | Priority | Depends On                   | Status |

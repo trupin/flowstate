@@ -207,3 +207,115 @@ def read_summary(task_dir: str) -> str | None:
     if summary_path.exists():
         return summary_path.read_text()
     return None
+
+
+def write_task_input(task_dir: str, prompt: str) -> str:
+    """Write the assembled task prompt to INPUT.md in the task directory.
+
+    Returns the absolute path to the written file.
+    """
+    input_path = Path(task_dir) / "INPUT.md"
+    input_path.write_text(prompt)
+    return str(input_path)
+
+
+def create_judge_dir(run_data_dir: str, source_node: str, generation: int) -> str:
+    """Create judge directory: <run_data_dir>/judge/<source>-<gen>/.
+
+    Returns the absolute path to the created directory.
+    """
+    judge_dir = Path(run_data_dir) / "judge" / f"{source_node}-{generation}"
+    judge_dir.mkdir(parents=True, exist_ok=True)
+    return str(judge_dir)
+
+
+def serialize_flow_graph(flow: Flow) -> str:
+    """Serialize a Flow AST into a readable text representation for the orchestrator.
+
+    Lists all nodes (with their type and prompt summary) and all edges
+    (with type, conditions, and targets).
+    """
+    lines: list[str] = []
+
+    lines.append("## Nodes")
+    for name, node in flow.nodes.items():
+        prompt_summary = node.prompt
+        if len(prompt_summary) > 120:
+            prompt_summary = prompt_summary[:117] + "..."
+        lines.append(f"- **{name}** (type: {node.node_type}): {prompt_summary}")
+
+    lines.append("")
+    lines.append("## Edges")
+    for edge in flow.edges:
+        if edge.edge_type == "unconditional":
+            lines.append(f"- {edge.source} -> {edge.target}")
+        elif edge.edge_type == "conditional":
+            lines.append(f'- {edge.source} -> {edge.target} [condition: "{edge.condition}"]')
+        elif edge.edge_type == "fork":
+            targets = ", ".join(edge.fork_targets) if edge.fork_targets else ""
+            lines.append(f"- {edge.source} -> fork({targets})")
+        elif edge.edge_type == "join":
+            sources = ", ".join(edge.join_sources) if edge.join_sources else ""
+            lines.append(f"- join({sources}) -> {edge.target}")
+
+    return "\n".join(lines)
+
+
+def build_orchestrator_system_prompt(flow: Flow, run_data_dir: str, cwd: str) -> str:
+    """Build the orchestrator's system prompt.
+
+    Includes: identity, flow graph, task execution protocol, judge evaluation
+    protocol, DECISION.json format, fork handling, and file paths.
+    """
+    flow_graph = serialize_flow_graph(flow)
+
+    return (
+        "# Flowstate Orchestrator Agent\n"
+        "\n"
+        "You are a Flowstate orchestrator agent managing a flow run. "
+        "You coordinate task execution and judge transitions for the "
+        f'flow "{flow.name}".\n'
+        "\n"
+        "# Flow Graph\n"
+        "\n"
+        f"{flow_graph}\n"
+        "\n"
+        "# Task Execution Protocol\n"
+        "\n"
+        "For each task node you must execute:\n"
+        "1. Read the task's INPUT.md file to get the full assembled prompt.\n"
+        '2. Spawn a subagent using the Agent tool with `model: "opus"` to execute the task.\n'
+        "3. After the subagent completes, ensure a SUMMARY.md file exists in the task directory.\n"
+        "\n"
+        "# Judge Evaluation Protocol\n"
+        "\n"
+        "When a completed task has conditional outgoing edges, you act as the judge:\n"
+        "1. Read the REQUEST.md file in the judge directory for full evaluation context.\n"
+        "2. Evaluate which transition condition best matches the task outcome.\n"
+        "3. Write your decision to DECISION.json in the same judge directory.\n"
+        "\n"
+        "# DECISION.json Format\n"
+        "\n"
+        "```json\n"
+        '{"decision": "<target_node_name_or___none__>", '
+        '"reasoning": "<brief explanation>", '
+        '"confidence": <float 0.0 to 1.0>}\n'
+        "```\n"
+        "\n"
+        "- `decision`: The target node name to transition to, or `__none__` if no condition matches.\n"
+        "- `reasoning`: A brief explanation of why this transition was chosen.\n"
+        "- `confidence`: A float between 0.0 and 1.0 indicating your confidence.\n"
+        "\n"
+        "# Fork Handling\n"
+        "\n"
+        "When a fork edge is encountered, use parallel Agent tool calls to execute "
+        "all fork branches concurrently. Wait for all branches to complete before "
+        "proceeding to the join node.\n"
+        "\n"
+        "# File Paths\n"
+        "\n"
+        f"- Run data directory: {run_data_dir}\n"
+        f"- Task directory pattern: {run_data_dir}/tasks/<node_name>-<generation>/\n"
+        f"- Judge directory pattern: {run_data_dir}/judge/<source_node>-<generation>/\n"
+        f"- Working directory: {cwd}\n"
+    )

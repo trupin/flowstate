@@ -1147,6 +1147,76 @@ Before launching a task subprocess, the execution engine:
 3. Resolves the task's cwd (node `cwd` → flow `workspace` → error)
 4. The task prompt includes the absolute path to the task directory so the agent can write `SUMMARY.md`
 
+### 9.6 Orchestrator Agents
+
+The execution engine supports an optional **orchestrator agent** pattern that reduces cold-start overhead and improves context continuity across tasks. Instead of spawning a new Claude Code process for every task and judge call, one long-lived session is created per unique `(harness, cwd)` and **resumed** for each action.
+
+#### 9.6.1 Architecture
+
+| Agent Type | Lifecycle | Model | Role | Invocation |
+|-----------|-----------|-------|------|------------|
+| **Orchestrator** | Long-lived (flow run duration) | Sonnet | Spawns subagents, evaluates judge decisions | Single session, resumed per action |
+| **Node (subagent)** | Short-lived (one task) | Opus | Executes a single node's prompt | Spawned by orchestrator via Agent tool |
+
+One orchestrator per unique `(harness, cwd)` within a flow run. If a flow has tasks in `/project-a` and `/project-b`, two orchestrators are created.
+
+#### 9.6.2 Session Lifecycle
+
+1. **Init**: Engine creates orchestrator session via `claude -p "<system_prompt>" --model sonnet --output-format stream-json`. The system prompt describes the flow graph, workspace, and orchestrator responsibilities.
+2. **Task execution**: Engine writes `INPUT.md` to the task directory, then resumes the orchestrator with: "Execute task X — read INPUT.md, spawn subagent, ensure SUMMARY.md is written."
+3. **Judge evaluation**: Engine writes `REQUEST.md` to the judge directory, then resumes the orchestrator with: "Evaluate transition — read REQUEST.md, write DECISION.json."
+4. **Terminate**: When the flow completes or is cancelled, the engine stops resuming the orchestrator.
+
+#### 9.6.3 File-Based Communication Protocol
+
+All inter-agent communication uses files under `~/.flowstate/runs/<run-id>/`:
+
+```
+~/.flowstate/runs/<run-id>/
+├── orchestrator/                    # Orchestrator metadata
+│   ├── <cwd-hash>/                  # One directory per orchestrator
+│   │   └── session_id              # Claude Code session ID (for recovery)
+├── tasks/
+│   ├── <node>-<gen>/
+│   │   ├── INPUT.md                # Full assembled prompt (written by engine before launch)
+│   │   ├── SUMMARY.md              # Task output (written by subagent)
+│   │   └── (scratch files)
+├── judge/
+│   ├── <source>-<gen>/
+│   │   ├── REQUEST.md              # Judge evaluation request (written by engine)
+│   │   └── DECISION.json           # Judge decision (written by orchestrator)
+```
+
+**`INPUT.md`**: Contains the full assembled task prompt — the same content previously passed to `claude -p`. Written by the engine before resuming the orchestrator.
+
+**`REQUEST.md`**: Contains the judge evaluation context: completed task info (name, prompt, exit code, summary), available transitions with conditions.
+
+**`DECISION.json`**: Structured judge decision matching the schema in Section 7.2:
+```json
+{
+    "decision": "<target_node_name or __none__>",
+    "reasoning": "Brief explanation",
+    "confidence": 0.85
+}
+```
+
+**Key principle**: Files are the source of truth. If a process crashes mid-task, the engine can inspect which files exist to determine state and resume from there.
+
+#### 9.6.4 Why Orchestrator is Faster
+
+1. **Resume vs cold start**: `--resume` loads cached conversation, skipping session init.
+2. **No separate judge process**: The orchestrator evaluates transitions directly — saves one full process spawn per conditional edge.
+3. **Accumulated context**: The orchestrator remembers previous tasks, workspace state, and flow progress. No need to re-inject everything each time.
+4. **Subagent context inheritance**: The orchestrator passes relevant context to subagents naturally through its Agent tool prompt.
+5. **Parallel forks**: The orchestrator uses Claude Code's parallel Agent tool to spawn multiple subagents in a single resume call.
+
+#### 9.6.5 Fallback Behavior
+
+If the orchestrator is not configured or fails to initialize, the engine falls back to the **direct subprocess** model (Section 9.1). This ensures backward compatibility:
+
+- Existing flows work unchanged without orchestrator configuration.
+- If an orchestrator session crashes, the current task fails and can be retried (the retry may fall back to direct subprocess).
+
 ### 9.4 Error Detection
 
 | Signal | Meaning | Response |

@@ -137,6 +137,8 @@ An issue is done when:
 | `/test` | Run the test suite with optional module or test name filter |
 | `/implement` | Pick ready issues from plan and implement via domain agents |
 | `/review` | Review recent changes for defects, missing tests, spec drift |
+| `/server` | Manage the dev server: start, stop, debug, logs, status, restart |
+| `/create-flow` | Create a new .flow state machine from a natural language description |
 
 ## Git Workflow
 

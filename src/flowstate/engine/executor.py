@@ -45,9 +45,11 @@ from flowstate.engine.judge import JudgeContext, JudgeDecision, JudgePauseError,
 from flowstate.engine.subprocess_mgr import StreamEventType, SubprocessManager
 
 if TYPE_CHECKING:
-    from collections.abc import Callable
+    from collections.abc import AsyncGenerator, Callable
 
     from flowstate.dsl.ast import Edge, Flow, Node
+    from flowstate.engine.orchestrator import OrchestratorManager
+    from flowstate.engine.subprocess_mgr import StreamEvent
     from flowstate.state.repository import FlowstateDB
 
 logger = logging.getLogger(__name__)
@@ -175,6 +177,7 @@ class FlowExecutor:
         subprocess_mgr: SubprocessManager,
         judge: JudgeProtocol | None = None,
         max_concurrent: int = 4,
+        orchestrator_mgr: OrchestratorManager | None = None,
     ) -> None:
         self._db = db
         self._raw_callback = event_callback
@@ -195,6 +198,7 @@ class FlowExecutor:
         self._expanded_prompts: dict[str, str] = {}
         self._budget: BudgetGuard | None = None
         self._completed_queue: asyncio.Queue[str] | None = None
+        self._orchestrator_mgr = orchestrator_mgr
 
     def _emit(self, event: FlowEvent) -> None:
         """Emit an event via the callback, catching any callback exceptions."""
@@ -723,8 +727,29 @@ class FlowExecutor:
             )
         )
 
+        # Get orchestrator session if available
+        orch_session = None
+        orch_data_dir = None
+        if self._orchestrator_mgr is not None:
+            try:
+                orch_session = await self._orchestrator_mgr.get_or_create(
+                    harness="claude",
+                    cwd=task_exec.cwd,
+                    flow=flow,
+                    run_id=flow_run_id,
+                    run_data_dir=data_dir,
+                    skip_permissions=flow.skip_permissions,
+                )
+                orch_data_dir = data_dir
+            except Exception:
+                pass  # Fall through to direct judge
+
         try:
-            decision = await self._judge.evaluate(judge_context)
+            decision = await self._judge.evaluate(
+                judge_context,
+                orchestrator_session=orch_session,
+                run_data_dir=orch_data_dir,
+            )
         except JudgePauseError as e:
             self._pause_flow(flow_run_id, f"Judge failed: {e.reason}")
             return
@@ -860,8 +885,29 @@ class FlowExecutor:
             )
         )
 
+        # Get orchestrator session if available
+        orch_session = None
+        orch_data_dir = None
+        if self._orchestrator_mgr is not None:
+            try:
+                orch_session = await self._orchestrator_mgr.get_or_create(
+                    harness="claude",
+                    cwd=task_exec.cwd,
+                    flow=flow,
+                    run_id=flow_run_id,
+                    run_data_dir=data_dir,
+                    skip_permissions=flow.skip_permissions,
+                )
+                orch_data_dir = data_dir
+            except Exception:
+                pass  # Fall through to direct judge
+
         try:
-            decision = await self._judge.evaluate(judge_context)
+            decision = await self._judge.evaluate(
+                judge_context,
+                orchestrator_session=orch_session,
+                run_data_dir=orch_data_dir,
+            )
         except JudgePauseError as e:
             self._pause_flow(flow_run_id, f"Judge failed: {e.reason}")
             return
@@ -1128,6 +1174,10 @@ class FlowExecutor:
             if atask:
                 atask.cancel()
 
+        # Terminate orchestrator sessions if present
+        if self._orchestrator_mgr is not None:
+            await self._orchestrator_mgr.terminate_all(flow_run_id)
+
         # Wait for all tasks to finish cancellation
         if self._running_tasks:
             await asyncio.gather(*self._running_tasks.values(), return_exceptions=True)
@@ -1274,22 +1324,73 @@ class FlowExecutor:
         )
 
         try:
-            session_id = task_exec.claude_session_id or str(uuid.uuid4())
             skip_perms = flow.skip_permissions
-            if task_exec.context_mode == ContextMode.SESSION.value and task_exec.claude_session_id:
-                stream = self._subprocess_mgr.run_task_resume(
-                    task_exec.prompt_text,
-                    task_exec.cwd,
-                    task_exec.claude_session_id,
-                    skip_permissions=skip_perms,
-                )
-            else:
-                stream = self._subprocess_mgr.run_task(
-                    task_exec.prompt_text,
-                    task_exec.cwd,
-                    session_id,
-                    skip_permissions=skip_perms,
-                )
+            session_id = task_exec.claude_session_id or str(uuid.uuid4())
+            stream: AsyncGenerator[StreamEvent, None] | None = None
+
+            # --- Orchestrator path (routes task through orchestrator session) ---
+            if self._orchestrator_mgr is not None:
+                try:
+                    from flowstate.engine.context import write_task_input
+                    from flowstate.engine.orchestrator import build_task_instruction
+
+                    orch_session = await self._orchestrator_mgr.get_or_create(
+                        harness="claude",
+                        cwd=task_exec.cwd,
+                        flow=flow,
+                        run_id=flow_run_id,
+                        run_data_dir=data_dir,
+                        skip_permissions=skip_perms,
+                    )
+
+                    # Write INPUT.md with the full task prompt
+                    input_path = write_task_input(task_exec.task_dir, task_exec.prompt_text)
+
+                    # Build short instruction for orchestrator
+                    instruction = build_task_instruction(
+                        node_name=task_exec.node_name,
+                        generation=task_exec.generation,
+                        input_path=input_path,
+                        task_dir=task_exec.task_dir,
+                        cwd=task_exec.cwd,
+                    )
+
+                    # Resume orchestrator with task instruction
+                    session_id = orch_session.session_id
+                    stream = self._subprocess_mgr.run_task_resume(
+                        instruction,
+                        task_exec.cwd,
+                        orch_session.session_id,
+                        skip_permissions=skip_perms,
+                    )
+                except Exception:
+                    # Fall back to direct subprocess on any orchestrator error
+                    logger.warning(
+                        "Orchestrator init failed for task %s, falling back to direct subprocess",
+                        task_exec.node_name,
+                    )
+                    self._orchestrator_mgr = None  # Don't retry for this run
+
+            # --- Direct subprocess path (existing behavior) ---
+            if stream is None:
+                session_id = task_exec.claude_session_id or str(uuid.uuid4())
+                if (
+                    task_exec.context_mode == ContextMode.SESSION.value
+                    and task_exec.claude_session_id
+                ):
+                    stream = self._subprocess_mgr.run_task_resume(
+                        task_exec.prompt_text,
+                        task_exec.cwd,
+                        task_exec.claude_session_id,
+                        skip_permissions=skip_perms,
+                    )
+                else:
+                    stream = self._subprocess_mgr.run_task(
+                        task_exec.prompt_text,
+                        task_exec.cwd,
+                        session_id,
+                        skip_permissions=skip_perms,
+                    )
 
             # Stream events
             exit_code: int | None = None
@@ -1530,6 +1631,15 @@ class FlowExecutor:
         """Mark the flow as completed: update DB and emit event."""
         self._db.update_flow_run_elapsed(flow_run_id, budget.elapsed)
         self._db.update_flow_run_status(flow_run_id, "completed")
+
+        # Terminate orchestrator sessions if present
+        if self._orchestrator_mgr is not None:
+            # Schedule termination as a background task since this is a sync method.
+            # Store reference to prevent garbage collection (RUF006).
+            self._orch_cleanup_task: asyncio.Task[None] | None = asyncio.ensure_future(
+                self._orchestrator_mgr.terminate_all(flow_run_id)
+            )
+
         self._emit(
             FlowEvent(
                 type=EventType.FLOW_COMPLETED,

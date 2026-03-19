@@ -157,7 +157,13 @@ class MockJudgeProtocol(JudgeProtocol):
         """Add a decision to return on the next evaluate() call."""
         self._decisions.append(decision)
 
-    async def evaluate(self, context: JudgeContext) -> JudgeDecision:
+    async def evaluate(
+        self,
+        context: JudgeContext,
+        *,
+        orchestrator_session: object | None = None,
+        run_data_dir: str | None = None,
+    ) -> JudgeDecision:
         self.contexts.append(context)
         if self._call_count < len(self._decisions):
             result = self._decisions[self._call_count]
