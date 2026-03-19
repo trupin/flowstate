@@ -12,12 +12,12 @@ flow_stmt: flow_attr
          | edge_decl
 
 // Flow-level attributes
-flow_attr: "budget" "=" DURATION
-         | "workspace" "=" STRING
-         | "on_error" "=" ERROR_POLICY
-         | "context" "=" CONTEXT_MODE
-         | "schedule" "=" STRING
-         | "on_overlap" "=" OVERLAP_POLICY
+flow_attr: "budget" "=" DURATION       -> flow_budget
+         | "workspace" "=" STRING      -> flow_workspace
+         | "on_error" "=" ERROR_POLICY -> flow_on_error
+         | "context" "=" CONTEXT_MODE  -> flow_context
+         | "schedule" "=" STRING       -> flow_schedule
+         | "on_overlap" "=" OVERLAP_POLICY -> flow_on_overlap
 
 ERROR_POLICY.2: "pause" | "abort" | "skip"
 OVERLAP_POLICY.2: "skip" | "queue" | "parallel"
@@ -41,8 +41,8 @@ task_node:  "task"  NAME "{" node_body "}"
 exit_node:  "exit"  NAME "{" node_body "}"
 
 node_body: node_attr+
-node_attr: "prompt" "=" string
-         | "cwd" "=" STRING
+node_attr: "prompt" "=" string  -> node_prompt
+         | "cwd" "=" STRING     -> node_cwd
 
 // Edges
 edge_decl: simple_edge | cond_edge | fork_edge | join_edge
@@ -55,9 +55,9 @@ join_edge:   "[" name_list "]" "->" NAME
 name_list: NAME ("," NAME)*
 
 edge_config: "{" edge_attr* "}"
-edge_attr: "context" "=" CONTEXT_MODE
-         | "delay" "=" DURATION
-         | "schedule" "=" STRING
+edge_attr: "context" "=" CONTEXT_MODE  -> edge_context
+         | "delay" "=" DURATION          -> edge_delay
+         | "schedule" "=" STRING         -> edge_schedule
 
 CONTEXT_MODE.2: "handoff" | "session" | "none"
 
