@@ -34,12 +34,12 @@
 
 | Issue   | Title                                 | Domain | Priority | Depends On | Status |
 | ------- | ------------------------------------- | ------ | -------- | ---------- | ------ |
-| DSL-001 | Lark Grammar Definition               | dsl    | P0       | SHARED-001 | todo   |
-| DSL-002 | Parser (source → AST)                 | dsl    | P0       | DSL-001    | todo   |
-| DSL-003 | Type Checker (structural rules S1-S8) | dsl    | P0       | DSL-002    | todo   |
-| DSL-004 | Type Checker (edge rules E1-E9)       | dsl    | P0       | DSL-002    | todo   |
-| DSL-005 | Type Checker (cycle rules C1-C3)      | dsl    | P0       | DSL-002    | todo   |
-| DSL-006 | Type Checker (fork-join rules F1-F3)  | dsl    | P0       | DSL-002    | todo   |
+| DSL-001 | Lark Grammar Definition               | dsl    | P0       | SHARED-001 | done   |
+| DSL-002 | Parser (source → AST)                 | dsl    | P0       | DSL-001    | done   |
+| DSL-003 | Type Checker (structural rules S1-S8) | dsl    | P0       | DSL-002    | done   |
+| DSL-004 | Type Checker (edge rules E1-E9)       | dsl    | P0       | DSL-002    | done   |
+| DSL-005 | Type Checker (cycle rules C1-C3)      | dsl    | P0       | DSL-002    | done   |
+| DSL-006 | Type Checker (fork-join rules F1-F3)  | dsl    | P0       | DSL-002    | done   |
 
 
 ### Phase 1 — State
@@ -47,12 +47,12 @@
 
 | Issue     | Title                                | Domain | Priority | Depends On | Status |
 | --------- | ------------------------------------ | ------ | -------- | ---------- | ------ |
-| STATE-001 | SQLite Schema + Database Setup       | state  | P0       | SHARED-001 | todo   |
-| STATE-002 | Pydantic Models                      | state  | P0       | STATE-001  | todo   |
-| STATE-003 | Repository (flow definitions + runs) | state  | P0       | STATE-002  | todo   |
-| STATE-004 | Repository (task executions + edges) | state  | P0       | STATE-002  | todo   |
-| STATE-005 | Repository (fork groups + logs)      | state  | P0       | STATE-002  | todo   |
-| STATE-006 | Repository (scheduling + recovery)   | state  | P1       | STATE-002  | todo   |
+| STATE-001 | SQLite Schema + Database Setup       | state  | P0       | SHARED-001 | done   |
+| STATE-002 | Pydantic Models                      | state  | P0       | STATE-001  | done   |
+| STATE-003 | Repository (flow definitions + runs) | state  | P0       | STATE-002  | done   |
+| STATE-004 | Repository (task executions + edges) | state  | P0       | STATE-002  | done   |
+| STATE-005 | Repository (fork groups + logs)      | state  | P0       | STATE-002  | done   |
+| STATE-006 | Repository (scheduling + recovery)   | state  | P1       | STATE-002  | done   |
 
 
 ### Phase 2 — Execution Engine
@@ -60,10 +60,10 @@
 
 | Issue      | Title                                                | Domain | Priority | Depends On                                               | Status |
 | ---------- | ---------------------------------------------------- | ------ | -------- | -------------------------------------------------------- | ------ |
-| ENGINE-001 | Subprocess Manager (Claude Code lifecycle)           | engine | P0       | SHARED-001                                               | todo   |
+| ENGINE-001 | Subprocess Manager (Claude Code lifecycle)           | engine | P0       | SHARED-001                                               | done   |
 | ENGINE-002 | Budget Guard                                         | engine | P0       | —                                                        | done   |
-| ENGINE-003 | Context Assembly (handoff/session/none + SUMMARY.md) | engine | P0       | SHARED-001                                               | todo   |
-| ENGINE-004 | Judge Protocol                                       | engine | P0       | ENGINE-001                                               | todo   |
+| ENGINE-003 | Context Assembly (handoff/session/none + SUMMARY.md) | engine | P0       | SHARED-001                                               | done   |
+| ENGINE-004 | Judge Protocol                                       | engine | P0       | ENGINE-001                                               | done   |
 | ENGINE-005 | Executor — Linear Flows                              | engine | P0       | ENGINE-001, ENGINE-002, ENGINE-003, STATE-003, STATE-004 | todo   |
 | ENGINE-006 | Executor — Fork-Join                                 | engine | P0       | ENGINE-005, STATE-005                                    | todo   |
 | ENGINE-007 | Executor — Conditional + Cycles                      | engine | P0       | ENGINE-004, ENGINE-005                                   | todo   |
@@ -78,14 +78,14 @@
 
 | Issue      | Title                                                      | Domain | Priority | Depends On                   | Status |
 | ---------- | ---------------------------------------------------------- | ------ | -------- | ---------------------------- | ------ |
-| SERVER-001 | FastAPI App + Config Loading                               | server | P0       | SHARED-002                   | todo   |
+| SERVER-001 | FastAPI App + Config Loading                               | server | P0       | SHARED-002                   | done   |
 | SERVER-002 | REST API — Flow Discovery (file watcher)                   | server | P0       | SERVER-001, DSL-002, DSL-003 | todo   |
 | SERVER-003 | REST API — Run Management                                  | server | P0       | SERVER-001, ENGINE-005       | todo   |
 | SERVER-004 | REST API — Task Logs + Schedules                           | server | P1       | SERVER-003, ENGINE-010       | todo   |
 | SERVER-005 | WebSocket Hub (event broadcasting + reconnection)          | server | P0       | SERVER-001, ENGINE-009       | todo   |
 | SERVER-006 | WebSocket File Watcher Events                              | server | P1       | SERVER-002, SERVER-005       | todo   |
-| SERVER-007 | CLI (check, server, run, runs, status, schedules, trigger) | server | P1       | SERVER-001, DSL-002          | todo   |
-| SERVER-008 | Static File Serving (React build)                          | server | P2       | SERVER-001                   | todo   |
+| SERVER-007 | CLI (check, server, run, runs, status, schedules, trigger) | server | P1       | SERVER-001, DSL-002          | done   |
+| SERVER-008 | Static File Serving (React build)                          | server | P2       | SERVER-001                   | done   |
 
 
 ### Phase 4 — Web UI
@@ -94,19 +94,19 @@
 | Issue  | Title                                                   | Domain | Priority | Depends On                             | Status |
 | ------ | ------------------------------------------------------- | ------ | -------- | -------------------------------------- | ------ |
 | UI-001 | Project Scaffold (Vite + React + TypeScript)            | ui     | P0       | —                                      | done   |
-| UI-002 | Dark Theme + CSS Variables                              | ui     | P0       | UI-001                                 | todo   |
-| UI-003 | Sidebar Component (Flows, Active Runs, Schedules)       | ui     | P0       | UI-002                                 | todo   |
-| UI-004 | Graph Visualization (React Flow + dagre)                | ui     | P0       | UI-002                                 | todo   |
-| UI-005 | Node Component (compact pills + expandable)             | ui     | P0       | UI-004                                 | todo   |
-| UI-006 | Log Viewer (raw streaming)                              | ui     | P0       | UI-002                                 | todo   |
-| UI-007 | Control Panel (pause/resume/cancel/retry/skip + budget) | ui     | P0       | UI-002                                 | todo   |
-| UI-008 | WebSocket Hook + Flow Run State Hook                    | ui     | P0       | UI-001                                 | todo   |
-| UI-009 | API Client + TypeScript Types                           | ui     | P0       | UI-001                                 | todo   |
-| UI-010 | Flow Library Page                                       | ui     | P0       | UI-003, UI-004, UI-009                 | todo   |
-| UI-011 | Run Detail Page                                         | ui     | P0       | UI-004, UI-005, UI-006, UI-007, UI-008 | todo   |
-| UI-012 | Start Run Modal                                         | ui     | P1       | UI-009, UI-010                         | todo   |
-| UI-013 | Error Banner (file watcher errors)                      | ui     | P1       | UI-008, UI-010                         | todo   |
-| UI-014 | Flow Watcher Hook (live file change events)             | ui     | P1       | UI-008                                 | todo   |
+| UI-002 | Dark Theme + CSS Variables                              | ui     | P0       | UI-001                                 | done   |
+| UI-003 | Sidebar Component (Flows, Active Runs, Schedules)       | ui     | P0       | UI-002                                 | done   |
+| UI-004 | Graph Visualization (React Flow + dagre)                | ui     | P0       | UI-002                                 | done   |
+| UI-005 | Node Component (compact pills + expandable)             | ui     | P0       | UI-004                                 | done   |
+| UI-006 | Log Viewer (raw streaming)                              | ui     | P0       | UI-002                                 | done   |
+| UI-007 | Control Panel (pause/resume/cancel/retry/skip + budget) | ui     | P0       | UI-002                                 | done   |
+| UI-008 | WebSocket Hook + Flow Run State Hook                    | ui     | P0       | UI-001                                 | done   |
+| UI-009 | API Client + TypeScript Types                           | ui     | P0       | UI-001                                 | done   |
+| UI-010 | Flow Library Page                                       | ui     | P0       | UI-003, UI-004, UI-009                 | done   |
+| UI-011 | Run Detail Page                                         | ui     | P0       | UI-004, UI-005, UI-006, UI-007, UI-008 | done   |
+| UI-012 | Start Run Modal                                         | ui     | P1       | UI-009, UI-010                         | done   |
+| UI-013 | Error Banner (file watcher errors)                      | ui     | P1       | UI-008, UI-010                         | done   |
+| UI-014 | Flow Watcher Hook (live file change events)             | ui     | P1       | UI-008                                 | done   |
 
 
 ### Phase 5 — Integration
