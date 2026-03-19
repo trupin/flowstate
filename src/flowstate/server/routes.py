@@ -10,6 +10,7 @@ from fastapi import APIRouter, Request
 
 from flowstate.dsl.parser import parse_flow
 from flowstate.engine.executor import FlowExecutor
+from flowstate.engine.orchestrator import OrchestratorManager
 from flowstate.server.app import FlowstateError
 from flowstate.server.models import (
     OrchestratorLogEntry,
@@ -208,11 +209,13 @@ async def start_run(
     subprocess_mgr = request.app.state.subprocess_manager
     ws_hub = request.app.state.ws_hub
 
+    orchestrator_mgr = OrchestratorManager(subprocess_mgr)
     executor = FlowExecutor(
         db=db,
         event_callback=ws_hub.on_flow_event,
         subprocess_mgr=subprocess_mgr,
         max_concurrent=config.max_concurrent_tasks,
+        orchestrator_mgr=orchestrator_mgr,
     )
 
     # Determine workspace from flow AST
@@ -631,11 +634,13 @@ async def trigger_schedule(request: Request, schedule_id: str) -> dict[str, str]
     subprocess_mgr = request.app.state.subprocess_manager
     ws_hub = request.app.state.ws_hub
 
+    orchestrator_mgr = OrchestratorManager(subprocess_mgr)
     executor = FlowExecutor(
         db=db,
         event_callback=ws_hub.on_flow_event,
         subprocess_mgr=subprocess_mgr,
         max_concurrent=config.max_concurrent_tasks,
+        orchestrator_mgr=orchestrator_mgr,
     )
 
     workspace = flow_ast.workspace or "."
