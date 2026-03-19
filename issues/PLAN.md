@@ -114,7 +114,7 @@
 
 | Issue      | Title                       | Domain | Priority | Depends On             | Status |
 | ---------- | --------------------------- | ------ | -------- | ---------------------- | ------ |
-| SERVER-009 | End-to-End Integration Test | server | P1       | SERVER-005, ENGINE-008 | todo   |
+| SERVER-009 | End-to-End Integration Test | server | P1       | SERVER-005, ENGINE-008 | done   |
 
 
 ### Phase 6 — E2E Testing
