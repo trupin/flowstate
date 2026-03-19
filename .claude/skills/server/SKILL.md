@@ -104,7 +104,36 @@ grep -iE "(error|warning|traceback|exception)" /tmp/flowstate-server.log | tail 
 
 Debug the Flowstate application — server-side issues, API behavior, or UI rendering.
 
-Parse what the user wants to debug from their message. There are three modes:
+Parse what the user wants to debug from their message. There are four modes:
+
+#### Stuck agent detection (always check during debug)
+**IMPORTANT**: Always check for tasks that have been running for more than 5 minutes with no recent log output. These are likely stuck — the subprocess exited without the executor detecting it.
+
+```bash
+# Check for stuck tasks
+curl -s http://localhost:9090/api/runs 2>&1 | python3 -c "
+import sys,json,urllib.request
+from datetime import datetime, timezone
+runs = json.load(sys.stdin)
+now = datetime.now(timezone.utc)
+for r in runs:
+    if r['status'] != 'running': continue
+    resp = urllib.request.urlopen(f'http://localhost:9090/api/runs/{r[\"id\"]}')
+    detail = json.loads(resp.read())
+    for t in detail['tasks']:
+        if t['status'] != 'running' or not t.get('started_at'): continue
+        started = datetime.fromisoformat(t['started_at'])
+        wall_mins = (now - started).total_seconds() / 60
+        if wall_mins > 5:
+            # Check last log activity
+            log_resp = urllib.request.urlopen(f'http://localhost:9090/api/runs/{r[\"id\"]}/tasks/{t[\"id\"]}/logs')
+            logs = json.loads(log_resp.read())['logs']
+            last_log = logs[-1]['timestamp'] if logs else 'never'
+            print(f'STUCK: {t[\"node_name\"]} in run {r[\"id\"][:8]} — running {wall_mins:.0f}min, last log: {last_log}')
+"
+```
+
+If a task is stuck (running >5min with no recent logs), report it and suggest cancelling the run. The root cause is that Claude Code subprocesses sometimes exit without the executor's stream reader detecting EOF.
 
 #### API debugging (default if no specific target)
 Test API endpoints and inspect responses:
@@ -203,9 +232,35 @@ Then read the screenshot at `/tmp/flowstate-debug.png` to see what the page look
 
 Shorthand for `stop` followed by `start` with the same flags.
 
+## Hot reload after UI changes
+
+When you modify UI files (`ui/src/**/*.tsx`, `*.css`, `*.ts`), you MUST reload the browser to see changes. Follow this procedure:
+
+1. Build the UI: `cd /Users/theophanerupin/code/flowstate/ui && npm run build`
+2. Use Playwright to reload the user's browser page:
+```bash
+uv run python -c "
+from playwright.sync_api import sync_playwright
+with sync_playwright() as p:
+    browser = p.chromium.launch(headless=False)  # visible browser
+    ctx = browser.new_context()
+    # Connect to existing page or open new one
+    page = ctx.new_page()
+    page.goto('http://localhost:9090', wait_until='networkidle')
+    print('Page reloaded with latest build')
+    # Don't close — leave browser open for the user
+    input('Press Enter to close...')
+"
+```
+
+**Shortcut**: If the server is running in `--build` mode (static serving), just rebuild and the next page load picks up changes automatically. No server restart needed — the static files are served directly from `ui/dist/`.
+
+If you changed **backend Python files**, you MUST restart the server (`/server restart`). The UI build is separate from the backend.
+
 ## Notes
 
-- The backend serves on port 8080 by default. The Vite dev server serves on port 5173 and proxies API/WS calls to 8080.
+- The backend serves on port 9090 by default. The Vite dev server serves on port 5173 and proxies API/WS calls to 9090.
 - For development, use `--frontend` to get hot-reload on UI changes.
 - For production-like testing, use `--build` to serve the built UI from the backend directly.
 - The `debug` subcommand with Playwright requires `uv sync --group e2e` and `uv run playwright install chromium`.
+- **IMPORTANT**: Always start the server from the project root directory (`/Users/theophanerupin/code/flowstate/`), not from `ui/` or any subdirectory. The `watch_dir` is `./flows` which is relative to CWD.
