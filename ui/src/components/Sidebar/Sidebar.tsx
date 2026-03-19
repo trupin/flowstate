@@ -62,27 +62,49 @@ function formatNextTrigger(iso: string | undefined): string {
   return `${diffDays}d`;
 }
 
+function formatElapsed(seconds: number): string {
+  if (seconds < 60) return `${Math.round(seconds)}s`;
+  const mins = Math.floor(seconds / 60);
+  if (mins < 60) return `${mins}m`;
+  const hours = Math.floor(mins / 60);
+  const remainMins = mins % 60;
+  if (hours < 24)
+    return remainMins > 0 ? `${hours}h ${remainMins}m` : `${hours}h`;
+  const days = Math.floor(hours / 24);
+  return `${days}d`;
+}
+
 export function Sidebar() {
   const navigate = useNavigate();
   const { flows } = useFlowWatcher();
   const [activeRuns, setActiveRuns] = useState<FlowRun[]>([]);
+  const [recentRuns, setRecentRuns] = useState<FlowRun[]>([]);
   const [schedules, setSchedules] = useState<FlowSchedule[]>([]);
   const [collapsed, setCollapsed] = useState({
     flows: false,
     runs: false,
+    history: false,
     schedules: false,
   });
 
-  // Fetch active runs on mount
+  // Fetch runs on mount and poll every 3 seconds
   useEffect(() => {
-    api.runs
-      .list('running')
-      .then((runs) => {
-        setActiveRuns(runs);
-      })
-      .catch(() => {
-        // silently ignore fetch errors
-      });
+    const fetchRuns = () => {
+      api.runs
+        .list()
+        .then((allRuns) => {
+          setActiveRuns(allRuns.filter((r) => r.status === 'running'));
+          setRecentRuns(
+            allRuns.filter((r) => r.status !== 'running').slice(0, 10),
+          );
+        })
+        .catch(() => {
+          // silently ignore fetch errors
+        });
+    };
+    fetchRuns();
+    const interval = setInterval(fetchRuns, 3000);
+    return () => clearInterval(interval);
   }, []);
 
   // Fetch schedules on mount
@@ -164,6 +186,44 @@ export function Sidebar() {
               />
               <span className="sidebar-item-name">
                 {run.flow_name} #{run.id.slice(0, 4)}
+              </span>
+            </div>
+          ))
+        )}
+      </SidebarSection>
+
+      <SidebarSection
+        title="RECENT RUNS"
+        collapsed={collapsed.history}
+        onToggle={() => setCollapsed((s) => ({ ...s, history: !s.history }))}
+      >
+        {recentRuns.length === 0 ? (
+          <div className="sidebar-empty">No recent runs</div>
+        ) : (
+          recentRuns.map((run) => (
+            <div
+              key={run.id}
+              className="sidebar-item"
+              data-testid={`sidebar-recent-run-${run.id}`}
+              onClick={() => navigate(`/runs/${run.id}`)}
+              role="button"
+              tabIndex={0}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter' || e.key === ' ') {
+                  e.preventDefault();
+                  navigate(`/runs/${run.id}`);
+                }
+              }}
+            >
+              <span
+                className={`status-dot status-${run.status}`}
+                aria-label={run.status}
+              />
+              <span className="sidebar-item-name">
+                {run.flow_name} #{run.id.slice(0, 4)}
+              </span>
+              <span className="sidebar-item-meta">
+                {formatElapsed(run.elapsed_seconds)}
               </span>
             </div>
           ))

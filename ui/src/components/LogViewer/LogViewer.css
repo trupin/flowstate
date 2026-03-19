@@ -84,3 +84,63 @@
   font-family: var(--font-sans);
   font-size: 13px;
 }
+
+/* --- Parsed log content styles --- */
+
+.log-parsed {
+  color: var(--text-primary);
+}
+
+/* Assistant message: normal text */
+.log-parsed-assistant {
+  white-space: pre-wrap;
+}
+
+/* Tool use: tool name highlighted */
+.log-parsed-tool-use {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 4px;
+}
+
+.log-tool-name {
+  color: var(--accent);
+  font-weight: 600;
+}
+
+.log-tool-args {
+  color: var(--text-secondary);
+  font-size: 11px;
+}
+
+/* Tool result: dimmed */
+.log-parsed-tool-result {
+  color: var(--text-secondary);
+  font-size: 11px;
+}
+
+/* Result: completion summary */
+.log-parsed-result {
+  color: var(--success);
+  font-weight: 500;
+  white-space: pre-wrap;
+}
+
+/* System messages: dimmed */
+.log-parsed-system {
+  color: var(--text-secondary);
+  font-style: italic;
+}
+
+/* Exit codes */
+.log-parsed-exit {
+  font-weight: 500;
+}
+
+.log-parsed-exit.exit-success {
+  color: var(--success);
+}
+
+.log-parsed-exit.exit-failure {
+  color: var(--error);
+}

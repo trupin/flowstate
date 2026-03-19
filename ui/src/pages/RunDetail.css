@@ -8,11 +8,16 @@
 
 .run-detail-header {
   display: flex;
+  flex-direction: column;
+  background: var(--bg-secondary);
+  border-bottom: 1px solid var(--border);
+}
+
+.run-detail-header-top {
+  display: flex;
   align-items: center;
   gap: 12px;
   padding: 8px 16px;
-  background: var(--bg-secondary);
-  border-bottom: 1px solid var(--border);
   min-height: 44px;
 }
 
@@ -101,4 +106,39 @@
   justify-content: center;
   height: 100vh;
   color: var(--text-secondary);
+}
+
+/* --- Error banners --- */
+
+.run-error-banner,
+.task-error-banner {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  padding: 6px 16px;
+  font-size: 13px;
+  line-height: 1.4;
+  background: rgba(239, 68, 68, 0.08);
+  border-top: 1px solid rgba(239, 68, 68, 0.2);
+}
+
+.run-error-label,
+.task-error-label {
+  font-weight: 600;
+  color: var(--error);
+  flex-shrink: 0;
+  font-size: 12px;
+}
+
+.run-error-message,
+.task-error-message {
+  color: var(--text-primary);
+  font-family: var(--font-mono);
+  font-size: 12px;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.task-error-banner {
+  background: rgba(239, 68, 68, 0.05);
 }

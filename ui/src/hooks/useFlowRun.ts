@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useRef } from 'react';
 import { useWebSocket } from './useWebSocket';
 import { api } from '../api/client';
 import type {
@@ -32,7 +32,13 @@ function applyEvent(
     case 'flow.status_changed':
       setRun((prev) =>
         prev
-          ? { ...prev, status: payload.new_status as FlowRun['status'] }
+          ? {
+              ...prev,
+              status: payload.new_status as FlowRun['status'],
+              error_message:
+                (payload.error_message as string | undefined) ??
+                prev.error_message,
+            }
           : prev,
       );
       break;
@@ -78,28 +84,38 @@ function applyEvent(
     case 'task.completed':
       setTasks((prev) => {
         const next = new Map(prev);
-        const existing = next.get(payload.node_name as string);
-        if (existing) {
-          next.set(payload.node_name as string, {
-            ...existing,
-            status: 'completed',
-            elapsed_seconds: payload.elapsed_seconds as number,
-          });
-        }
+        const nodeName = payload.node_name as string;
+        const existing = next.get(nodeName);
+        next.set(nodeName, {
+          id: existing?.id ?? (payload.task_execution_id as string) ?? '',
+          flow_run_id: existing?.flow_run_id ?? event.flow_run_id,
+          node_name: nodeName,
+          node_type: existing?.node_type ?? 'task',
+          status: 'completed',
+          generation: existing?.generation ?? 1,
+          context_mode: existing?.context_mode ?? 'full_history',
+          cwd: existing?.cwd ?? '.',
+          elapsed_seconds: payload.elapsed_seconds as number,
+        });
         return next;
       });
       break;
     case 'task.failed':
       setTasks((prev) => {
         const next = new Map(prev);
-        const existing = next.get(payload.node_name as string);
-        if (existing) {
-          next.set(payload.node_name as string, {
-            ...existing,
-            status: 'failed',
-            error_message: payload.error_message as string,
-          });
-        }
+        const nodeName = payload.node_name as string;
+        const existing = next.get(nodeName);
+        next.set(nodeName, {
+          id: existing?.id ?? (payload.task_execution_id as string) ?? '',
+          flow_run_id: existing?.flow_run_id ?? event.flow_run_id,
+          node_name: nodeName,
+          node_type: existing?.node_type ?? 'task',
+          status: 'failed',
+          generation: existing?.generation ?? 1,
+          context_mode: existing?.context_mode ?? 'full_history',
+          cwd: existing?.cwd ?? '.',
+          error_message: payload.error_message as string,
+        });
         return next;
       });
       break;
@@ -124,14 +140,19 @@ function applyEvent(
     case 'task.waiting':
       setTasks((prev) => {
         const next = new Map(prev);
-        const existing = next.get(payload.node_name as string);
-        if (existing) {
-          next.set(payload.node_name as string, {
-            ...existing,
-            status: 'waiting',
-            wait_until: payload.wait_until as string,
-          });
-        }
+        const nodeName = payload.node_name as string;
+        const existing = next.get(nodeName);
+        next.set(nodeName, {
+          id: existing?.id ?? (payload.task_execution_id as string) ?? '',
+          flow_run_id: existing?.flow_run_id ?? event.flow_run_id,
+          node_name: nodeName,
+          node_type: existing?.node_type ?? 'task',
+          status: 'waiting',
+          generation: existing?.generation ?? 1,
+          context_mode: existing?.context_mode ?? 'full_history',
+          cwd: existing?.cwd ?? '.',
+          wait_until: payload.wait_until as string,
+        });
         return next;
       });
       break;
@@ -165,16 +186,36 @@ export function useFlowRun(runId: string): UseFlowRunReturn {
   const [selectedTask, setSelectedTask] = useState<string | null>(null);
   const [logs, setLogs] = useState<Map<string, LogEntry[]>>(new Map());
 
+  // Fetch run detail from the API and update state
+  const fetchRunDetail = useCallback(() => {
+    api.runs
+      .get(runId)
+      .then((detail) => {
+        setRun(detail);
+        const taskMap = new Map<string, TaskExecution>();
+        detail.tasks.forEach((t) => taskMap.set(t.node_name, t));
+        setTasks(taskMap);
+        setEdges(detail.edges);
+      })
+      .catch(() => {
+        // Silently ignore fetch errors (e.g. network issues during reconnect)
+      });
+  }, [runId]);
+
   // Initial fetch
   useEffect(() => {
-    api.runs.get(runId).then((detail) => {
-      setRun(detail);
-      const taskMap = new Map<string, TaskExecution>();
-      detail.tasks.forEach((t) => taskMap.set(t.node_name, t));
-      setTasks(taskMap);
-      setEdges(detail.edges);
-    });
-  }, [runId]);
+    fetchRunDetail();
+  }, [fetchRunDetail]);
+
+  // Re-fetch when WebSocket reconnects (to catch events missed during disconnect)
+  const prevConnected = useRef(false);
+  useEffect(() => {
+    if (ws.isConnected && !prevConnected.current) {
+      // Just reconnected — re-fetch to sync state
+      fetchRunDetail();
+    }
+    prevConnected.current = ws.isConnected;
+  }, [ws.isConnected, fetchRunDetail]);
 
   // Subscribe to WebSocket
   useEffect(() => {

@@ -138,12 +138,33 @@ export function RunDetail() {
   return (
     <div className="run-detail">
       <div className="run-detail-header">
-        <h1>
-          {run.flow_name} <span className="run-id">#{run.id.slice(0, 8)}</span>
-        </h1>
-        <span className={`run-status status-${run.status}`}>{run.status}</span>
-        {!isConnected && (
-          <span className="ws-disconnected">Reconnecting...</span>
+        <div className="run-detail-header-top">
+          <h1>
+            {run.flow_name}{' '}
+            <span className="run-id">#{run.id.slice(0, 8)}</span>
+          </h1>
+          <span className={`run-status status-${run.status}`}>
+            {run.status}
+          </span>
+          {!isConnected && (
+            <span className="ws-disconnected">Reconnecting...</span>
+          )}
+        </div>
+        {run.error_message && (
+          <div className="run-error-banner">
+            <span className="run-error-label">Error</span>
+            <span className="run-error-message">{run.error_message}</span>
+          </div>
+        )}
+        {selectedTaskExecution?.error_message && (
+          <div className="task-error-banner">
+            <span className="task-error-label">
+              {selectedTaskExecution.node_name} failed
+            </span>
+            <span className="task-error-message">
+              {selectedTaskExecution.error_message}
+            </span>
+          </div>
         )}
       </div>
 
