@@ -14,9 +14,12 @@ from flowstate.server.models import (
     EdgeTransitionResponse,
     RunDetailResponse,
     RunSummary,
+    ScheduleResponse,
     StartRunRequest,
     StartRunResponse,
     TaskExecutionResponse,
+    TaskLogEntry,
+    TaskLogsResponse,
 )
 from flowstate.server.run_manager import InvalidStateError
 
@@ -322,3 +325,187 @@ async def skip_task(request: Request, run_id: str, task_id: str) -> dict[str, st
     except InvalidStateError as e:
         raise FlowstateError(str(e), status_code=409) from e
     return {"status": "skipped"}
+
+
+# ---------------------------------------------------------------------------
+# Task log endpoints (SERVER-004)
+# ---------------------------------------------------------------------------
+
+
+@router.get("/runs/{run_id}/tasks/{task_id}/logs")
+async def get_task_logs(
+    request: Request,
+    run_id: str,
+    task_id: str,
+    after: str | None = None,
+    limit: int = 1000,
+) -> TaskLogsResponse:
+    """Get paginated task logs for a specific task execution.
+
+    Supports cursor-based pagination via the `after` query param (ISO 8601
+    timestamp). Returns at most `limit` entries (clamped to 10000). The
+    `has_more` field indicates whether additional entries exist beyond the
+    returned set.
+    """
+    db = _get_db(request)
+
+    # Validate run exists
+    run = db.get_flow_run(run_id)
+    if not run:
+        raise FlowstateError(f"Run '{run_id}' not found", status_code=404)
+
+    # Validate task exists within this run
+    task = db.get_task_execution(task_id)
+    if not task or task.flow_run_id != run_id:
+        raise FlowstateError(
+            f"Task '{task_id}' not found in run '{run_id}'",
+            status_code=404,
+        )
+
+    # Clamp limit: treat 0 as default, cap at 10000
+    if limit <= 0:
+        limit = 1000
+    limit = min(limit, 10000)
+
+    # Fetch logs with one extra to detect has_more
+    logs = db.get_task_logs(
+        task_execution_id=task_id,
+        after_timestamp=after,
+        limit=limit + 1,
+    )
+
+    has_more = len(logs) > limit
+    if has_more:
+        logs = logs[:limit]
+
+    return TaskLogsResponse(
+        task_execution_id=task_id,
+        logs=[
+            TaskLogEntry(
+                timestamp=log.timestamp,
+                log_type=log.log_type,
+                content=log.content,
+            )
+            for log in logs
+        ],
+        has_more=has_more,
+    )
+
+
+# ---------------------------------------------------------------------------
+# Schedule endpoints (SERVER-004)
+# ---------------------------------------------------------------------------
+
+
+@router.get("/schedules")
+async def list_schedules(request: Request) -> list[ScheduleResponse]:
+    """List all flow schedules."""
+    db = _get_db(request)
+    schedules = db.list_flow_schedules()
+    result: list[ScheduleResponse] = []
+    for s in schedules:
+        # Look up flow name from flow definition
+        flow_def = db.get_flow_definition(s.flow_definition_id)
+        flow_name = flow_def.name if flow_def else "unknown"
+        status = "active" if s.enabled else "paused"
+        result.append(
+            ScheduleResponse(
+                id=s.id,
+                flow_name=flow_name,
+                cron_expression=s.cron_expression,
+                status=status,
+                next_run_at=s.next_trigger_at,
+                last_run_at=s.last_triggered_at,
+                overlap_policy=s.on_overlap,
+            )
+        )
+    return result
+
+
+@router.post("/schedules/{schedule_id}/pause")
+async def pause_schedule(request: Request, schedule_id: str) -> dict[str, str]:
+    """Pause an active schedule."""
+    db = _get_db(request)
+    schedule = db.get_flow_schedule(schedule_id)
+    if not schedule:
+        raise FlowstateError(f"Schedule '{schedule_id}' not found", status_code=404)
+    if not schedule.enabled:
+        raise FlowstateError("Schedule is already paused", status_code=409)
+    db.update_flow_schedule(schedule_id, enabled=0)
+    return {"status": "paused"}
+
+
+@router.post("/schedules/{schedule_id}/resume")
+async def resume_schedule(request: Request, schedule_id: str) -> dict[str, str]:
+    """Resume a paused schedule."""
+    db = _get_db(request)
+    schedule = db.get_flow_schedule(schedule_id)
+    if not schedule:
+        raise FlowstateError(f"Schedule '{schedule_id}' not found", status_code=404)
+    if schedule.enabled:
+        raise FlowstateError("Schedule is already active", status_code=409)
+    db.update_flow_schedule(schedule_id, enabled=1)
+    return {"status": "active"}
+
+
+@router.post("/schedules/{schedule_id}/trigger", status_code=202)
+async def trigger_schedule(request: Request, schedule_id: str) -> dict[str, str]:
+    """Manually trigger a scheduled flow.
+
+    Creates a new run as if the cron triggered it. Respects the overlap
+    policy: if 'skip' and another run is active, returns 409.
+    """
+    db = _get_db(request)
+    schedule = db.get_flow_schedule(schedule_id)
+    if not schedule:
+        raise FlowstateError(f"Schedule '{schedule_id}' not found", status_code=404)
+
+    # Check overlap policy
+    if schedule.on_overlap == "skip":
+        active_runs = db.list_flow_runs(status="running")
+        # Filter to runs of this flow definition
+        matching_runs = [
+            r for r in active_runs if r.flow_definition_id == schedule.flow_definition_id
+        ]
+        if matching_runs:
+            raise FlowstateError(
+                "Cannot trigger: another run is active and overlap policy is 'skip'",
+                status_code=409,
+            )
+
+    # Look up the flow definition and validate
+    flow_def = db.get_flow_definition(schedule.flow_definition_id)
+    if not flow_def:
+        raise FlowstateError("Scheduled flow definition not found", status_code=400)
+
+    # Try to parse the flow to ensure it's still valid
+    try:
+        flow_ast = parse_flow(flow_def.source_dsl)
+    except Exception as e:
+        raise FlowstateError(
+            f"Scheduled flow is not valid: {e}",
+            status_code=400,
+        ) from e
+
+    # Create executor and start run
+    config = request.app.state.config
+    subprocess_mgr = request.app.state.subprocess_manager
+
+    def _noop_callback(event: object) -> None:
+        pass
+
+    executor = FlowExecutor(
+        db=db,
+        event_callback=_noop_callback,
+        subprocess_mgr=subprocess_mgr,
+        max_concurrent=config.max_concurrent_tasks,
+    )
+
+    workspace = flow_ast.workspace or "."
+    execute_coro = executor.execute(flow_ast, {}, workspace)
+
+    run_manager = _get_run_manager(request)
+    run_id = str(uuid.uuid4())
+    await run_manager.start_run(run_id, executor, execute_coro)
+
+    return {"flow_run_id": run_id}

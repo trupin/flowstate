@@ -4,13 +4,14 @@ from __future__ import annotations
 
 import logging
 from contextlib import asynccontextmanager
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
     from collections.abc import AsyncGenerator
 
-from fastapi import FastAPI, Request, Response
+from fastapi import FastAPI, Request, Response, WebSocket
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
@@ -105,11 +106,13 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None]:
     """Async lifespan context manager for startup/shutdown hooks.
 
     Creates and starts the FlowRegistry (file watcher) on startup,
-    initializes the RunManager and database connection, and shuts
-    them all down cleanly on exit.
+    initializes the RunManager, database connection, and WebSocket hub,
+    wires file watcher events to the hub, and shuts them all down cleanly
+    on exit.
     """
-    from flowstate.server.flow_registry import FlowRegistry
+    from flowstate.server.flow_registry import DiscoveredFlow, FlowRegistry
     from flowstate.server.run_manager import RunManager
+    from flowstate.server.websocket import WebSocketHub
     from flowstate.state.repository import FlowstateDB
 
     config: FlowstateConfig = app.state.config
@@ -122,8 +125,60 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None]:
     run_manager = RunManager()
     app.state.run_manager = run_manager
 
+    # Initialize WebSocket hub
+    ws_hub = WebSocketHub()
+    ws_hub.set_run_manager(run_manager)
+    ws_hub.set_db(db)
+    app.state.ws_hub = ws_hub
+
     # Initialize flow registry
     registry = FlowRegistry(watch_dir=config.watch_dir)
+
+    # Wire file watcher events to WebSocket hub (SERVER-006)
+    def on_file_event(event_type: str, flow: DiscoveredFlow) -> None:
+        """Bridge FlowRegistry file events to WebSocket broadcasts."""
+        now = datetime.now(UTC).isoformat()
+        flow_name = flow.name or flow.id
+
+        # Always send file_changed first
+        changed_event: dict[str, Any] = {
+            "type": "flow.file_changed",
+            "flow_run_id": None,
+            "timestamp": now,
+            "payload": {
+                "file_path": flow.file_path,
+                "flow_name": flow_name,
+            },
+        }
+        ws_hub._schedule_task(ws_hub.broadcast_global_event(changed_event))
+
+        # Then send validity status
+        if event_type == "file_error":
+            error_event: dict[str, Any] = {
+                "type": "flow.file_error",
+                "flow_run_id": None,
+                "timestamp": now,
+                "payload": {
+                    "file_path": flow.file_path,
+                    "flow_name": flow_name,
+                    "errors": flow.errors,
+                },
+            }
+            ws_hub._schedule_task(ws_hub.broadcast_global_event(error_event))
+        else:
+            valid_event: dict[str, Any] = {
+                "type": "flow.file_valid",
+                "flow_run_id": None,
+                "timestamp": now,
+                "payload": {
+                    "file_path": flow.file_path,
+                    "flow_name": flow_name,
+                },
+            }
+            ws_hub._schedule_task(ws_hub.broadcast_global_event(valid_event))
+
+    registry.set_event_callback(on_file_event)
+
     app.state.flow_registry = registry
     await registry.start()
     try:
@@ -186,6 +241,12 @@ def create_app(
     from flowstate.server.routes import router
 
     app.include_router(router)
+
+    # WebSocket endpoint
+    @app.websocket("/ws")
+    async def websocket_endpoint(websocket: WebSocket) -> None:
+        hub = websocket.app.state.ws_hub
+        await hub.connect(websocket)
 
     # Mount static files LAST (catch-all SPA fallback must come after API routes)
     # Only mount when explicitly requested via static_dir parameter.

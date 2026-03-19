@@ -61,3 +61,41 @@ class RunDetailResponse(BaseModel):
     budget_seconds: int
     tasks: list[TaskExecutionResponse]
     edges: list[EdgeTransitionResponse]
+
+
+# ---------------------------------------------------------------------------
+# Task Logs (SERVER-004)
+# ---------------------------------------------------------------------------
+
+
+class TaskLogEntry(BaseModel):
+    """A single log entry from a task execution."""
+
+    timestamp: str  # ISO 8601
+    log_type: str  # "assistant", "tool_use", "tool_result", "error", "result"
+    content: str
+
+
+class TaskLogsResponse(BaseModel):
+    """Response body for GET /api/runs/:id/tasks/:tid/logs."""
+
+    task_execution_id: str
+    logs: list[TaskLogEntry]
+    has_more: bool  # True if there are more logs after the last returned entry
+
+
+# ---------------------------------------------------------------------------
+# Schedules (SERVER-004)
+# ---------------------------------------------------------------------------
+
+
+class ScheduleResponse(BaseModel):
+    """A flow schedule for list and detail responses."""
+
+    id: str
+    flow_name: str
+    cron_expression: str
+    status: str  # "active" or "paused"
+    next_run_at: str | None  # ISO 8601, None if paused
+    last_run_at: str | None  # ISO 8601, None if never run
+    overlap_policy: str  # "skip", "queue", "parallel"
