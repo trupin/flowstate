@@ -105,19 +105,33 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None]:
     """Async lifespan context manager for startup/shutdown hooks.
 
     Creates and starts the FlowRegistry (file watcher) on startup,
-    and stops it on shutdown. Future issues will add DB connections,
-    WebSocket hub, etc.
+    initializes the RunManager and database connection, and shuts
+    them all down cleanly on exit.
     """
     from flowstate.server.flow_registry import FlowRegistry
+    from flowstate.server.run_manager import RunManager
+    from flowstate.state.repository import FlowstateDB
 
     config: FlowstateConfig = app.state.config
+
+    # Initialize database
+    db = FlowstateDB(config.database_path)
+    app.state.db = db
+
+    # Initialize run manager
+    run_manager = RunManager()
+    app.state.run_manager = run_manager
+
+    # Initialize flow registry
     registry = FlowRegistry(watch_dir=config.watch_dir)
     app.state.flow_registry = registry
     await registry.start()
     try:
         yield
     finally:
+        await run_manager.shutdown()
         await registry.stop()
+        db.close()
 
 
 def create_app(

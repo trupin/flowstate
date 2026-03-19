@@ -13,6 +13,7 @@ from datetime import UTC, datetime
 
 from flowstate.state.database import FlowstateDB as _DatabaseBase
 from flowstate.state.models import (
+    EdgeTransitionRow,
     FlowDefinitionRow,
     FlowRunRow,
     FlowScheduleRow,
@@ -369,6 +370,14 @@ class FlowstateDB:
         )
         self._commit()
         return id
+
+    def list_edge_transitions(self, flow_run_id: str) -> list[EdgeTransitionRow]:
+        """List all edge transitions for a given flow run, ordered by creation time."""
+        rows = self._fetchall(
+            "SELECT * FROM edge_transitions WHERE flow_run_id = ? ORDER BY created_at",
+            (flow_run_id,),
+        )
+        return [EdgeTransitionRow(**dict(r)) for r in rows]
 
     # ================================================================== #
     # Fork Groups
