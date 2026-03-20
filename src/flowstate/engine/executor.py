@@ -25,7 +25,6 @@ import os
 import time
 import uuid
 from datetime import UTC, datetime
-from pathlib import Path
 from typing import TYPE_CHECKING
 
 from flowstate.dsl.ast import ContextMode, EdgeType, ErrorPolicy, NodeType
@@ -35,6 +34,7 @@ from flowstate.engine.context import (
     build_prompt_join,
     build_prompt_none,
     build_prompt_session,
+    build_routing_instructions,
     create_task_dir,
     expand_templates,
     get_context_mode,
@@ -46,11 +46,9 @@ from flowstate.engine.judge import JudgeContext, JudgeDecision, JudgePauseError,
 from flowstate.engine.subprocess_mgr import StreamEventType, SubprocessManager
 
 if TYPE_CHECKING:
-    from collections.abc import AsyncGenerator, Callable
+    from collections.abc import Callable
 
     from flowstate.dsl.ast import Edge, Flow, Node
-    from flowstate.engine.orchestrator import OrchestratorManager
-    from flowstate.engine.subprocess_mgr import StreamEvent
     from flowstate.state.repository import FlowstateDB
 
 logger = logging.getLogger(__name__)
@@ -98,6 +96,36 @@ def _is_fork(edges: list[Edge]) -> bool:
 def _is_conditional(edges: list[Edge]) -> bool:
     """Check if any outgoing edge is conditional."""
     return any(e.edge_type == EdgeType.CONDITIONAL for e in edges)
+
+
+def _maybe_append_routing(prompt: str, flow: Flow, node: Node, task_dir: str) -> str:
+    """Append self-report routing instructions if judge is disabled and node has conditionals."""
+    if _use_judge(flow, node):
+        return prompt
+    cond_edges = _conditional_edge_pairs(_get_outgoing_edges(flow, node.name))
+    if cond_edges:
+        return prompt + build_routing_instructions(task_dir, cond_edges)
+    return prompt
+
+
+def _conditional_edge_pairs(edges: list[Edge]) -> list[tuple[str, str]]:
+    """Extract (condition, target) pairs from conditional edges."""
+    return [
+        (e.condition, e.target)
+        for e in edges
+        if e.edge_type == EdgeType.CONDITIONAL and e.condition and e.target
+    ]
+
+
+def _use_judge(flow: Flow, node: Node) -> bool:
+    """Determine if a separate judge subprocess should evaluate routing.
+
+    Node-level ``judge`` overrides flow-level. ``None`` at node level means
+    inherit from flow. Default is ``False`` (task self-reports).
+    """
+    if node.judge is not None:
+        return node.judge
+    return flow.judge
 
 
 def _has_default_edge(edges: list[Edge]) -> bool:
@@ -178,7 +206,6 @@ class FlowExecutor:
         subprocess_mgr: SubprocessManager,
         judge: JudgeProtocol | None = None,
         max_concurrent: int = 4,
-        orchestrator_mgr: OrchestratorManager | None = None,
     ) -> None:
         self._db = db
         self._raw_callback = event_callback
@@ -199,7 +226,6 @@ class FlowExecutor:
         self._expanded_prompts: dict[str, str] = {}
         self._budget: BudgetGuard | None = None
         self._completed_queue: asyncio.Queue[str] | None = None
-        self._orchestrator_mgr = orchestrator_mgr
 
     def _emit(self, event: FlowEvent) -> None:
         """Emit an event via the callback, catching any callback exceptions."""
@@ -300,9 +326,19 @@ class FlowExecutor:
         completed_queue: asyncio.Queue[str] = asyncio.Queue()
         self._completed_queue = completed_queue
 
-        while pending or self._running_tasks:
-            if self._paused or self._cancelled:
+        while pending or self._running_tasks or self._paused:
+            # If cancelled, break out of the loop immediately.
+            if self._cancelled:
                 break
+
+            # If paused, wait for resume (or cancel) before continuing.
+            if self._paused:
+                await self._resume_event.wait()
+                self._resume_event.clear()
+                # After waking, re-check cancel (cancel signals the event too).
+                if self._cancelled:
+                    break
+                continue
 
             # Launch ready tasks (up to semaphore limit)
             ready = list(pending)
@@ -324,8 +360,13 @@ class FlowExecutor:
                 )
                 self._running_tasks[task_id] = atask
 
-            if self._paused or self._cancelled:
+            if self._cancelled:
                 break
+
+            # If paused after the for loop (with no running tasks), go back
+            # to the top of the while loop where the pause-wait logic handles it.
+            if self._paused and not self._running_tasks:
+                continue
 
             # Wait for at least one task to complete
             if self._running_tasks and not completed_queue.qsize():
@@ -360,12 +401,27 @@ class FlowExecutor:
 
         Returns True if the flow should stop (completed or error handled).
         """
+        # ENGINE-017: If the flow is being cancelled, skip all processing.
+        # This guards against the race where a task's CancelledError handler
+        # (or the subprocess exit with code 143) puts the task into the
+        # completed_queue and the main loop processes it before cancel()
+        # finishes its own cleanup.  Without this check, a task whose DB
+        # status is still "running" (because CancelledError fired before the
+        # status update) could be treated as a successful completion and
+        # trigger successor task creation or on_error=pause.
+        if self._cancelled:
+            return False
+
         # Get task execution from DB
         task_exec = self._db.get_task_execution(completed_id)
         if task_exec is None:
             return False
 
         if task_exec.status == "failed":
+            # If the flow is being cancelled, don't apply the on_error policy.
+            # The cancel() method handles its own cleanup.
+            if self._cancelled:
+                return False
             await self._handle_error(
                 flow_run_id, flow, budget, completed_id, pending, expanded_prompts, data_dir
             )
@@ -683,6 +739,60 @@ class FlowExecutor:
     # Conditional + cycle handling (ENGINE-007)
     # ------------------------------------------------------------------ #
 
+    async def _acquire_routing_decision(
+        self,
+        flow: Flow,
+        node: Node,
+        task_exec: object,
+        cond_edges: list[tuple[str, str]],
+        flow_run_id: str,
+    ) -> JudgeDecision | None:
+        """Acquire a routing decision via judge subprocess or self-report.
+
+        Returns the decision, or None if the flow was paused due to failure.
+        """
+        from flowstate.engine.judge import read_judge_decision
+        from flowstate.state.models import TaskExecutionRow
+
+        assert isinstance(task_exec, TaskExecutionRow)
+
+        if _use_judge(flow, node):
+            summary = read_summary(task_exec.task_dir)
+            judge_context = JudgeContext(
+                node_name=task_exec.node_name,
+                task_prompt=task_exec.prompt_text,
+                exit_code=task_exec.exit_code or 0,
+                summary=summary,
+                task_cwd=task_exec.cwd,
+                run_id=flow_run_id,
+                outgoing_edges=cond_edges,
+                skip_permissions=flow.skip_permissions,
+            )
+
+            self._emit(
+                FlowEvent(
+                    type=EventType.JUDGE_STARTED,
+                    flow_run_id=flow_run_id,
+                    timestamp=_now_iso(),
+                    payload={
+                        "from_node": task_exec.node_name,
+                        "conditions": [c for c, _ in cond_edges],
+                    },
+                )
+            )
+
+            try:
+                return await self._judge.evaluate(judge_context)
+            except JudgePauseError as e:
+                self._pause_flow(flow_run_id, f"Judge failed: {e.reason}")
+                return None
+        else:
+            try:
+                return read_judge_decision(task_exec.task_dir)
+            except (FileNotFoundError, ValueError) as e:
+                self._pause_flow(flow_run_id, f"Task self-report failed: {e}")
+                return None
+
     async def _handle_conditional(
         self,
         outgoing: list[Edge],
@@ -694,65 +804,17 @@ class FlowExecutor:
         data_dir: str,
         pending: set[str],
     ) -> None:
-        """Invoke judge to evaluate conditional edges and route accordingly."""
-        # task_exec is a TaskExecutionRow
+        """Evaluate conditional edges and route accordingly."""
         from flowstate.state.models import TaskExecutionRow
 
         assert isinstance(task_exec, TaskExecutionRow)
+        node = flow.nodes[task_exec.node_name]
+        cond_edges = _conditional_edge_pairs(outgoing)
 
-        summary = read_summary(task_exec.task_dir)
-        judge_context = JudgeContext(
-            node_name=task_exec.node_name,
-            task_prompt=task_exec.prompt_text,
-            exit_code=task_exec.exit_code or 0,
-            summary=summary,
-            task_cwd=task_exec.cwd,
-            run_id=flow_run_id,
-            outgoing_edges=[
-                (e.condition, e.target)
-                for e in outgoing
-                if e.edge_type == EdgeType.CONDITIONAL and e.condition and e.target
-            ],
-            skip_permissions=flow.skip_permissions,
+        decision = await self._acquire_routing_decision(
+            flow, node, task_exec, cond_edges, flow_run_id
         )
-
-        self._emit(
-            FlowEvent(
-                type=EventType.JUDGE_STARTED,
-                flow_run_id=flow_run_id,
-                timestamp=_now_iso(),
-                payload={
-                    "from_node": task_exec.node_name,
-                    "conditions": [c for c, _ in judge_context.outgoing_edges],
-                },
-            )
-        )
-
-        # Get orchestrator session if available
-        orch_session = None
-        orch_data_dir = None
-        if self._orchestrator_mgr is not None:
-            try:
-                orch_session = await self._orchestrator_mgr.get_or_create(
-                    harness="claude",
-                    cwd=task_exec.cwd,
-                    flow=flow,
-                    run_id=flow_run_id,
-                    run_data_dir=data_dir,
-                    skip_permissions=flow.skip_permissions,
-                )
-                orch_data_dir = data_dir
-            except Exception:
-                pass  # Fall through to direct judge
-
-        try:
-            decision = await self._judge.evaluate(
-                judge_context,
-                orchestrator_session=orch_session,
-                run_data_dir=orch_data_dir,
-            )
-        except JudgePauseError as e:
-            self._pause_flow(flow_run_id, f"Judge failed: {e.reason}")
+        if decision is None:
             return
 
         self._emit(
@@ -849,68 +911,20 @@ class FlowExecutor:
         data_dir: str,
         pending: set[str],
     ) -> None:
-        """Invoke judge on conditional edges; fall back to default edge if no match."""
+        """Evaluate conditional edges; fall back to default edge if no match."""
         from flowstate.state.models import TaskExecutionRow
 
         assert isinstance(task_exec, TaskExecutionRow)
+        node = flow.nodes[task_exec.node_name]
 
         # Separate default and conditional edges
         default_edge = next(e for e in outgoing if e.edge_type == EdgeType.UNCONDITIONAL)
-        conditional_edges = [e for e in outgoing if e.edge_type == EdgeType.CONDITIONAL]
+        cond_edges = _conditional_edge_pairs(outgoing)
 
-        # Build judge context with only conditional edges
-        summary = read_summary(task_exec.task_dir)
-        judge_context = JudgeContext(
-            node_name=task_exec.node_name,
-            task_prompt=task_exec.prompt_text,
-            exit_code=task_exec.exit_code or 0,
-            summary=summary,
-            task_cwd=task_exec.cwd,
-            run_id=flow_run_id,
-            outgoing_edges=[
-                (e.condition, e.target) for e in conditional_edges if e.condition and e.target
-            ],
-            skip_permissions=flow.skip_permissions,
+        decision = await self._acquire_routing_decision(
+            flow, node, task_exec, cond_edges, flow_run_id
         )
-
-        # Emit judge started event
-        self._emit(
-            FlowEvent(
-                type=EventType.JUDGE_STARTED,
-                flow_run_id=flow_run_id,
-                timestamp=_now_iso(),
-                payload={
-                    "from_node": task_exec.node_name,
-                    "conditions": [c for c, _ in judge_context.outgoing_edges],
-                },
-            )
-        )
-
-        # Get orchestrator session if available
-        orch_session = None
-        orch_data_dir = None
-        if self._orchestrator_mgr is not None:
-            try:
-                orch_session = await self._orchestrator_mgr.get_or_create(
-                    harness="claude",
-                    cwd=task_exec.cwd,
-                    flow=flow,
-                    run_id=flow_run_id,
-                    run_data_dir=data_dir,
-                    skip_permissions=flow.skip_permissions,
-                )
-                orch_data_dir = data_dir
-            except Exception:
-                pass  # Fall through to direct judge
-
-        try:
-            decision = await self._judge.evaluate(
-                judge_context,
-                orchestrator_session=orch_session,
-                run_data_dir=orch_data_dir,
-            )
-        except JudgePauseError as e:
-            self._pause_flow(flow_run_id, f"Judge failed: {e.reason}")
+        if decision is None:
             return
 
         self._emit(
@@ -989,7 +1003,7 @@ class FlowExecutor:
         # Judge matched a condition -> follow that conditional edge
         chosen_edge = next(
             e
-            for e in conditional_edges
+            for e in outgoing
             if e.edge_type == EdgeType.CONDITIONAL and e.target == decision.target
         )
 
@@ -1095,6 +1109,8 @@ class FlowExecutor:
         if expanded_prompt != target_node.prompt:
             prompt = prompt.replace(target_node.prompt, expanded_prompt)
 
+        prompt = _maybe_append_routing(prompt, flow, target_node, task_dir)
+
         task_id = self._db.create_task_execution(
             flow_run_id=flow_run_id,
             node_name=target_node.name,
@@ -1161,10 +1177,23 @@ class FlowExecutor:
             )
         )
 
+        # Re-populate pending tasks: find tasks whose predecessors are all
+        # complete but that haven't been started yet (status = "pending").
+        if self._flow is not None:
+            tasks = self._db.list_task_executions(flow_run_id)
+            for task in tasks:
+                if task.status == "pending" and task.id not in self._running_tasks:
+                    self._pending_tasks.add(task.id)
+
+        # Signal the main loop to wake up and continue.
+        self._resume_event.set()
+
     async def cancel(self, flow_run_id: str) -> None:
         """Cancel the flow. Kill all running subprocesses."""
         self._cancelled = True
         self._paused = False  # unblock if paused
+        # Wake up the main loop if it's waiting on _resume_event (paused state).
+        self._resume_event.set()
 
         # Kill all running subprocesses
         for task_id in list(self._running_tasks):
@@ -1175,16 +1204,13 @@ class FlowExecutor:
             if atask:
                 atask.cancel()
 
-        # Terminate orchestrator sessions if present
-        if self._orchestrator_mgr is not None:
-            await self._orchestrator_mgr.terminate_all(flow_run_id)
-
         # Wait for all tasks to finish cancellation
         if self._running_tasks:
             await asyncio.gather(*self._running_tasks.values(), return_exceptions=True)
         self._running_tasks.clear()
 
-        # Mark all running/pending tasks as failed
+        # Mark all still-active tasks as failed (due to cancellation).
+        # The DB schema only allows 'failed'/'skipped' for terminal error states.
         tasks = self._db.list_task_executions(flow_run_id)
         for task in tasks:
             if task.status in ("running", "pending", "waiting"):
@@ -1327,85 +1353,22 @@ class FlowExecutor:
         try:
             skip_perms = flow.skip_permissions
             session_id = task_exec.claude_session_id or str(uuid.uuid4())
-            stream: AsyncGenerator[StreamEvent, None] | None = None
 
-            # --- Orchestrator path (routes task through orchestrator session) ---
-            if self._orchestrator_mgr is not None:
-                try:
-                    from flowstate.engine.context import write_task_input
-                    from flowstate.engine.orchestrator import build_task_instruction
-
-                    orch_session = await self._orchestrator_mgr.get_or_create(
-                        harness="claude",
-                        cwd=task_exec.cwd,
-                        flow=flow,
-                        run_id=flow_run_id,
-                        run_data_dir=data_dir,
-                        skip_permissions=skip_perms,
-                    )
-
-                    # Write INPUT.md with the full task prompt
-                    input_path = write_task_input(task_exec.task_dir, task_exec.prompt_text)
-
-                    # Build short instruction for orchestrator
-                    instruction = build_task_instruction(
-                        node_name=task_exec.node_name,
-                        generation=task_exec.generation,
-                        input_path=input_path,
-                        task_dir=task_exec.task_dir,
-                        cwd=task_exec.cwd,
-                    )
-
-                    if not orch_session.is_initialized:
-                        # First task: combine system prompt + task instruction
-                        # in a single subprocess call (no separate init needed)
-                        session_id = orch_session.session_id
-                        stream = self._subprocess_mgr.run_task_with_system_prompt(
-                            system_prompt=orch_session.system_prompt,
-                            init_message=instruction,
-                            workspace=task_exec.cwd,
-                            session_id=session_id,
-                            skip_permissions=skip_perms,
-                            model="sonnet",
-                        )
-                        orch_session.is_initialized = True
-                    else:
-                        # Subsequent tasks: resume the orchestrator session
-                        session_id = orch_session.session_id
-                        stream = self._subprocess_mgr.run_task_resume(
-                            instruction,
-                            task_exec.cwd,
-                            orch_session.session_id,
-                            skip_permissions=skip_perms,
-                        )
-                except Exception:
-                    # Fall back to direct subprocess on any orchestrator error
-                    logger.warning(
-                        "Orchestrator init failed for task %s, falling back to direct subprocess",
-                        task_exec.node_name,
-                    )
-                    self._orchestrator_mgr = None  # Don't retry for this run
-
-            # --- Direct subprocess path (existing behavior) ---
-            if stream is None:
-                session_id = task_exec.claude_session_id or str(uuid.uuid4())
-                if (
-                    task_exec.context_mode == ContextMode.SESSION.value
-                    and task_exec.claude_session_id
-                ):
-                    stream = self._subprocess_mgr.run_task_resume(
-                        task_exec.prompt_text,
-                        task_exec.cwd,
-                        task_exec.claude_session_id,
-                        skip_permissions=skip_perms,
-                    )
-                else:
-                    stream = self._subprocess_mgr.run_task(
-                        task_exec.prompt_text,
-                        task_exec.cwd,
-                        session_id,
-                        skip_permissions=skip_perms,
-                    )
+            # Determine if this is a session resume or fresh task
+            if task_exec.context_mode == ContextMode.SESSION.value and task_exec.claude_session_id:
+                stream = self._subprocess_mgr.run_task_resume(
+                    task_exec.prompt_text,
+                    task_exec.cwd,
+                    task_exec.claude_session_id,
+                    skip_permissions=skip_perms,
+                )
+            else:
+                stream = self._subprocess_mgr.run_task(
+                    task_exec.prompt_text,
+                    task_exec.cwd,
+                    session_id,
+                    skip_permissions=skip_perms,
+                )
 
             # Stream events
             exit_code: int | None = None
@@ -1432,28 +1395,12 @@ class FlowExecutor:
                 ):
                     exit_code = event.content.get("exit_code", -1)
                 # Capture real Claude Code session ID from system/init event.
-                # Update orchestrator session too so subsequent resumes use it.
                 if (
                     event.type == StreamEventType.SYSTEM
                     and event.content.get("subtype") == "init"
                     and isinstance(event.content.get("session_id"), str)
                 ):
                     session_id = event.content["session_id"]
-                    if self._orchestrator_mgr is not None and stream is not None:
-                        try:
-                            orch = await self._orchestrator_mgr.get_or_create(
-                                harness="claude",
-                                cwd=task_exec.cwd,
-                                flow=flow,
-                                run_id=flow_run_id,
-                                run_data_dir=data_dir,
-                                skip_permissions=skip_perms,
-                            )
-                            orch.session_id = session_id
-                            # Persist for recovery
-                            Path(orch.data_dir, "session_id").write_text(session_id)
-                        except Exception:
-                            pass
 
             elapsed = time.monotonic() - start_time
 
@@ -1495,7 +1442,13 @@ class FlowExecutor:
                     )
                 )
             else:
-                error_msg = f"Task exited with code {exit_code}"
+                # When the flow is being cancelled, still mark as "failed" (DB
+                # schema constraint) but skip the TASK_FAILED event -- the
+                # _handle_error guard on self._cancelled prevents the on_error
+                # policy from triggering.
+                error_msg = (
+                    "Flow cancelled" if self._cancelled else f"Task exited with code {exit_code}"
+                )
                 self._db.update_task_status(
                     task_execution_id,
                     "failed",
@@ -1503,6 +1456,47 @@ class FlowExecutor:
                     elapsed_seconds=elapsed,
                     completed_at=_now_iso(),
                 )
+                if not self._cancelled:
+                    self._emit(
+                        FlowEvent(
+                            type=EventType.TASK_FAILED,
+                            flow_run_id=flow_run_id,
+                            timestamp=_now_iso(),
+                            payload={
+                                "task_execution_id": task_execution_id,
+                                "node_name": node.name,
+                                "error_message": error_msg,
+                            },
+                        )
+                    )
+        except asyncio.CancelledError:
+            # ENGINE-017: asyncio.CancelledError is a BaseException, not caught by
+            # 'except Exception'.  When cancel() calls atask.cancel() on our task,
+            # we must handle it explicitly to mark the task as failed in the DB.
+            # Without this handler the task status stays "running" and the cancel()
+            # cleanup loop has to fix it -- but between then and the main loop
+            # picking the task off completed_queue there is a window where
+            # _process_completed_task could see a non-"failed" status and
+            # incorrectly evaluate outgoing edges or trigger on_error=pause.
+            elapsed = time.monotonic() - start_time
+            self._db.update_task_status(
+                task_execution_id,
+                "failed",
+                error_message="Flow cancelled",
+                elapsed_seconds=elapsed,
+                completed_at=_now_iso(),
+            )
+        except Exception as e:
+            elapsed = time.monotonic() - start_time
+            error_msg_exc = "Flow cancelled" if self._cancelled else str(e)
+            self._db.update_task_status(
+                task_execution_id,
+                "failed",
+                error_message=error_msg_exc,
+                elapsed_seconds=elapsed,
+                completed_at=_now_iso(),
+            )
+            if not self._cancelled:
                 self._emit(
                     FlowEvent(
                         type=EventType.TASK_FAILED,
@@ -1511,31 +1505,10 @@ class FlowExecutor:
                         payload={
                             "task_execution_id": task_execution_id,
                             "node_name": node.name,
-                            "error_message": error_msg,
+                            "error_message": str(e),
                         },
                     )
                 )
-        except Exception as e:
-            elapsed = time.monotonic() - start_time
-            self._db.update_task_status(
-                task_execution_id,
-                "failed",
-                error_message=str(e),
-                elapsed_seconds=elapsed,
-                completed_at=_now_iso(),
-            )
-            self._emit(
-                FlowEvent(
-                    type=EventType.TASK_FAILED,
-                    flow_run_id=flow_run_id,
-                    timestamp=_now_iso(),
-                    payload={
-                        "task_execution_id": task_execution_id,
-                        "node_name": node.name,
-                        "error_message": str(e),
-                    },
-                )
-            )
         finally:
             await completed_queue.put(task_execution_id)
 
@@ -1573,6 +1546,8 @@ class FlowExecutor:
         if expanded_prompt != node.prompt:
             prompt = prompt.replace(node.prompt, expanded_prompt)
 
+        prompt = _maybe_append_routing(prompt, flow, node, task_dir)
+
         task_id = self._db.create_task_execution(
             flow_run_id=flow_run_id,
             node_name=node.name,
@@ -1600,6 +1575,10 @@ class FlowExecutor:
         data_dir: str,
     ) -> None:
         """Apply the flow's on_error policy after a task failure."""
+        # Don't apply on_error policy when the flow is being cancelled.
+        if self._cancelled:
+            return
+
         policy = flow.on_error
         failed_task = self._db.get_task_execution(failed_task_id)
 
@@ -1669,14 +1648,6 @@ class FlowExecutor:
         """Mark the flow as completed: update DB and emit event."""
         self._db.update_flow_run_elapsed(flow_run_id, budget.elapsed)
         self._db.update_flow_run_status(flow_run_id, "completed")
-
-        # Terminate orchestrator sessions if present
-        if self._orchestrator_mgr is not None:
-            # Schedule termination as a background task since this is a sync method.
-            # Store reference to prevent garbage collection (RUF006).
-            self._orch_cleanup_task: asyncio.Task[None] | None = asyncio.ensure_future(
-                self._orchestrator_mgr.terminate_all(flow_run_id)
-            )
 
         self._emit(
             FlowEvent(

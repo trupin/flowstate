@@ -700,3 +700,74 @@ def test_triple_quoted_prompt():
     prompt = flow.nodes["a"].prompt
     assert "long prompt" in prompt
     assert "multiple lines" in prompt
+
+
+# ---------------------------------------------------------------------------
+# Additional: judge parameter
+# ---------------------------------------------------------------------------
+
+
+class TestJudgeParameter:
+    """Test judge boolean parameter at flow level and node level."""
+
+    def test_flow_judge_true(self):
+        source = (
+            "flow f { budget = 1h on_error = pause context = handoff judge = true "
+            'entry a { prompt = "x" } exit b { prompt = "y" } a -> b }'
+        )
+        flow = parse_flow(source)
+        assert flow.judge is True
+
+    def test_flow_judge_false(self):
+        source = (
+            "flow f { budget = 1h on_error = pause context = handoff judge = false "
+            'entry a { prompt = "x" } exit b { prompt = "y" } a -> b }'
+        )
+        flow = parse_flow(source)
+        assert flow.judge is False
+
+    def test_flow_judge_default(self):
+        source = (
+            "flow f { budget = 1h on_error = pause context = handoff "
+            'entry a { prompt = "x" } exit b { prompt = "y" } a -> b }'
+        )
+        flow = parse_flow(source)
+        assert flow.judge is False
+
+    def test_node_judge_true(self):
+        source = (
+            "flow f { budget = 1h on_error = pause context = handoff "
+            'entry a { prompt = "x" judge = true } exit b { prompt = "y" } a -> b }'
+        )
+        flow = parse_flow(source)
+        assert flow.nodes["a"].judge is True
+
+    def test_node_judge_false(self):
+        source = (
+            "flow f { budget = 1h on_error = pause context = handoff "
+            'entry a { prompt = "x" judge = false } exit b { prompt = "y" } a -> b }'
+        )
+        flow = parse_flow(source)
+        assert flow.nodes["a"].judge is False
+
+    def test_node_judge_default_is_none(self):
+        source = (
+            "flow f { budget = 1h on_error = pause context = handoff "
+            'entry a { prompt = "x" } exit b { prompt = "y" } a -> b }'
+        )
+        flow = parse_flow(source)
+        assert flow.nodes["a"].judge is None
+        assert flow.nodes["b"].judge is None
+
+    def test_flow_and_node_judge_together(self):
+        source = (
+            "flow f { budget = 1h on_error = pause context = handoff judge = true "
+            'entry a { prompt = "x" judge = false } '
+            'task b { prompt = "y" } '
+            'exit c { prompt = "z" } a -> b b -> c }'
+        )
+        flow = parse_flow(source)
+        assert flow.judge is True
+        assert flow.nodes["a"].judge is False
+        assert flow.nodes["b"].judge is None  # inherits from flow
+        assert flow.nodes["c"].judge is None

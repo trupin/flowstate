@@ -83,7 +83,7 @@ class MockSubprocessManager(SubprocessManager):
         self._task_count = 0
 
     async def run_task(  # type: ignore[override]
-        self, prompt: str, workspace: str, session_id: str
+        self, prompt: str, workspace: str, session_id: str, *, skip_permissions: bool = False
     ) -> Any:
         """Yield mock stream events simulating a successful Claude Code run."""
         self._task_count += 1
@@ -107,7 +107,7 @@ class MockSubprocessManager(SubprocessManager):
         )
 
     async def run_task_resume(  # type: ignore[override]
-        self, prompt: str, workspace: str, resume_session_id: str
+        self, prompt: str, workspace: str, resume_session_id: str, *, skip_permissions: bool = False
     ) -> Any:
         """Delegate to run_task for simplicity."""
         async for event in self.run_task(prompt, workspace, resume_session_id):

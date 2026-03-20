@@ -52,6 +52,7 @@ class Node:
     node_type: NodeType
     prompt: str
     cwd: str | None = None
+    judge: bool | None = None
     line: int = 0
     column: int = 0
 
@@ -86,6 +87,7 @@ class Flow:
     schedule: str | None = None
     on_overlap: OverlapPolicy = OverlapPolicy.SKIP
     skip_permissions: bool = False
+    judge: bool = False
     params: tuple[Param, ...] = ()
     nodes: dict[str, Node] = field(default_factory=dict)
     edges: tuple[Edge, ...] = ()

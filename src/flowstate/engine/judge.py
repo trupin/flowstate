@@ -15,12 +15,8 @@ from __future__ import annotations
 import json
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING
 
 from flowstate.engine.subprocess_mgr import JudgeError, JudgeResult, SubprocessManager
-
-if TYPE_CHECKING:
-    from flowstate.engine.orchestrator import OrchestratorManager, OrchestratorSession
 
 
 @dataclass
@@ -162,39 +158,19 @@ class JudgeProtocol:
     def __init__(
         self,
         subprocess_mgr: SubprocessManager,
-        orchestrator_mgr: OrchestratorManager | None = None,
     ) -> None:
         self._subprocess_mgr = subprocess_mgr
-        self._orchestrator_mgr = orchestrator_mgr
 
     async def evaluate(
         self,
         context: JudgeContext,
-        *,
-        orchestrator_session: OrchestratorSession | None = None,
-        run_data_dir: str | None = None,
     ) -> JudgeDecision:
         """Run judge evaluation with automatic retry on failure.
-
-        If an orchestrator session is provided, tries orchestrator path first.
-        Falls back to direct subprocess on failure.
 
         Retries once on subprocess crash (JudgeError) or invalid output
         (KeyError / ValueError).  Raises JudgePauseError if the retry
         also fails.
         """
-        # Try orchestrator path first
-        if orchestrator_session is not None and run_data_dir is not None:
-            try:
-                return await self.evaluate_via_orchestrator(
-                    context,
-                    orchestrator_session,
-                    run_data_dir,
-                )
-            except Exception:
-                pass  # Fall through to direct subprocess
-
-        # Direct subprocess path (existing logic)
         prompt = build_judge_prompt(context)
 
         # First attempt
@@ -214,46 +190,6 @@ class JudgeProtocol:
             return self._parse_result(result, context)
         except (JudgeError, KeyError, ValueError) as second_error:
             raise JudgePauseError(f"Judge failed after retry: {second_error}") from second_error
-
-    async def evaluate_via_orchestrator(
-        self,
-        context: JudgeContext,
-        session: OrchestratorSession,
-        run_data_dir: str,
-    ) -> JudgeDecision:
-        """Evaluate conditional edges via the orchestrator session.
-
-        Writes REQUEST.md, resumes the orchestrator with judge instruction,
-        reads DECISION.json after completion.
-        """
-        from flowstate.engine.context import create_judge_dir
-        from flowstate.engine.orchestrator import build_judge_instruction
-
-        # Create judge directory and write request
-        judge_dir = create_judge_dir(run_data_dir, context.node_name, 1)
-        request_path = write_judge_request(judge_dir, context)
-        decision_path = str(Path(judge_dir) / "DECISION.json")
-
-        targets = [target for _, target in context.outgoing_edges]
-        instruction = build_judge_instruction(
-            context.node_name,
-            request_path,
-            decision_path,
-            targets,
-        )
-
-        # Resume orchestrator
-        stream = self._subprocess_mgr.run_task_resume(
-            instruction,
-            context.task_cwd,
-            session.session_id,
-            skip_permissions=context.skip_permissions,
-        )
-        async for _event in stream:
-            pass  # Wait for completion
-
-        # Read decision from file
-        return read_judge_decision(judge_dir)
 
     def _parse_result(self, result: JudgeResult, context: JudgeContext) -> JudgeDecision:
         """Parse and validate the JudgeResult from the subprocess manager.

@@ -63,7 +63,11 @@ def _make_judge_result(
 
 
 def _mock_subprocess_mgr(**kwargs: object) -> SubprocessManager:
-    """Create a SubprocessManager mock with run_judge as an AsyncMock."""
+    """Create a SubprocessManager mock with run_judge as an AsyncMock.
+
+    Note: SubprocessManager will be replaced by SDKRunner once the migration
+    is complete. The mock interface is identical.
+    """
     mgr = AsyncMock(spec=SubprocessManager)
     mgr.run_judge = AsyncMock(**kwargs)
     return mgr

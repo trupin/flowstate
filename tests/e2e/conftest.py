@@ -23,7 +23,9 @@ from tests.e2e.mock_subprocess import MockSubprocessManager
 # Set test mode before any app imports
 os.environ["FLOWSTATE_TEST_MODE"] = "1"
 
-from flowstate.config import FlowstateConfig  # noqa: E402
+from flowstate.config import (  # noqa: E402 — must import after FLOWSTATE_TEST_MODE is set
+    FlowstateConfig,
+)
 from flowstate.server.app import create_app  # noqa: E402
 
 

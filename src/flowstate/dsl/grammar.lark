@@ -19,6 +19,7 @@ flow_attr: "budget" "=" DURATION       -> flow_budget
          | "schedule" "=" STRING       -> flow_schedule
          | "on_overlap" "=" OVERLAP_POLICY -> flow_on_overlap
          | "skip_permissions" "=" BOOL_LIT -> flow_skip_permissions
+         | "judge" "=" BOOL_LIT -> flow_judge
 
 BOOL_LIT.2: "true" | "false"
 ERROR_POLICY.2: "pause" | "abort" | "skip"
@@ -45,6 +46,7 @@ exit_node:  "exit"  NAME "{" node_body "}"
 node_body: node_attr+
 node_attr: "prompt" "=" string  -> node_prompt
          | "cwd" "=" STRING     -> node_cwd
+         | "judge" "=" BOOL_LIT -> node_judge
 
 // Edges
 edge_decl: simple_edge | cond_edge | fork_edge | join_edge

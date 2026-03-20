@@ -120,8 +120,11 @@ class _FlowTransformer(Transformer[Token, Flow]):
     def node_cwd(self, items: list[Token]) -> tuple[str, str]:
         return ("cwd", _strip_string(items[0]))
 
-    def node_body(self, items: list[tuple[str, str]]) -> dict[str, str]:
-        result: dict[str, str] = {}
+    def node_judge(self, items: list[Token]) -> tuple[str, bool]:
+        return ("judge", str(items[0]) == "true")
+
+    def node_body(self, items: list[tuple[str, str | bool]]) -> dict[str, str | bool]:
+        result: dict[str, str | bool] = {}
         for key, value in items:
             result[key] = value
         return result
@@ -129,40 +132,58 @@ class _FlowTransformer(Transformer[Token, Flow]):
     # -- Nodes (with meta for line/column) --
 
     @v_args(meta=True)
-    def entry_node(self, meta: Any, items: list[Token | dict[str, str]]) -> Node:
+    def entry_node(self, meta: Any, items: list[Token | dict[str, str | bool]]) -> Node:
         name = str(items[0])
-        body: dict[str, str] = items[1] if len(items) > 1 and isinstance(items[1], dict) else {}
+        body: dict[str, str | bool] = (
+            items[1] if len(items) > 1 and isinstance(items[1], dict) else {}
+        )
+        prompt = body.get("prompt", "")
+        cwd = body.get("cwd")
+        judge = body.get("judge")
         return Node(
             name=name,
             node_type=NodeType.ENTRY,
-            prompt=body.get("prompt", ""),
-            cwd=body.get("cwd"),
+            prompt=str(prompt),
+            cwd=str(cwd) if cwd is not None else None,
+            judge=bool(judge) if judge is not None else None,
             line=_meta_line(meta),
             column=_meta_column(meta),
         )
 
     @v_args(meta=True)
-    def task_node(self, meta: Any, items: list[Token | dict[str, str]]) -> Node:
+    def task_node(self, meta: Any, items: list[Token | dict[str, str | bool]]) -> Node:
         name = str(items[0])
-        body: dict[str, str] = items[1] if len(items) > 1 and isinstance(items[1], dict) else {}
+        body: dict[str, str | bool] = (
+            items[1] if len(items) > 1 and isinstance(items[1], dict) else {}
+        )
+        prompt = body.get("prompt", "")
+        cwd = body.get("cwd")
+        judge = body.get("judge")
         return Node(
             name=name,
             node_type=NodeType.TASK,
-            prompt=body.get("prompt", ""),
-            cwd=body.get("cwd"),
+            prompt=str(prompt),
+            cwd=str(cwd) if cwd is not None else None,
+            judge=bool(judge) if judge is not None else None,
             line=_meta_line(meta),
             column=_meta_column(meta),
         )
 
     @v_args(meta=True)
-    def exit_node(self, meta: Any, items: list[Token | dict[str, str]]) -> Node:
+    def exit_node(self, meta: Any, items: list[Token | dict[str, str | bool]]) -> Node:
         name = str(items[0])
-        body: dict[str, str] = items[1] if len(items) > 1 and isinstance(items[1], dict) else {}
+        body: dict[str, str | bool] = (
+            items[1] if len(items) > 1 and isinstance(items[1], dict) else {}
+        )
+        prompt = body.get("prompt", "")
+        cwd = body.get("cwd")
+        judge = body.get("judge")
         return Node(
             name=name,
             node_type=NodeType.EXIT,
-            prompt=body.get("prompt", ""),
-            cwd=body.get("cwd"),
+            prompt=str(prompt),
+            cwd=str(cwd) if cwd is not None else None,
+            judge=bool(judge) if judge is not None else None,
             line=_meta_line(meta),
             column=_meta_column(meta),
         )
@@ -280,6 +301,9 @@ class _FlowTransformer(Transformer[Token, Flow]):
     def flow_skip_permissions(self, items: list[Token]) -> tuple[str, bool]:
         return ("skip_permissions", str(items[0]) == "true")
 
+    def flow_judge(self, items: list[Token]) -> tuple[str, bool]:
+        return ("judge", str(items[0]) == "true")
+
     # -- Flow body and declaration --
 
     def flow_stmt(self, items: list[object]) -> object:
@@ -330,6 +354,7 @@ class _FlowTransformer(Transformer[Token, Flow]):
             schedule=str(attrs["schedule"]) if "schedule" in attrs else None,
             on_overlap=on_overlap,
             skip_permissions=bool(attrs.get("skip_permissions", False)),
+            judge=bool(attrs.get("judge", False)),
             params=tuple(params),
             nodes=nodes,
             edges=tuple(edges),

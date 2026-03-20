@@ -40,6 +40,7 @@
 | DSL-004 | Type Checker (edge rules E1-E9)       | dsl    | P0       | DSL-002    | done   |
 | DSL-005 | Type Checker (cycle rules C1-C3)      | dsl    | P0       | DSL-002    | done   |
 | DSL-006 | Type Checker (fork-join rules F1-F3)  | dsl    | P0       | DSL-002    | done   |
+| DSL-007 | Add judge boolean parameter            | dsl    | P1       | —          | done   |
 
 
 ### Phase 1 — State
@@ -110,6 +111,10 @@
 | UI-015 | Rich Tool Call Rendering in Log Viewer                  | ui     | P1       | UI-006                                 | done   |
 | UI-016 | Orchestrator Console in Run Detail                     | ui     | P1       | UI-011, ENGINE-015                     | done   |
 | UI-017 | Edge Animation Persists After State Transition         | ui     | P0       | UI-004                                 | done   |
+| UI-020 | Thinking label transitions to "Thoughts" when done     | ui     | P1       | UI-006                                 | todo   |
+| UI-021 | Graph UI stuck on completion — requires manual re-select | ui     | P0       | UI-008, UI-011                         | todo   |
+| UI-022 | Show cwd, task_dir, worktree in node details             | ui     | P1       | UI-005, ENGINE-025                     | todo   |
+| UI-023 | Replace Flows list with selected flow detail view        | ui     | P1       | UI-010                                 | todo   |
 
 
 ### Phase 5 — Integration
@@ -130,6 +135,20 @@
 | ENGINE-014 | Orchestrator Session Manager                       | engine | P0       | ENGINE-013              | done   |
 | ENGINE-015 | Orchestrator as Task Executor                      | engine | P0       | ENGINE-012, ENGINE-014  | done   |
 | ENGINE-016 | Orchestrator as Judge                              | engine | P0       | ENGINE-012, ENGINE-014  | done   |
+
+
+### Phase 8 — Bug Fixes
+
+
+| Issue      | Title                                                     | Domain | Priority | Depends On | Status      |
+| ---------- | --------------------------------------------------------- | ------ | -------- | ---------- | ----------- |
+| ENGINE-017 | Cancel triggers on_error=pause instead of cancelling      | engine | P1       | —          | done        |
+| ENGINE-018 | Resume does not restart execution after pause             | engine | P2       | —          | done        |
+| ENGINE-021 | Remove OrchestratorManager and simplify executor          | engine | P0       | —          | done        |
+| ENGINE-023 | Implement self-report routing (DECISION.json)             | engine | P1       | DSL-007    | done        |
+| ENGINE-024 | Emit executor activity logs visible in UI console        | engine | P1       | ENGINE-021 | todo        |
+| ENGINE-025 | Workspace/data-dir separation + git worktree isolation   | engine | P0       | —          | todo        |
+| SERVER-010 | Update routes — remove orchestrator references            | server | P0       | ENGINE-021 | done        |
 
 
 ### Phase 7 — E2E Testing

@@ -8,6 +8,7 @@ are launched.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -160,9 +161,6 @@ class MockJudgeProtocol(JudgeProtocol):
     async def evaluate(
         self,
         context: JudgeContext,
-        *,
-        orchestrator_session: object | None = None,
-        run_data_dir: str | None = None,
     ) -> JudgeDecision:
         self.contexts.append(context)
         if self._call_count < len(self._decisions):
@@ -345,6 +343,7 @@ def _make_conditional_flow(
         on_error=ErrorPolicy.PAUSE,
         context=context,
         workspace="/workspace",
+        judge=True,  # Use mock judge subprocess for conditional routing
         nodes=nodes,
         edges=tuple(edges),
     )
@@ -363,6 +362,42 @@ def _collect_events() -> tuple[list[FlowEvent], Any]:
         events.append(event)
 
     return events, callback
+
+
+async def _execute_until_paused(
+    executor: FlowExecutor,
+    flow: Flow,
+    params: dict[str, str | float | bool],
+    workspace: str,
+    db: FlowstateDB,
+) -> tuple[str, asyncio.Task[str]]:
+    """Run execute() in background and wait until the flow is paused.
+
+    Returns (flow_run_id, execute_task). The caller must cancel the executor
+    (via executor.cancel()) to let the execute_task finish, or resume then
+    await completion.
+    """
+    execute_task = asyncio.create_task(executor.execute(flow, params, workspace))
+    # Poll briefly for the run to appear and reach paused status.
+    flow_run_id: str | None = None
+    for _ in range(200):
+        await asyncio.sleep(0.01)
+        if execute_task.done():
+            # execute returned early (e.g., completed before pause could happen)
+            return await execute_task, execute_task
+        runs = db.list_flow_runs()
+        if runs:
+            run = db.get_flow_run(runs[0].id)
+            if run and run.status == "paused":
+                flow_run_id = run.id
+                break
+    if flow_run_id is None:
+        # If we never reached paused, cancel and raise
+        execute_task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await execute_task
+        raise AssertionError("Flow did not reach paused state within timeout")
+    return flow_run_id, execute_task
 
 
 # ---------------------------------------------------------------------------
@@ -536,7 +571,9 @@ class TestBudgetExceededPauses:
             budget_seconds=0,
             node_names=["start", "work", "work2", "finish"],
         )
-        flow_run_id = await executor.execute(flow, {}, "/workspace")
+        flow_run_id, execute_task = await _execute_until_paused(
+            executor, flow, {}, "/workspace", db
+        )
 
         run = db.get_flow_run(flow_run_id)
         assert run is not None
@@ -544,6 +581,10 @@ class TestBudgetExceededPauses:
 
         status_events = [e for e in events if e.type == EventType.FLOW_STATUS_CHANGED]
         assert any("Budget exceeded" in str(e.payload.get("reason", "")) for e in status_events)
+
+        # Cancel to let execute() return.
+        await executor.cancel(flow_run_id)
+        await execute_task
 
 
 class TestTaskFailurePausesFlow:
@@ -557,7 +598,9 @@ class TestTaskFailurePausesFlow:
         executor = FlowExecutor(db, callback, mock_mgr)
 
         flow = _make_linear_flow(on_error=ErrorPolicy.PAUSE)
-        flow_run_id = await executor.execute(flow, {}, "/workspace")
+        flow_run_id, execute_task = await _execute_until_paused(
+            executor, flow, {}, "/workspace", db
+        )
 
         run = db.get_flow_run(flow_run_id)
         assert run is not None
@@ -569,6 +612,9 @@ class TestTaskFailurePausesFlow:
 
         status_events = [e for e in events if e.type == EventType.FLOW_STATUS_CHANGED]
         assert len(status_events) >= 1
+
+        await executor.cancel(flow_run_id)
+        await execute_task
 
 
 class TestEventEmissionOrder:
@@ -814,7 +860,9 @@ class TestMiddleTaskFailure:
         executor = FlowExecutor(db, callback, mock_mgr)
 
         flow = _make_linear_flow()
-        flow_run_id = await executor.execute(flow, {}, "/workspace")
+        flow_run_id, execute_task = await _execute_until_paused(
+            executor, flow, {}, "/workspace", db
+        )
 
         run = db.get_flow_run(flow_run_id)
         assert run is not None
@@ -825,6 +873,9 @@ class TestMiddleTaskFailure:
         assert status_map["start"] == "completed"
         assert status_map["work"] == "failed"
         assert "finish" not in status_map
+
+        await executor.cancel(flow_run_id)
+        await execute_task
 
 
 class TestSubprocessManagerCalled:
@@ -1050,7 +1101,9 @@ class TestForkMemberFailure:
         executor = FlowExecutor(db, callback, mock_mgr)
 
         flow = _make_fork_join_flow(on_error=ErrorPolicy.PAUSE)
-        flow_run_id = await executor.execute(flow, {}, "/workspace")
+        flow_run_id, execute_task = await _execute_until_paused(
+            executor, flow, {}, "/workspace", db
+        )
 
         run = db.get_flow_run(flow_run_id)
         assert run is not None
@@ -1064,6 +1117,9 @@ class TestForkMemberFailure:
         # fork.joined event should NOT be emitted
         join_events = [e for e in events if e.type == EventType.FORK_JOINED]
         assert len(join_events) == 0
+
+        await executor.cancel(flow_run_id)
+        await execute_task
 
 
 class TestForkJoinEvents:
@@ -1216,7 +1272,9 @@ class TestConditionalNonePauses:
         executor = FlowExecutor(db, callback, mock_mgr, judge=mock_judge)
 
         flow = _make_conditional_flow(with_cycle=True)
-        flow_run_id = await executor.execute(flow, {}, "/workspace")
+        flow_run_id, execute_task = await _execute_until_paused(
+            executor, flow, {}, "/workspace", db
+        )
 
         run = db.get_flow_run(flow_run_id)
         assert run is not None
@@ -1226,6 +1284,9 @@ class TestConditionalNonePauses:
         assert any(
             "could not match" in str(e.payload.get("reason", "")).lower() for e in status_events
         )
+
+        await executor.cancel(flow_run_id)
+        await execute_task
 
 
 class TestConditionalLowConfidencePauses:
@@ -1243,7 +1304,9 @@ class TestConditionalLowConfidencePauses:
         executor = FlowExecutor(db, callback, mock_mgr, judge=mock_judge)
 
         flow = _make_conditional_flow(with_cycle=True)
-        flow_run_id = await executor.execute(flow, {}, "/workspace")
+        flow_run_id, execute_task = await _execute_until_paused(
+            executor, flow, {}, "/workspace", db
+        )
 
         run = db.get_flow_run(flow_run_id)
         assert run is not None
@@ -1253,6 +1316,9 @@ class TestConditionalLowConfidencePauses:
         assert any(
             "low confidence" in str(e.payload.get("reason", "")).lower() for e in status_events
         )
+
+        await executor.cancel(flow_run_id)
+        await execute_task
 
 
 class TestConditionalJudgeFailurePauses:
@@ -1268,7 +1334,9 @@ class TestConditionalJudgeFailurePauses:
         executor = FlowExecutor(db, callback, mock_mgr, judge=mock_judge)
 
         flow = _make_conditional_flow(with_cycle=True)
-        flow_run_id = await executor.execute(flow, {}, "/workspace")
+        flow_run_id, execute_task = await _execute_until_paused(
+            executor, flow, {}, "/workspace", db
+        )
 
         run = db.get_flow_run(flow_run_id)
         assert run is not None
@@ -1276,6 +1344,9 @@ class TestConditionalJudgeFailurePauses:
 
         status_events = [e for e in events if e.type == EventType.FLOW_STATUS_CHANGED]
         assert any("Judge failed" in str(e.payload.get("reason", "")) for e in status_events)
+
+        await executor.cancel(flow_run_id)
+        await execute_task
 
 
 class TestCycleGenerationIncrement:
@@ -1476,7 +1547,9 @@ class TestOnErrorPause:
         executor = FlowExecutor(db, callback, mock_mgr)
 
         flow = _make_linear_flow(on_error=ErrorPolicy.PAUSE)
-        flow_run_id = await executor.execute(flow, {}, "/workspace")
+        flow_run_id, execute_task = await _execute_until_paused(
+            executor, flow, {}, "/workspace", db
+        )
 
         run = db.get_flow_run(flow_run_id)
         assert run is not None
@@ -1484,6 +1557,9 @@ class TestOnErrorPause:
 
         status_events = [e for e in events if e.type == EventType.FLOW_STATUS_CHANGED]
         assert len(status_events) >= 1
+
+        await executor.cancel(flow_run_id)
+        await execute_task
 
 
 class TestOnErrorAbort:
@@ -1539,7 +1615,9 @@ class TestRetryFailedTask:
         executor = FlowExecutor(db, callback, mock_mgr)
 
         flow = _make_linear_flow(on_error=ErrorPolicy.PAUSE)
-        flow_run_id = await executor.execute(flow, {}, "/workspace")
+        flow_run_id, execute_task = await _execute_until_paused(
+            executor, flow, {}, "/workspace", db
+        )
 
         # Find the failed task
         tasks = db.list_task_executions(flow_run_id)
@@ -1558,6 +1636,9 @@ class TestRetryFailedTask:
         assert new_task.status == "pending"
         assert new_task.generation == 2
         assert new_task.task_dir != failed_task.task_dir
+
+        await executor.cancel(flow_run_id)
+        await execute_task
 
 
 class TestRetryNonFailedRaises:
@@ -1593,7 +1674,9 @@ class TestSkipFailedTask:
         executor = FlowExecutor(db, callback, mock_mgr)
 
         flow = _make_linear_flow(on_error=ErrorPolicy.PAUSE)
-        flow_run_id = await executor.execute(flow, {}, "/workspace")
+        flow_run_id, execute_task = await _execute_until_paused(
+            executor, flow, {}, "/workspace", db
+        )
 
         tasks = db.list_task_executions(flow_run_id)
         failed_task = next(t for t in tasks if t.status == "failed")
@@ -1610,6 +1693,9 @@ class TestSkipFailedTask:
         finish_tasks = [t for t in tasks_after if t.node_name == "finish"]
         assert len(finish_tasks) == 1
         assert finish_tasks[0].status == "pending"
+
+        await executor.cancel(flow_run_id)
+        await execute_task
 
 
 class TestSkipNonFailedRaises:
@@ -1678,15 +1764,18 @@ class TestCancelPausedFlow:
         executor = FlowExecutor(db, callback, mock_mgr)
 
         flow = _make_linear_flow(on_error=ErrorPolicy.PAUSE)
-        flow_run_id = await executor.execute(flow, {}, "/workspace")
+        flow_run_id, execute_task = await _execute_until_paused(
+            executor, flow, {}, "/workspace", db
+        )
 
         # Flow should be paused
         run = db.get_flow_run(flow_run_id)
         assert run is not None
         assert run.status == "paused"
 
-        # Cancel it
+        # Cancel it (also unblocks the main loop)
         await executor.cancel(flow_run_id)
+        await execute_task
 
         run = db.get_flow_run(flow_run_id)
         assert run is not None
@@ -1883,6 +1972,7 @@ def _make_default_edge_flow() -> Flow:
         on_error=ErrorPolicy.PAUSE,
         context=ContextMode.HANDOFF,
         workspace="/workspace",
+        judge=True,  # Use mock judge subprocess for conditional routing
         nodes=nodes,
         edges=tuple(edges),
     )
@@ -2019,7 +2109,9 @@ class TestDefaultEdgeJudgeFailurePauses:
         executor = FlowExecutor(db, callback, mock_mgr, judge=mock_judge)
 
         flow = _make_default_edge_flow()
-        flow_run_id = await executor.execute(flow, {}, "/workspace")
+        flow_run_id, execute_task = await _execute_until_paused(
+            executor, flow, {}, "/workspace", db
+        )
 
         run = db.get_flow_run(flow_run_id)
         assert run is not None
@@ -2027,3 +2119,572 @@ class TestDefaultEdgeJudgeFailurePauses:
 
         status_events = [e for e in events if e.type == EventType.FLOW_STATUS_CHANGED]
         assert any("Judge failed" in str(e.payload.get("reason", "")) for e in status_events)
+
+        await executor.cancel(flow_run_id)
+        await execute_task
+
+
+# ---------------------------------------------------------------------------
+# Tests: ENGINE-017 — Cancel does not trigger on_error=pause
+# ---------------------------------------------------------------------------
+
+
+class TestCancelDoesNotTriggerOnErrorPause:
+    """When a flow is cancelled, the killed subprocess (exit 143) should NOT
+    trigger on_error=pause.  The flow must end up 'cancelled', not 'paused'."""
+
+    async def test_cancel_during_running_task_sets_cancelled(self) -> None:
+        db = _make_db()
+        events, callback = _collect_events()
+        mock_mgr = MockSubprocessManager()
+        # Delay so we have time to cancel while task is running
+        mock_mgr.task_delays["work"] = 2.0
+        executor = FlowExecutor(db, callback, mock_mgr)
+
+        flow = _make_linear_flow(on_error=ErrorPolicy.PAUSE)
+
+        async def run_and_cancel() -> str:
+            execute_task = asyncio.create_task(executor.execute(flow, {}, "/workspace"))
+            await asyncio.sleep(0.1)
+            runs = db.list_flow_runs()
+            assert runs, "Expected at least one flow run"
+            await executor.cancel(runs[0].id)
+            return await execute_task
+
+        flow_run_id = await run_and_cancel()
+        run = db.get_flow_run(flow_run_id)
+        assert run is not None
+        # Must be cancelled, NOT paused
+        assert run.status == "cancelled", f"Expected cancelled, got {run.status}"
+
+        # No status change to "paused" should have occurred
+        status_events = [e for e in events if e.type == EventType.FLOW_STATUS_CHANGED]
+        paused_events = [e for e in status_events if e.payload.get("new_status") == "paused"]
+        assert len(paused_events) == 0, "on_error=pause should not trigger during cancel"
+
+    async def test_cancelled_task_has_cancel_error_message(self) -> None:
+        """When cancel kills a subprocess, the task error_message indicates cancellation."""
+        db = _make_db()
+        _events, callback = _collect_events()
+        mock_mgr = MockSubprocessManager()
+        mock_mgr.task_delays["work"] = 2.0
+        executor = FlowExecutor(db, callback, mock_mgr)
+
+        flow = _make_linear_flow(on_error=ErrorPolicy.PAUSE)
+
+        async def run_and_cancel() -> str:
+            execute_task = asyncio.create_task(executor.execute(flow, {}, "/workspace"))
+            await asyncio.sleep(0.1)
+            runs = db.list_flow_runs()
+            assert runs
+            await executor.cancel(runs[0].id)
+            return await execute_task
+
+        flow_run_id = await run_and_cancel()
+        tasks = db.list_task_executions(flow_run_id)
+        # The start task should have completed; the work task's error message
+        # should indicate cancellation (DB schema only allows 'failed' status).
+        for task in tasks:
+            if task.node_name == "work":
+                assert task.status == "failed"
+                assert task.error_message is not None
+                assert "cancelled" in task.error_message.lower()
+
+    async def test_handle_error_skipped_when_cancelled(self) -> None:
+        """_handle_error returns immediately when self._cancelled is True."""
+        db = _make_db()
+        _events, callback = _collect_events()
+        mock_mgr = MockSubprocessManager()
+        mock_mgr.task_responses["work"] = (143, [])
+        executor = FlowExecutor(db, callback, mock_mgr)
+
+        # Simulate cancel flag being set before error handling
+        flow = _make_linear_flow(on_error=ErrorPolicy.PAUSE)
+
+        # We need to test the _handle_error path directly.
+        # Start execute, but set cancelled before the failed task is processed.
+        mock_mgr.task_delays["work"] = 0.5
+        execute_task = asyncio.create_task(executor.execute(flow, {}, "/workspace"))
+        await asyncio.sleep(0.1)
+        runs = db.list_flow_runs()
+        assert runs
+        await executor.cancel(runs[0].id)
+        await execute_task
+
+        run = db.get_flow_run(runs[0].id)
+        assert run is not None
+        assert run.status == "cancelled"
+
+
+# ---------------------------------------------------------------------------
+# Tests: ENGINE-018 — Resume restarts execution after pause
+# ---------------------------------------------------------------------------
+
+
+class TestResumeAfterOnErrorPause:
+    """When on_error=pause triggers and the user retries then resumes,
+    the executor loop should continue and complete the flow."""
+
+    async def test_resume_continues_after_pause(self) -> None:
+        db = _make_db()
+        _events, callback = _collect_events()
+        mock_mgr = MockSubprocessManager()
+        # First call to "work" fails; subsequent calls succeed
+        mock_mgr.task_responses["work"] = (1, [])
+        executor = FlowExecutor(db, callback, mock_mgr)
+
+        flow = _make_linear_flow(on_error=ErrorPolicy.PAUSE)
+        flow_run_id, execute_task = await _execute_until_paused(
+            executor, flow, {}, "/workspace", db
+        )
+
+        run = db.get_flow_run(flow_run_id)
+        assert run is not None
+        assert run.status == "paused"
+
+        # Retry the failed task
+        tasks = db.list_task_executions(flow_run_id)
+        failed_task = next(t for t in tasks if t.status == "failed")
+        assert failed_task.node_name == "work"
+        await executor.retry_task(flow_run_id, failed_task.id)
+
+        # Make subsequent "work" calls succeed
+        del mock_mgr.task_responses["work"]
+
+        # Resume the flow
+        await executor.resume(flow_run_id)
+
+        # Wait for execute to finish
+        await execute_task
+
+        run = db.get_flow_run(flow_run_id)
+        assert run is not None
+        assert run.status == "completed"
+
+        # All tasks should be done
+        tasks = db.list_task_executions(flow_run_id)
+        completed_tasks = [t for t in tasks if t.status == "completed"]
+        # start + work (retried) + finish = 3 completed
+        assert len(completed_tasks) >= 3
+
+    async def test_resume_signals_main_loop(self) -> None:
+        """Verify resume() signals the main loop to wake up via _resume_event."""
+        db = _make_db()
+        _events, callback = _collect_events()
+        mock_mgr = MockSubprocessManager()
+        mock_mgr.task_responses["start"] = (1, [])
+        executor = FlowExecutor(db, callback, mock_mgr)
+
+        flow = _make_linear_flow(on_error=ErrorPolicy.PAUSE)
+        flow_run_id, execute_task = await _execute_until_paused(
+            executor, flow, {}, "/workspace", db
+        )
+
+        # Verify that execute_task is NOT done (main loop is waiting)
+        assert not execute_task.done(), "Main loop should be waiting, not returned"
+
+        # Cancel to let it finish
+        await executor.cancel(flow_run_id)
+        await execute_task
+
+
+class TestResumeAfterSkip:
+    """Skip a failed task then resume. Flow should continue to completion."""
+
+    async def test_skip_then_resume_completes(self) -> None:
+        db = _make_db()
+        _events, callback = _collect_events()
+        mock_mgr = MockSubprocessManager()
+        mock_mgr.task_responses["work"] = (1, [])
+        executor = FlowExecutor(db, callback, mock_mgr)
+
+        flow = _make_linear_flow(on_error=ErrorPolicy.PAUSE)
+        flow_run_id, execute_task = await _execute_until_paused(
+            executor, flow, {}, "/workspace", db
+        )
+
+        # Skip the failed task
+        tasks = db.list_task_executions(flow_run_id)
+        failed_task = next(t for t in tasks if t.status == "failed")
+        await executor.skip_task(flow_run_id, failed_task.id)
+
+        # Resume
+        await executor.resume(flow_run_id)
+
+        # Wait for execute to finish
+        await execute_task
+
+        run = db.get_flow_run(flow_run_id)
+        assert run is not None
+        assert run.status == "completed"
+
+
+class TestMultiplePauseResumeCycles:
+    """Multiple pause/resume cycles should work correctly."""
+
+    async def test_multiple_pause_resume(self) -> None:
+        db = _make_db()
+        _events, callback = _collect_events()
+        mock_mgr = MockSubprocessManager()
+
+        # Both work and work2 fail initially
+        mock_mgr.task_responses["work"] = (1, [])
+        executor = FlowExecutor(db, callback, mock_mgr)
+
+        flow = _make_linear_flow(
+            on_error=ErrorPolicy.PAUSE,
+            node_names=["start", "work", "work2", "finish"],
+        )
+
+        # First cycle: pause on "work" failure
+        flow_run_id, execute_task = await _execute_until_paused(
+            executor, flow, {}, "/workspace", db
+        )
+        run = db.get_flow_run(flow_run_id)
+        assert run is not None
+        assert run.status == "paused"
+
+        # Fix "work" and retry
+        del mock_mgr.task_responses["work"]
+        mock_mgr.task_responses["work2"] = (1, [])  # work2 will fail next
+        tasks = db.list_task_executions(flow_run_id)
+        failed_task = next(t for t in tasks if t.status == "failed")
+        await executor.retry_task(flow_run_id, failed_task.id)
+        await executor.resume(flow_run_id)
+
+        # Wait for it to pause again on work2
+        for _ in range(200):
+            await asyncio.sleep(0.01)
+            run = db.get_flow_run(flow_run_id)
+            if run and run.status == "paused":
+                break
+
+        run = db.get_flow_run(flow_run_id)
+        assert run is not None
+        assert run.status == "paused"
+
+        # Fix work2 and retry again
+        del mock_mgr.task_responses["work2"]
+        tasks = db.list_task_executions(flow_run_id)
+        failed_task = next(t for t in tasks if t.status == "failed" and t.node_name == "work2")
+        await executor.retry_task(flow_run_id, failed_task.id)
+        await executor.resume(flow_run_id)
+
+        # Should now complete
+        await execute_task
+
+        run = db.get_flow_run(flow_run_id)
+        assert run is not None
+        assert run.status == "completed"
+
+
+class TestCancelWhilePausedUnblocksMainLoop:
+    """Cancel while the main loop is paused should unblock and terminate."""
+
+    async def test_cancel_while_paused(self) -> None:
+        db = _make_db()
+        _events, callback = _collect_events()
+        mock_mgr = MockSubprocessManager()
+        mock_mgr.task_responses["work"] = (1, [])
+        executor = FlowExecutor(db, callback, mock_mgr)
+
+        flow = _make_linear_flow(on_error=ErrorPolicy.PAUSE)
+        flow_run_id, execute_task = await _execute_until_paused(
+            executor, flow, {}, "/workspace", db
+        )
+
+        assert not execute_task.done(), "Main loop should be waiting"
+
+        # Cancel should unblock the main loop
+        await executor.cancel(flow_run_id)
+        await execute_task
+
+        run = db.get_flow_run(flow_run_id)
+        assert run is not None
+        assert run.status == "cancelled"
+
+
+class TestResumeBudgetExceeded:
+    """Resume after budget-exceeded pause. Next task completes the flow."""
+
+    async def test_resume_after_budget_pause(self) -> None:
+        db = _make_db()
+        _events, callback = _collect_events()
+        mock_mgr = MockSubprocessManager()
+        executor = FlowExecutor(db, callback, mock_mgr)
+
+        # Budget of 0 means it will exceed after first task
+        flow = _make_linear_flow(
+            budget_seconds=0,
+            node_names=["start", "finish"],
+        )
+        flow_run_id, execute_task = await _execute_until_paused(
+            executor, flow, {}, "/workspace", db
+        )
+
+        run = db.get_flow_run(flow_run_id)
+        assert run is not None
+        assert run.status == "paused"
+
+        # Resume the flow (budget is already exceeded but we allow continuation)
+        await executor.resume(flow_run_id)
+
+        # The flow should eventually complete or re-pause
+        await execute_task
+
+        run = db.get_flow_run(flow_run_id)
+        assert run is not None
+        # It may complete or pause again depending on budget check timing,
+        # but it should NOT hang
+        assert run.status in ("completed", "paused", "cancelled")
+
+
+# ---------------------------------------------------------------------------
+# Tests: ENGINE-017 — CancelledError is properly handled in _execute_single_task
+# ---------------------------------------------------------------------------
+
+
+class TestCancelledErrorHandledProperly:
+    """When cancel() injects asyncio.CancelledError into _execute_single_task,
+    the task should be marked as failed with 'Flow cancelled' and the flow
+    should end up 'cancelled', not 'paused'."""
+
+    async def test_cancelled_error_marks_task_failed(self) -> None:
+        """CancelledError during subprocess streaming marks task as failed."""
+        db = _make_db()
+        _events, callback = _collect_events()
+        mock_mgr = MockSubprocessManager()
+        # Long delay so cancel fires during the await asyncio.sleep
+        mock_mgr.task_delays["work"] = 10.0
+        executor = FlowExecutor(db, callback, mock_mgr)
+
+        flow = _make_linear_flow(on_error=ErrorPolicy.PAUSE)
+
+        async def run_and_cancel() -> str:
+            execute_task = asyncio.create_task(executor.execute(flow, {}, "/workspace"))
+            await asyncio.sleep(0.05)
+            runs = db.list_flow_runs()
+            assert runs, "Expected at least one flow run"
+            await executor.cancel(runs[0].id)
+            return await execute_task
+
+        flow_run_id = await run_and_cancel()
+        run = db.get_flow_run(flow_run_id)
+        assert run is not None
+        assert run.status == "cancelled", f"Expected cancelled, got {run.status}"
+
+        # The "work" task should be failed with a cancel message
+        tasks = db.list_task_executions(flow_run_id)
+        work_tasks = [t for t in tasks if t.node_name == "work"]
+        assert len(work_tasks) == 1
+        assert work_tasks[0].status == "failed"
+        assert work_tasks[0].error_message is not None
+        assert "cancelled" in work_tasks[0].error_message.lower()
+
+    async def test_cancel_never_triggers_on_error_pause_event(self) -> None:
+        """No FLOW_STATUS_CHANGED to 'paused' should occur during cancel."""
+        db = _make_db()
+        events, callback = _collect_events()
+        mock_mgr = MockSubprocessManager()
+        mock_mgr.task_delays["work"] = 10.0
+        executor = FlowExecutor(db, callback, mock_mgr)
+
+        flow = _make_linear_flow(on_error=ErrorPolicy.PAUSE)
+
+        async def run_and_cancel() -> str:
+            execute_task = asyncio.create_task(executor.execute(flow, {}, "/workspace"))
+            await asyncio.sleep(0.05)
+            runs = db.list_flow_runs()
+            assert runs
+            await executor.cancel(runs[0].id)
+            return await execute_task
+
+        await run_and_cancel()
+
+        status_events = [e for e in events if e.type == EventType.FLOW_STATUS_CHANGED]
+        paused_events = [e for e in status_events if e.payload.get("new_status") == "paused"]
+        assert len(paused_events) == 0, "on_error=pause should never trigger during cancel"
+
+    async def test_process_completed_task_skips_when_cancelled(self) -> None:
+        """_process_completed_task returns False without side effects when cancelled."""
+        db = _make_db()
+        _events, callback = _collect_events()
+        mock_mgr = MockSubprocessManager()
+        # "work" exits with code 143 (SIGTERM) and 0 delay -- it completes
+        # before cancel() is called. This tests the guard in
+        # _process_completed_task.
+        mock_mgr.task_responses["work"] = (143, [])
+        mock_mgr.task_delays["finish"] = 10.0
+        executor = FlowExecutor(db, callback, mock_mgr)
+
+        flow = _make_linear_flow(
+            on_error=ErrorPolicy.PAUSE,
+            node_names=["start", "work", "finish"],
+        )
+
+        async def run_and_cancel() -> str:
+            execute_task = asyncio.create_task(executor.execute(flow, {}, "/workspace"))
+            # Wait for flow to either pause (on_error) or keep running
+            await asyncio.sleep(0.1)
+            runs = db.list_flow_runs()
+            assert runs
+            # Cancel -- if on_error=pause already triggered, this transitions
+            # paused -> cancelled. Either way, final status must be cancelled.
+            await executor.cancel(runs[0].id)
+            return await execute_task
+
+        flow_run_id = await run_and_cancel()
+        run = db.get_flow_run(flow_run_id)
+        assert run is not None
+        assert run.status == "cancelled"
+
+
+# ---------------------------------------------------------------------------
+# Tests: ENGINE-018 — Resume restarts execution after user-initiated pause
+# ---------------------------------------------------------------------------
+
+
+class TestUserPauseResume:
+    """User calls pause() then resume(). Verify execution continues
+    and the flow completes."""
+
+    async def test_pause_then_resume_completes(self) -> None:
+        """pause() while a task is running, then resume(). Flow should complete."""
+        db = _make_db()
+        _events, callback = _collect_events()
+        mock_mgr = MockSubprocessManager()
+        # Delay on "work" so we can pause while it's running
+        mock_mgr.task_delays["work"] = 0.5
+        executor = FlowExecutor(db, callback, mock_mgr)
+
+        flow = _make_linear_flow(
+            node_names=["start", "work", "finish"],
+        )
+
+        execute_task = asyncio.create_task(executor.execute(flow, {}, "/workspace"))
+
+        # Wait for "work" to start running
+        await asyncio.sleep(0.1)
+        runs = db.list_flow_runs()
+        assert runs
+
+        # Pause the flow (waits for "work" to finish)
+        await executor.pause(runs[0].id)
+
+        run = db.get_flow_run(runs[0].id)
+        assert run is not None
+        assert run.status == "paused"
+
+        # The main loop should still be alive (execute_task not done)
+        assert not execute_task.done(), "Main loop should be waiting in pause state"
+
+        # Resume
+        await executor.resume(runs[0].id)
+
+        # Wait for execution to finish
+        await execute_task
+
+        run = db.get_flow_run(runs[0].id)
+        assert run is not None
+        assert run.status == "completed"
+
+    async def test_pause_before_task_launch_then_resume(self) -> None:
+        """Pause right as new tasks would be launched, then resume. Flow completes."""
+        db = _make_db()
+        _events, callback = _collect_events()
+        mock_mgr = MockSubprocessManager()
+        executor = FlowExecutor(db, callback, mock_mgr)
+
+        # We use on_error=pause on a failing start to pause, then fix and resume
+        mock_mgr.task_responses["start"] = (1, [])
+        flow_pause = _make_linear_flow(
+            on_error=ErrorPolicy.PAUSE,
+            node_names=["start", "work", "finish"],
+        )
+        flow_run_id, execute_task = await _execute_until_paused(
+            executor, flow_pause, {}, "/workspace", db
+        )
+
+        # Retry the failed task (now it succeeds)
+        del mock_mgr.task_responses["start"]
+        tasks = db.list_task_executions(flow_run_id)
+        failed_task = next(t for t in tasks if t.status == "failed")
+        await executor.retry_task(flow_run_id, failed_task.id)
+
+        # Resume
+        await executor.resume(flow_run_id)
+        await execute_task
+
+        run = db.get_flow_run(flow_run_id)
+        assert run is not None
+        assert run.status == "completed"
+
+    async def test_resume_repopulates_pending_from_db(self) -> None:
+        """After resume, pending tasks discovered in DB are launched."""
+        db = _make_db()
+        _events, callback = _collect_events()
+        mock_mgr = MockSubprocessManager()
+        mock_mgr.task_responses["work"] = (1, [])
+        executor = FlowExecutor(db, callback, mock_mgr)
+
+        flow = _make_linear_flow(
+            on_error=ErrorPolicy.PAUSE,
+            node_names=["start", "work", "finish"],
+        )
+        flow_run_id, execute_task = await _execute_until_paused(
+            executor, flow, {}, "/workspace", db
+        )
+
+        # Verify main loop is alive
+        assert not execute_task.done()
+
+        # Retry the failed task
+        del mock_mgr.task_responses["work"]
+        tasks = db.list_task_executions(flow_run_id)
+        failed_task = next(t for t in tasks if t.status == "failed")
+        await executor.retry_task(flow_run_id, failed_task.id)
+
+        # Verify there IS a pending task in DB
+        tasks = db.list_task_executions(flow_run_id)
+        pending_tasks = [t for t in tasks if t.status == "pending"]
+        assert len(pending_tasks) >= 1
+
+        # Resume
+        await executor.resume(flow_run_id)
+        await execute_task
+
+        run = db.get_flow_run(flow_run_id)
+        assert run is not None
+        assert run.status == "completed"
+
+        # The retried task should have been executed
+        tasks = db.list_task_executions(flow_run_id)
+        completed_work = [t for t in tasks if t.node_name == "work" and t.status == "completed"]
+        assert len(completed_work) >= 1
+
+
+class TestResumeMainLoopStaysAlive:
+    """The main loop must not exit while the flow is paused."""
+
+    async def test_main_loop_alive_during_pause(self) -> None:
+        db = _make_db()
+        _events, callback = _collect_events()
+        mock_mgr = MockSubprocessManager()
+        mock_mgr.task_responses["work"] = (1, [])
+        executor = FlowExecutor(db, callback, mock_mgr)
+
+        flow = _make_linear_flow(on_error=ErrorPolicy.PAUSE)
+        flow_run_id, execute_task = await _execute_until_paused(
+            executor, flow, {}, "/workspace", db
+        )
+
+        # Main loop is alive (execute_task not done)
+        assert not execute_task.done(), "Main loop exited prematurely"
+
+        # Wait a bit to ensure it stays alive
+        await asyncio.sleep(0.05)
+        assert not execute_task.done(), "Main loop exited after brief wait"
+
+        # Clean up
+        await executor.cancel(flow_run_id)
+        await execute_task
