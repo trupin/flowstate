@@ -40,6 +40,23 @@ def create_task_dir(run_data_dir: str, node_name: str, generation: int) -> str:
     return str(task_dir.resolve())
 
 
+def _build_directory_sections(cwd: str, task_dir: str) -> str:
+    """Build the shared 'Working directory' and 'Task coordination directory' prompt sections."""
+    return (
+        "## Working directory\n"
+        f"Your working directory is: {cwd}\n"
+        "Make all code changes and deliverable output in this directory.\n"
+        "\n"
+        "## Task coordination directory\n"
+        f"Write coordination files to {task_dir}/.\n"
+        "Do NOT write project deliverables here — this is for inter-agent communication only.\n"
+        f"When you are done, you MUST write a SUMMARY.md to {task_dir}/SUMMARY.md describing:\n"
+        "- What you did\n"
+        "- What changed\n"
+        "- The outcome / current state"
+    )
+
+
 def build_prompt_handoff(
     node: Node,
     task_dir: str,
@@ -64,18 +81,7 @@ def build_prompt_handoff(
         "\n"
         "## Your task\n"
         f"{node.prompt}\n"
-        "\n"
-        "## Working directory\n"
-        f"Your working directory is: {cwd}\n"
-        "Make all code changes and deliverable output in this directory.\n"
-        "\n"
-        "## Task coordination directory\n"
-        f"Write coordination files to {task_dir}/.\n"
-        "Do NOT write project deliverables here — this is for inter-agent communication only.\n"
-        f"When you are done, you MUST write a SUMMARY.md to {task_dir}/SUMMARY.md describing:\n"
-        "- What you did\n"
-        "- What changed\n"
-        "- The outcome / current state"
+        "\n" + _build_directory_sections(cwd, task_dir)
     )
 
 
@@ -103,18 +109,7 @@ def build_prompt_none(node: Node, task_dir: str, cwd: str) -> str:
         "\n"
         "## Your task\n"
         f"{node.prompt}\n"
-        "\n"
-        "## Working directory\n"
-        f"Your working directory is: {cwd}\n"
-        "Make all code changes and deliverable output in this directory.\n"
-        "\n"
-        "## Task coordination directory\n"
-        f"Write coordination files to {task_dir}/.\n"
-        "Do NOT write project deliverables here — this is for inter-agent communication only.\n"
-        f"When you are done, you MUST write a SUMMARY.md to {task_dir}/SUMMARY.md describing:\n"
-        "- What you did\n"
-        "- What changed\n"
-        "- The outcome / current state"
+        "\n" + _build_directory_sections(cwd, task_dir)
     )
 
 
@@ -146,18 +141,7 @@ def build_prompt_join(
         "\n"
         "## Your task\n"
         f"{node.prompt}\n"
-        "\n"
-        "## Working directory\n"
-        f"Your working directory is: {cwd}\n"
-        "Make all code changes and deliverable output in this directory.\n"
-        "\n"
-        "## Task coordination directory\n"
-        f"Write coordination files to {task_dir}/.\n"
-        "Do NOT write project deliverables here — this is for inter-agent communication only.\n"
-        f"When you are done, you MUST write a SUMMARY.md to {task_dir}/SUMMARY.md describing:\n"
-        "- What you did\n"
-        "- What changed\n"
-        "- The outcome / current state"
+        "\n" + _build_directory_sections(cwd, task_dir)
     )
 
 

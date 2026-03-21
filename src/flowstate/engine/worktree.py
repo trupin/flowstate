@@ -46,6 +46,25 @@ def is_existing_worktree(path: str) -> bool:
     return git_path.is_file()
 
 
+async def setup_worktree_if_needed(
+    workspace: str,
+    run_id: str,
+    enable_worktree: bool,
+) -> WorktreeInfo | None:
+    """Create a worktree if the workspace is a git repo and worktree mode is enabled.
+
+    Returns WorktreeInfo if a worktree was created, None otherwise.
+    Catches WorktreeError internally and returns None on failure.
+    """
+    if not enable_worktree or not is_git_repo(workspace) or is_existing_worktree(workspace):
+        return None
+    try:
+        return await create_worktree(workspace, run_id)
+    except WorktreeError:
+        logger.warning("Failed to create worktree, using workspace directly", exc_info=True)
+        return None
+
+
 async def create_worktree(workspace: str, run_id: str) -> WorktreeInfo:
     """Create a git worktree for a flow run.
 
@@ -110,33 +129,39 @@ async def cleanup_worktree(info: WorktreeInfo) -> None:
     Logs warnings on failure but does not raise.
     """
     # Remove worktree
-    proc = await asyncio.create_subprocess_exec(
-        "git",
-        "worktree",
-        "remove",
-        info.worktree_path,
-        "--force",
-        cwd=info.original_workspace,
-        stdout=asyncio.subprocess.PIPE,
-        stderr=asyncio.subprocess.PIPE,
-    )
-    await proc.communicate()
-    if proc.returncode != 0:
-        logger.warning("Failed to remove worktree at %s", info.worktree_path)
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            "git",
+            "worktree",
+            "remove",
+            info.worktree_path,
+            "--force",
+            cwd=info.original_workspace,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        await proc.communicate()
+        if proc.returncode != 0:
+            logger.warning("Failed to remove worktree at %s", info.worktree_path)
+    except Exception:
+        logger.warning("Error removing worktree at %s", info.worktree_path, exc_info=True)
 
     # Delete branch
-    proc = await asyncio.create_subprocess_exec(
-        "git",
-        "branch",
-        "-D",
-        info.branch_name,
-        cwd=info.original_workspace,
-        stdout=asyncio.subprocess.PIPE,
-        stderr=asyncio.subprocess.PIPE,
-    )
-    await proc.communicate()
-    if proc.returncode != 0:
-        logger.warning("Failed to delete branch %s", info.branch_name)
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            "git",
+            "branch",
+            "-D",
+            info.branch_name,
+            cwd=info.original_workspace,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        await proc.communicate()
+        if proc.returncode != 0:
+            logger.warning("Failed to delete branch %s", info.branch_name)
+    except Exception:
+        logger.warning("Error deleting branch %s", info.branch_name, exc_info=True)
 
 
 def map_cwd_to_worktree(

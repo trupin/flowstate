@@ -46,13 +46,10 @@ from flowstate.engine.events import EventType, FlowEvent
 from flowstate.engine.judge import JudgeContext, JudgeDecision, JudgePauseError, JudgeProtocol
 from flowstate.engine.subprocess_mgr import StreamEventType, SubprocessManager
 from flowstate.engine.worktree import (
-    WorktreeError,
     WorktreeInfo,
     cleanup_worktree,
-    create_worktree,
-    is_existing_worktree,
-    is_git_repo,
     map_cwd_to_worktree,
+    setup_worktree_if_needed,
 )
 
 if TYPE_CHECKING:
@@ -293,15 +290,11 @@ class FlowExecutor:
         workspace = str(Path(workspace).resolve())
 
         # Git worktree isolation
-        if flow.worktree and is_git_repo(workspace) and not is_existing_worktree(workspace):
-            try:
-                worktree_info = await create_worktree(workspace, flow_run_id)
-                workspace = worktree_info.worktree_path
-                self._worktree_info = worktree_info
-                self._db.update_flow_run_worktree(flow_run_id, worktree_info.worktree_path)
-                logger.info("Created git worktree at %s for run %s", workspace, flow_run_id)
-            except WorktreeError:
-                logger.warning("Failed to create worktree, using workspace directly", exc_info=True)
+        self._worktree_info = await setup_worktree_if_needed(workspace, flow_run_id, flow.worktree)
+        if self._worktree_info is not None:
+            workspace = self._worktree_info.worktree_path
+            self._db.update_flow_run_worktree(flow_run_id, workspace)
+            logger.info("Created git worktree at %s for run %s", workspace, flow_run_id)
 
         # Ensure workspace directory exists (ignore errors for test paths)
         with contextlib.suppress(OSError):
@@ -711,10 +704,7 @@ class FlowExecutor:
         join_gen = fork_group.generation + 1
         task_dir = create_task_dir(data_dir, join_node.name, join_gen)
         cwd = resolve_cwd(join_node, flow)
-        if self._worktree_info is not None:
-            cwd = map_cwd_to_worktree(
-                cwd, self._worktree_info.original_workspace, self._worktree_info.worktree_path
-            )
+        cwd = self._apply_worktree_mapping(cwd)
         prompt = build_prompt_join(join_node, task_dir, cwd, member_summaries)
 
         # Expand template if needed
@@ -1106,10 +1096,7 @@ class FlowExecutor:
 
         task_dir = create_task_dir(data_dir, target_node.name, generation)
         cwd = resolve_cwd(target_node, flow)
-        if self._worktree_info is not None:
-            cwd = map_cwd_to_worktree(
-                cwd, self._worktree_info.original_workspace, self._worktree_info.worktree_path
-            )
+        cwd = self._apply_worktree_mapping(cwd)
         claude_session_id: str | None = None
 
         if is_cycle and context_mode == ContextMode.HANDOFF:
@@ -1571,10 +1558,7 @@ class FlowExecutor:
         """Create a task execution record and its task directory."""
         task_dir = create_task_dir(data_dir, node.name, generation)
         cwd = resolve_cwd(node, flow)
-        if self._worktree_info is not None:
-            cwd = map_cwd_to_worktree(
-                cwd, self._worktree_info.original_workspace, self._worktree_info.worktree_path
-            )
+        cwd = self._apply_worktree_mapping(cwd)
 
         # Build the full prompt based on context mode
         if context_mode == ContextMode.HANDOFF and predecessor_task_id:
@@ -1705,6 +1689,14 @@ class FlowExecutor:
                 },
             )
         )
+
+    def _apply_worktree_mapping(self, cwd: str) -> str:
+        """Remap cwd through the worktree if worktree isolation is active."""
+        if self._worktree_info is not None:
+            return map_cwd_to_worktree(
+                cwd, self._worktree_info.original_workspace, self._worktree_info.worktree_path
+            )
+        return cwd
 
     async def _cleanup_worktree(self) -> None:
         """Clean up the git worktree if one was created and cleanup is enabled.
