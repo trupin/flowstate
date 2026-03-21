@@ -300,6 +300,15 @@ class FlowstateDB:
         )
         return [TaskExecutionRow(**dict(r)) for r in rows]
 
+    def get_latest_task_execution(self, flow_run_id: str) -> TaskExecutionRow | None:
+        """Get the most recently created task execution for a flow run."""
+        row = self._fetchone(
+            "SELECT * FROM task_executions WHERE flow_run_id = ?"
+            " ORDER BY created_at DESC LIMIT 1",
+            (flow_run_id,),
+        )
+        return TaskExecutionRow(**dict(row)) if row else None
+
     def get_pending_tasks(self, flow_run_id: str) -> list[TaskExecutionRow]:
         """Return tasks with status 'pending' for a given flow run."""
         rows = self._fetchall(

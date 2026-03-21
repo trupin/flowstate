@@ -56,6 +56,7 @@ if TYPE_CHECKING:
     from collections.abc import Callable
 
     from flowstate.dsl.ast import Edge, Flow, Node
+    from flowstate.state.models import TaskExecutionRow
     from flowstate.state.repository import FlowstateDB
 
 logger = logging.getLogger(__name__)
@@ -893,12 +894,7 @@ class FlowExecutor:
                 },
             )
         )
-        self._emit_activity(
-            flow_run_id,
-            completed_id,
-            f"\u2696 Judge decided: {task_exec.node_name} \u2192 {decision.target}"
-            f" (confidence: {decision.confidence:.2f})",
-        )
+        self._emit_judge_activity(flow_run_id, completed_id, task_exec, decision)
 
         # Handle special cases
         if decision.is_none:
@@ -1009,12 +1005,7 @@ class FlowExecutor:
                 },
             )
         )
-        self._emit_activity(
-            flow_run_id,
-            completed_id,
-            f"\u2696 Judge decided: {task_exec.node_name} \u2192 {decision.target}"
-            f" (confidence: {decision.confidence:.2f})",
-        )
+        self._emit_judge_activity(flow_run_id, completed_id, task_exec, decision)
 
         # On __none__ or low confidence, follow the DEFAULT edge instead of pausing
         if decision.is_none or decision.is_low_confidence:
@@ -1726,9 +1717,8 @@ class FlowExecutor:
         self._db.update_flow_run_status(flow_run_id, "paused", error_message=reason)
 
         # Emit activity log on the most recent task execution for this run
-        tasks = self._db.list_task_executions(flow_run_id)
-        if tasks:
-            latest_task = max(tasks, key=lambda t: t.created_at or "")
+        latest_task = self._db.get_latest_task_execution(flow_run_id)
+        if latest_task:
             self._emit_activity(
                 flow_run_id,
                 latest_task.id,
@@ -1763,6 +1753,21 @@ class FlowExecutor:
                     "elapsed_seconds": budget.elapsed,
                 },
             )
+        )
+
+    def _emit_judge_activity(
+        self,
+        flow_run_id: str,
+        task_id: str,
+        task_exec: TaskExecutionRow,
+        decision: JudgeDecision,
+    ) -> None:
+        """Emit activity log for a judge routing decision."""
+        self._emit_activity(
+            flow_run_id,
+            task_id,
+            f"\u2696 Judge decided: {task_exec.node_name} \u2192 {decision.target}"
+            f" (confidence: {decision.confidence:.2f})",
         )
 
     def _apply_worktree_mapping(self, cwd: str) -> str:
