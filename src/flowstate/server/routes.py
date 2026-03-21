@@ -209,6 +209,7 @@ async def start_run(
         event_callback=ws_hub.on_flow_event,
         subprocess_mgr=subprocess_mgr,
         max_concurrent=config.max_concurrent_tasks,
+        worktree_cleanup=config.worktree_cleanup,
     )
 
     # Determine workspace from flow AST
@@ -632,6 +633,7 @@ async def trigger_schedule(request: Request, schedule_id: str) -> dict[str, str]
         event_callback=ws_hub.on_flow_event,
         subprocess_mgr=subprocess_mgr,
         max_concurrent=config.max_concurrent_tasks,
+        worktree_cleanup=config.worktree_cleanup,
     )
 
     workspace = flow_ast.workspace or "."

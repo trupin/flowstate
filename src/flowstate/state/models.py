@@ -35,6 +35,7 @@ class FlowRunRow(BaseModel):
     completed_at: str | None = None
     created_at: str
     error_message: str | None = None
+    worktree_path: str | None = None
 
 
 class TaskExecutionRow(BaseModel):

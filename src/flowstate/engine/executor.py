@@ -25,6 +25,7 @@ import os
 import time
 import uuid
 from datetime import UTC, datetime
+from pathlib import Path
 from typing import TYPE_CHECKING
 
 from flowstate.dsl.ast import ContextMode, EdgeType, ErrorPolicy, NodeType
@@ -44,6 +45,15 @@ from flowstate.engine.context import (
 from flowstate.engine.events import EventType, FlowEvent
 from flowstate.engine.judge import JudgeContext, JudgeDecision, JudgePauseError, JudgeProtocol
 from flowstate.engine.subprocess_mgr import StreamEventType, SubprocessManager
+from flowstate.engine.worktree import (
+    WorktreeError,
+    WorktreeInfo,
+    cleanup_worktree,
+    create_worktree,
+    is_existing_worktree,
+    is_git_repo,
+    map_cwd_to_worktree,
+)
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -206,6 +216,7 @@ class FlowExecutor:
         subprocess_mgr: SubprocessManager,
         judge: JudgeProtocol | None = None,
         max_concurrent: int = 4,
+        worktree_cleanup: bool = True,
     ) -> None:
         self._db = db
         self._raw_callback = event_callback
@@ -226,6 +237,9 @@ class FlowExecutor:
         self._expanded_prompts: dict[str, str] = {}
         self._budget: BudgetGuard | None = None
         self._completed_queue: asyncio.Queue[str] | None = None
+        # Worktree isolation
+        self._worktree_cleanup = worktree_cleanup
+        self._worktree_info: WorktreeInfo | None = None
 
     def _emit(self, event: FlowEvent) -> None:
         """Emit an event via the callback, catching any callback exceptions."""
@@ -274,6 +288,20 @@ class FlowExecutor:
             run_id=desired_id,
         )
         data_dir = os.path.expanduser(f"~/.flowstate/runs/{flow_run_id}")
+
+        # Resolve workspace to absolute path
+        workspace = str(Path(workspace).resolve())
+
+        # Git worktree isolation
+        if flow.worktree and is_git_repo(workspace) and not is_existing_worktree(workspace):
+            try:
+                worktree_info = await create_worktree(workspace, flow_run_id)
+                workspace = worktree_info.worktree_path
+                self._worktree_info = worktree_info
+                self._db.update_flow_run_worktree(flow_run_id, worktree_info.worktree_path)
+                logger.info("Created git worktree at %s for run %s", workspace, flow_run_id)
+            except WorktreeError:
+                logger.warning("Failed to create worktree, using workspace directly", exc_info=True)
 
         # Ensure workspace directory exists (ignore errors for test paths)
         with contextlib.suppress(OSError):
@@ -383,8 +411,10 @@ class FlowExecutor:
                 completed_id, flow_run_id, flow, expanded_prompts, data_dir, budget, pending
             )
             if should_stop:
+                await self._cleanup_worktree()
                 return flow_run_id
 
+        await self._cleanup_worktree()
         return flow_run_id
 
     async def _process_completed_task(
@@ -681,6 +711,10 @@ class FlowExecutor:
         join_gen = fork_group.generation + 1
         task_dir = create_task_dir(data_dir, join_node.name, join_gen)
         cwd = resolve_cwd(join_node, flow)
+        if self._worktree_info is not None:
+            cwd = map_cwd_to_worktree(
+                cwd, self._worktree_info.original_workspace, self._worktree_info.worktree_path
+            )
         prompt = build_prompt_join(join_node, task_dir, cwd, member_summaries)
 
         # Expand template if needed
@@ -1072,6 +1106,10 @@ class FlowExecutor:
 
         task_dir = create_task_dir(data_dir, target_node.name, generation)
         cwd = resolve_cwd(target_node, flow)
+        if self._worktree_info is not None:
+            cwd = map_cwd_to_worktree(
+                cwd, self._worktree_info.original_workspace, self._worktree_info.worktree_path
+            )
         claude_session_id: str | None = None
 
         if is_cycle and context_mode == ContextMode.HANDOFF:
@@ -1220,6 +1258,9 @@ class FlowExecutor:
         groups = self._db.get_active_fork_groups(flow_run_id)
         for group in groups:
             self._db.update_fork_group_status(group.id, "cancelled")
+
+        # Cleanup worktree
+        await self._cleanup_worktree()
 
         self._db.update_flow_run_status(flow_run_id, "cancelled")
         self._emit(
@@ -1530,6 +1571,10 @@ class FlowExecutor:
         """Create a task execution record and its task directory."""
         task_dir = create_task_dir(data_dir, node.name, generation)
         cwd = resolve_cwd(node, flow)
+        if self._worktree_info is not None:
+            cwd = map_cwd_to_worktree(
+                cwd, self._worktree_info.original_workspace, self._worktree_info.worktree_path
+            )
 
         # Build the full prompt based on context mode
         if context_mode == ContextMode.HANDOFF and predecessor_task_id:
@@ -1660,3 +1705,18 @@ class FlowExecutor:
                 },
             )
         )
+
+    async def _cleanup_worktree(self) -> None:
+        """Clean up the git worktree if one was created and cleanup is enabled.
+
+        Resets ``_worktree_info`` to ``None`` so the method is idempotent
+        (safe to call from both the main loop exit and ``cancel()``).
+        """
+        if self._worktree_info is not None and self._worktree_cleanup:
+            info = self._worktree_info
+            self._worktree_info = None
+            try:
+                await cleanup_worktree(info)
+                logger.info("Cleaned up worktree at %s", info.worktree_path)
+            except Exception:
+                logger.warning("Failed to cleanup worktree", exc_info=True)

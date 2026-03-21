@@ -11,6 +11,7 @@ import asyncio
 import contextlib
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
+from unittest.mock import AsyncMock, patch
 
 from flowstate.dsl.ast import (
     ContextMode,
@@ -26,6 +27,7 @@ from flowstate.engine.events import EventType, FlowEvent
 from flowstate.engine.executor import FlowExecutor
 from flowstate.engine.judge import JudgeContext, JudgeDecision, JudgePauseError, JudgeProtocol
 from flowstate.engine.subprocess_mgr import StreamEvent, StreamEventType, SubprocessManager
+from flowstate.engine.worktree import WorktreeError, WorktreeInfo
 from flowstate.state.repository import FlowstateDB
 
 if TYPE_CHECKING:
@@ -2688,3 +2690,320 @@ class TestResumeMainLoopStaysAlive:
         # Clean up
         await executor.cancel(flow_run_id)
         await execute_task
+
+
+# ---------------------------------------------------------------------------
+# Worktree integration tests (ENGINE-025)
+# ---------------------------------------------------------------------------
+
+
+def _make_linear_flow_worktree(
+    worktree: bool = True,
+    workspace: str = "/workspace",
+) -> Flow:
+    """Build a simple linear flow with configurable worktree setting."""
+    nodes: dict[str, Node] = {
+        "start": Node(name="start", node_type=NodeType.ENTRY, prompt="Do the start step"),
+        "work": Node(name="work", node_type=NodeType.TASK, prompt="Do the work step"),
+        "finish": Node(name="finish", node_type=NodeType.EXIT, prompt="Do the finish step"),
+    }
+    edges: list[Edge] = [
+        Edge(edge_type=EdgeType.UNCONDITIONAL, source="start", target="work"),
+        Edge(edge_type=EdgeType.UNCONDITIONAL, source="work", target="finish"),
+    ]
+    return Flow(
+        name="worktree-test",
+        budget_seconds=3600,
+        on_error=ErrorPolicy.PAUSE,
+        context=ContextMode.HANDOFF,
+        workspace=workspace,
+        worktree=worktree,
+        nodes=nodes,
+        edges=tuple(edges),
+    )
+
+
+class TestWorktreeIntegration:
+    """Tests for git worktree lifecycle in the executor (ENGINE-025)."""
+
+    @patch("flowstate.engine.executor.is_git_repo", return_value=True)
+    @patch("flowstate.engine.executor.is_existing_worktree", return_value=False)
+    @patch("flowstate.engine.executor.create_worktree")
+    @patch("flowstate.engine.executor.cleanup_worktree")
+    async def test_worktree_created_for_git_workspace(
+        self,
+        mock_cleanup: AsyncMock,
+        mock_create: AsyncMock,
+        mock_existing: Any,
+        mock_is_git: Any,
+    ) -> None:
+        """When workspace is a git repo and worktree=True, a worktree is created
+        and the effective cwd for tasks uses the worktree path."""
+        worktree_path = "/tmp/flowstate-worktree-test"
+        mock_create.return_value = WorktreeInfo(
+            original_workspace="/workspace",
+            worktree_path=worktree_path,
+            branch_name="flowstate/abc12345",
+        )
+
+        db = _make_db()
+        _events, callback = _collect_events()
+        mock_mgr = MockSubprocessManager()
+        executor = FlowExecutor(db, callback, mock_mgr)
+
+        flow = _make_linear_flow_worktree(worktree=True, workspace="/workspace")
+        flow_run_id = await executor.execute(flow, {}, "/workspace")
+
+        # Verify worktree was created
+        mock_create.assert_called_once()
+        call_args = mock_create.call_args
+        assert call_args[0][1] == flow_run_id  # run_id passed to create_worktree
+
+        # Verify the cwd passed to subprocess uses the worktree path.
+        # On macOS /tmp resolves to /private/tmp, so compare resolved paths.
+        resolved_worktree = str(Path(worktree_path).resolve())
+        tasks = db.list_task_executions(flow_run_id)
+        for task in tasks:
+            assert (
+                task.cwd == resolved_worktree
+            ), f"Task {task.node_name} cwd should be worktree path, got {task.cwd}"
+
+        # Verify cleanup was called
+        mock_cleanup.assert_called_once()
+
+    @patch("flowstate.engine.executor.is_git_repo", return_value=True)
+    @patch("flowstate.engine.executor.is_existing_worktree", return_value=False)
+    @patch("flowstate.engine.executor.create_worktree")
+    @patch("flowstate.engine.executor.cleanup_worktree")
+    async def test_worktree_skipped_when_false(
+        self,
+        mock_cleanup: AsyncMock,
+        mock_create: AsyncMock,
+        mock_existing: Any,
+        mock_is_git: Any,
+    ) -> None:
+        """When worktree=False, create_worktree is never called."""
+        db = _make_db()
+        _events, callback = _collect_events()
+        mock_mgr = MockSubprocessManager()
+        executor = FlowExecutor(db, callback, mock_mgr)
+
+        flow = _make_linear_flow_worktree(worktree=False, workspace="/workspace")
+        await executor.execute(flow, {}, "/workspace")
+
+        mock_create.assert_not_called()
+        mock_cleanup.assert_not_called()
+
+    @patch("flowstate.engine.executor.is_git_repo", return_value=False)
+    @patch("flowstate.engine.executor.is_existing_worktree", return_value=False)
+    @patch("flowstate.engine.executor.create_worktree")
+    @patch("flowstate.engine.executor.cleanup_worktree")
+    async def test_worktree_skipped_for_non_git(
+        self,
+        mock_cleanup: AsyncMock,
+        mock_create: AsyncMock,
+        mock_existing: Any,
+        mock_is_git: Any,
+    ) -> None:
+        """When workspace is not a git repo, create_worktree is never called."""
+        db = _make_db()
+        _events, callback = _collect_events()
+        mock_mgr = MockSubprocessManager()
+        executor = FlowExecutor(db, callback, mock_mgr)
+
+        flow = _make_linear_flow_worktree(worktree=True, workspace="/workspace")
+        await executor.execute(flow, {}, "/workspace")
+
+        mock_create.assert_not_called()
+        mock_cleanup.assert_not_called()
+
+    @patch("flowstate.engine.executor.is_git_repo", return_value=True)
+    @patch("flowstate.engine.executor.is_existing_worktree", return_value=False)
+    @patch("flowstate.engine.executor.create_worktree")
+    @patch("flowstate.engine.executor.cleanup_worktree")
+    async def test_worktree_cleanup_on_completion(
+        self,
+        mock_cleanup: AsyncMock,
+        mock_create: AsyncMock,
+        mock_existing: Any,
+        mock_is_git: Any,
+    ) -> None:
+        """Verify cleanup_worktree is called when flow completes successfully."""
+        worktree_info = WorktreeInfo(
+            original_workspace="/workspace",
+            worktree_path="/tmp/flowstate-cleanup-test",
+            branch_name="flowstate/abc12345",
+        )
+        mock_create.return_value = worktree_info
+
+        db = _make_db()
+        _events, callback = _collect_events()
+        mock_mgr = MockSubprocessManager()
+        executor = FlowExecutor(db, callback, mock_mgr)
+
+        flow = _make_linear_flow_worktree(worktree=True, workspace="/workspace")
+        await executor.execute(flow, {}, "/workspace")
+
+        mock_cleanup.assert_called_once_with(worktree_info)
+
+    @patch("flowstate.engine.executor.is_git_repo", return_value=True)
+    @patch("flowstate.engine.executor.is_existing_worktree", return_value=False)
+    @patch("flowstate.engine.executor.create_worktree")
+    @patch("flowstate.engine.executor.cleanup_worktree")
+    async def test_worktree_cleanup_skipped_when_disabled(
+        self,
+        mock_cleanup: AsyncMock,
+        mock_create: AsyncMock,
+        mock_existing: Any,
+        mock_is_git: Any,
+    ) -> None:
+        """When worktree_cleanup=False, cleanup_worktree is not called."""
+        mock_create.return_value = WorktreeInfo(
+            original_workspace="/workspace",
+            worktree_path="/tmp/flowstate-no-cleanup",
+            branch_name="flowstate/abc12345",
+        )
+
+        db = _make_db()
+        _events, callback = _collect_events()
+        mock_mgr = MockSubprocessManager()
+        executor = FlowExecutor(db, callback, mock_mgr, worktree_cleanup=False)
+
+        flow = _make_linear_flow_worktree(worktree=True, workspace="/workspace")
+        await executor.execute(flow, {}, "/workspace")
+
+        mock_create.assert_called_once()
+        mock_cleanup.assert_not_called()
+
+    @patch("flowstate.engine.executor.is_git_repo", return_value=True)
+    @patch("flowstate.engine.executor.is_existing_worktree", return_value=False)
+    @patch("flowstate.engine.executor.create_worktree")
+    @patch("flowstate.engine.executor.cleanup_worktree")
+    async def test_worktree_fallback_on_error(
+        self,
+        mock_cleanup: AsyncMock,
+        mock_create: AsyncMock,
+        mock_existing: Any,
+        mock_is_git: Any,
+    ) -> None:
+        """When create_worktree raises WorktreeError, the flow continues
+        with the original workspace."""
+        mock_create.side_effect = WorktreeError("branch already exists")
+
+        db = _make_db()
+        _events, callback = _collect_events()
+        mock_mgr = MockSubprocessManager()
+        executor = FlowExecutor(db, callback, mock_mgr)
+
+        flow = _make_linear_flow_worktree(worktree=True, workspace="/workspace")
+        flow_run_id = await executor.execute(flow, {}, "/workspace")
+
+        # Flow still completes successfully
+        run = db.get_flow_run(flow_run_id)
+        assert run is not None
+        assert run.status == "completed"
+
+        # All tasks used the original workspace (resolved to absolute path)
+        tasks = db.list_task_executions(flow_run_id)
+        for task in tasks:
+            # The workspace is resolved to absolute, so it won't be exactly
+            # "/workspace" -- it gets resolved by Path().resolve()
+            assert (
+                "/tmp/flowstate" not in task.cwd
+            ), f"Task {task.node_name} should not use worktree path"
+
+        # Cleanup not called since worktree was never created
+        mock_cleanup.assert_not_called()
+
+    @patch("flowstate.engine.executor.is_git_repo", return_value=True)
+    @patch("flowstate.engine.executor.is_existing_worktree", return_value=True)
+    @patch("flowstate.engine.executor.create_worktree")
+    @patch("flowstate.engine.executor.cleanup_worktree")
+    async def test_worktree_skipped_for_existing_worktree(
+        self,
+        mock_cleanup: AsyncMock,
+        mock_create: AsyncMock,
+        mock_existing: Any,
+        mock_is_git: Any,
+    ) -> None:
+        """When workspace is already a worktree, don't nest worktrees."""
+        db = _make_db()
+        _events, callback = _collect_events()
+        mock_mgr = MockSubprocessManager()
+        executor = FlowExecutor(db, callback, mock_mgr)
+
+        flow = _make_linear_flow_worktree(worktree=True, workspace="/workspace")
+        await executor.execute(flow, {}, "/workspace")
+
+        mock_create.assert_not_called()
+        mock_cleanup.assert_not_called()
+
+    @patch("flowstate.engine.executor.is_git_repo", return_value=True)
+    @patch("flowstate.engine.executor.is_existing_worktree", return_value=False)
+    @patch("flowstate.engine.executor.create_worktree")
+    @patch("flowstate.engine.executor.cleanup_worktree")
+    async def test_worktree_cleanup_on_cancel(
+        self,
+        mock_cleanup: AsyncMock,
+        mock_create: AsyncMock,
+        mock_existing: Any,
+        mock_is_git: Any,
+    ) -> None:
+        """Verify worktree cleanup is called when flow is cancelled."""
+        worktree_info = WorktreeInfo(
+            original_workspace="/workspace",
+            worktree_path="/tmp/flowstate-cancel-test",
+            branch_name="flowstate/abc12345",
+        )
+        mock_create.return_value = worktree_info
+
+        db = _make_db()
+        _events, callback = _collect_events()
+        mock_mgr = MockSubprocessManager()
+        # Make a task fail so the flow pauses (on_error=PAUSE)
+        mock_mgr.task_responses["work"] = (1, [])
+        executor = FlowExecutor(db, callback, mock_mgr)
+
+        flow = _make_linear_flow_worktree(worktree=True, workspace="/workspace")
+        flow_run_id, execute_task = await _execute_until_paused(
+            executor, flow, {}, "/workspace", db
+        )
+
+        # Cancel the flow
+        await executor.cancel(flow_run_id)
+        await execute_task
+
+        # Worktree cleanup should have been called
+        mock_cleanup.assert_called_once_with(worktree_info)
+
+    @patch("flowstate.engine.executor.is_git_repo", return_value=True)
+    @patch("flowstate.engine.executor.is_existing_worktree", return_value=False)
+    @patch("flowstate.engine.executor.create_worktree")
+    @patch("flowstate.engine.executor.cleanup_worktree")
+    async def test_worktree_db_updated(
+        self,
+        mock_cleanup: AsyncMock,
+        mock_create: AsyncMock,
+        mock_existing: Any,
+        mock_is_git: Any,
+    ) -> None:
+        """Verify update_flow_run_worktree is called to persist worktree path."""
+        worktree_path = "/tmp/flowstate-db-test"
+        mock_create.return_value = WorktreeInfo(
+            original_workspace="/workspace",
+            worktree_path=worktree_path,
+            branch_name="flowstate/abc12345",
+        )
+
+        db = _make_db()
+        _events, callback = _collect_events()
+        mock_mgr = MockSubprocessManager()
+        executor = FlowExecutor(db, callback, mock_mgr)
+
+        flow = _make_linear_flow_worktree(worktree=True, workspace="/workspace")
+        flow_run_id = await executor.execute(flow, {}, "/workspace")
+
+        # Check that the flow run has the worktree path stored
+        run = db.get_flow_run(flow_run_id)
+        assert run is not None
+        assert run.worktree_path == worktree_path

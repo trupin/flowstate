@@ -294,6 +294,27 @@ class TestFlowRuns:
         assert result is not None
         assert result.elapsed_seconds == 100.0
 
+    def test_update_flow_run_worktree(self, db: FlowstateDB, flow_def_id: str) -> None:
+        """Store and retrieve worktree_path for a flow run."""
+        run_id = db.create_flow_run(flow_def_id, "/tmp/r", 300, "pause")
+
+        # Initially None
+        result = db.get_flow_run(run_id)
+        assert result is not None
+        assert result.worktree_path is None
+
+        # Set worktree path
+        db.update_flow_run_worktree(run_id, "/tmp/worktrees/run-123")
+        result = db.get_flow_run(run_id)
+        assert result is not None
+        assert result.worktree_path == "/tmp/worktrees/run-123"
+
+        # Update to a different path
+        db.update_flow_run_worktree(run_id, "/tmp/worktrees/run-456")
+        result = db.get_flow_run(run_id)
+        assert result is not None
+        assert result.worktree_path == "/tmp/worktrees/run-456"
+
     def test_create_flow_run_invalid_definition_id(self, db: FlowstateDB) -> None:
         """Creating a flow_run with non-existent flow_definition_id raises IntegrityError."""
         with pytest.raises(sqlite3.IntegrityError):

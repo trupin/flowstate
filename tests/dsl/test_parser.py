@@ -771,3 +771,36 @@ class TestJudgeParameter:
         assert flow.nodes["a"].judge is False
         assert flow.nodes["b"].judge is None  # inherits from flow
         assert flow.nodes["c"].judge is None
+
+
+# ---------------------------------------------------------------------------
+# Additional: worktree parameter
+# ---------------------------------------------------------------------------
+
+
+class TestWorktreeParameter:
+    """Test worktree boolean parameter at flow level."""
+
+    def test_flow_worktree_true(self):
+        source = (
+            "flow f { budget = 1h on_error = pause context = handoff worktree = true "
+            'entry a { prompt = "x" } exit b { prompt = "y" } a -> b }'
+        )
+        flow = parse_flow(source)
+        assert flow.worktree is True
+
+    def test_flow_worktree_false(self):
+        source = (
+            "flow f { budget = 1h on_error = pause context = handoff worktree = false "
+            'entry a { prompt = "x" } exit b { prompt = "y" } a -> b }'
+        )
+        flow = parse_flow(source)
+        assert flow.worktree is False
+
+    def test_flow_worktree_default_is_true(self):
+        source = (
+            "flow f { budget = 1h on_error = pause context = handoff "
+            'entry a { prompt = "x" } exit b { prompt = "y" } a -> b }'
+        )
+        flow = parse_flow(source)
+        assert flow.worktree is True

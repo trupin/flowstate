@@ -147,7 +147,7 @@
 | ENGINE-021 | Remove OrchestratorManager and simplify executor          | engine | P0       | —          | done        |
 | ENGINE-023 | Implement self-report routing (DECISION.json)             | engine | P1       | DSL-007    | done        |
 | ENGINE-024 | Emit executor activity logs visible in UI console        | engine | P1       | ENGINE-021 | todo        |
-| ENGINE-025 | Workspace/data-dir separation + git worktree isolation   | engine | P0       | —          | todo        |
+| ENGINE-025 | Workspace/data-dir separation + git worktree isolation   | engine | P0       | —          | done        |
 | SERVER-010 | Update routes — remove orchestrator references            | server | P0       | ENGINE-021 | done        |
 
 

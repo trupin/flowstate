@@ -240,6 +240,14 @@ class FlowstateDB:
         )
         self._commit()
 
+    def update_flow_run_worktree(self, run_id: str, worktree_path: str) -> None:
+        """Store the git worktree path for a flow run."""
+        self._execute(
+            "UPDATE flow_runs SET worktree_path = ? WHERE id = ?",
+            (worktree_path, run_id),
+        )
+        self._commit()
+
     # ================================================================== #
     # Task Executions
     # ================================================================== #

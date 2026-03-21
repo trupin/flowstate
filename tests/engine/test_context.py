@@ -112,7 +112,7 @@ class TestBuildPromptHandoff:
         assert "Implement the feature" in prompt
         assert "Working directory" in prompt
         assert "/project" in prompt
-        assert "Task directory" in prompt
+        assert "Task coordination directory" in prompt
         assert "SUMMARY.md" in prompt
         assert "/home/user/.flowstate/runs/r1/tasks/implement-1/SUMMARY.md" in prompt
 

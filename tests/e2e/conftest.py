@@ -14,19 +14,16 @@ import socket
 import threading
 from pathlib import Path
 
-import httpx
-import pytest
-import uvicorn
-
-from tests.e2e.mock_subprocess import MockSubprocessManager
-
-# Set test mode before any app imports
+# Set test mode before any flowstate imports (must precede import)
 os.environ["FLOWSTATE_TEST_MODE"] = "1"
 
-from flowstate.config import (  # noqa: E402 — must import after FLOWSTATE_TEST_MODE is set
-    FlowstateConfig,
-)
+import httpx  # noqa: E402
+import pytest  # noqa: E402
+import uvicorn  # noqa: E402
+
+from flowstate.config import FlowstateConfig  # noqa: E402
 from flowstate.server.app import create_app  # noqa: E402
+from tests.e2e.mock_subprocess import MockSubprocessManager  # noqa: E402
 
 
 def _find_free_port() -> int:

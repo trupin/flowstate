@@ -21,6 +21,7 @@ class FlowstateConfig:
     database_wal_mode: bool = True
     watch_dir: str = "./flows"
     log_level: str = "info"
+    worktree_cleanup: bool = True
 
 
 def load_config(path: str | None = None) -> FlowstateConfig:
@@ -63,6 +64,8 @@ def _parse_toml(path: Path) -> FlowstateConfig:
         kwargs["max_concurrent_tasks"] = execution["max_concurrent_tasks"]
     if "default_budget" in execution:
         kwargs["default_budget"] = execution["default_budget"]
+    if "worktree_cleanup" in execution:
+        kwargs["worktree_cleanup"] = execution["worktree_cleanup"]
 
     judge = data.get("judge", {})
     if "model" in judge:

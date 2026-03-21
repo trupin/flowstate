@@ -304,6 +304,9 @@ class _FlowTransformer(Transformer[Token, Flow]):
     def flow_judge(self, items: list[Token]) -> tuple[str, bool]:
         return ("judge", str(items[0]) == "true")
 
+    def flow_worktree(self, items: list[Token]) -> tuple[str, bool]:
+        return ("worktree", str(items[0]) == "true")
+
     # -- Flow body and declaration --
 
     def flow_stmt(self, items: list[object]) -> object:
@@ -355,6 +358,7 @@ class _FlowTransformer(Transformer[Token, Flow]):
             on_overlap=on_overlap,
             skip_permissions=bool(attrs.get("skip_permissions", False)),
             judge=bool(attrs.get("judge", False)),
+            worktree=bool(attrs.get("worktree", True)),
             params=tuple(params),
             nodes=nodes,
             edges=tuple(edges),

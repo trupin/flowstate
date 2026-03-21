@@ -88,6 +88,7 @@ class Flow:
     on_overlap: OverlapPolicy = OverlapPolicy.SKIP
     skip_permissions: bool = False
     judge: bool = False
+    worktree: bool = True
     params: tuple[Param, ...] = ()
     nodes: dict[str, Node] = field(default_factory=dict)
     edges: tuple[Edge, ...] = ()

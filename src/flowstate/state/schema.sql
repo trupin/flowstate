@@ -25,7 +25,8 @@ CREATE TABLE IF NOT EXISTS flow_runs (
     started_at TIMESTAMP,
     completed_at TIMESTAMP,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    error_message TEXT
+    error_message TEXT,
+    worktree_path TEXT
 );
 
 -- Task executions (individual node runs within a flow run)
