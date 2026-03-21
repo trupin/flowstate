@@ -111,10 +111,10 @@
 | UI-015 | Rich Tool Call Rendering in Log Viewer                  | ui     | P1       | UI-006                                 | done   |
 | UI-016 | Orchestrator Console in Run Detail                     | ui     | P1       | UI-011, ENGINE-015                     | done   |
 | UI-017 | Edge Animation Persists After State Transition         | ui     | P0       | UI-004                                 | done   |
-| UI-020 | Thinking label transitions to "Thoughts" when done     | ui     | P1       | UI-006                                 | todo   |
-| UI-021 | Graph UI stuck on completion — requires manual re-select | ui     | P0       | UI-008, UI-011                         | todo   |
+| UI-020 | Thinking label transitions to "Thoughts" when done     | ui     | P1       | UI-006                                 | done   |
+| UI-021 | Graph UI stuck on completion — requires manual re-select | ui     | P0       | UI-008, UI-011                         | done   |
 | UI-022 | Show cwd, task_dir, worktree in node details             | ui     | P1       | UI-005, ENGINE-025                     | todo   |
-| UI-023 | Replace Flows list with selected flow detail view        | ui     | P1       | UI-010                                 | todo   |
+| UI-023 | Replace Flows list with selected flow detail view        | ui     | P1       | UI-010                                 | done   |
 
 
 ### Phase 5 — Integration
@@ -146,7 +146,7 @@
 | ENGINE-018 | Resume does not restart execution after pause             | engine | P2       | —          | done        |
 | ENGINE-021 | Remove OrchestratorManager and simplify executor          | engine | P0       | —          | done        |
 | ENGINE-023 | Implement self-report routing (DECISION.json)             | engine | P1       | DSL-007    | done        |
-| ENGINE-024 | Emit executor activity logs visible in UI console        | engine | P1       | ENGINE-021 | todo        |
+| ENGINE-024 | Emit executor activity logs visible in UI console        | engine | P1       | ENGINE-021 | done        |
 | ENGINE-025 | Workspace/data-dir separation + git worktree isolation   | engine | P0       | —          | done        |
 | SERVER-010 | Update routes — remove orchestrator references            | server | P0       | ENGINE-021 | done        |
 

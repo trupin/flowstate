@@ -1,6 +1,9 @@
 import { useRef, useEffect, useState, useMemo } from 'react';
+import Markdown from 'react-markdown';
+import remarkGfm from 'remark-gfm';
 import type { LogEntry } from '../../api/types';
 import { ToolCallBlock } from './ToolCallBlock';
+import { CollapsibleSection } from './CollapsibleSection';
 import './LogViewer.css';
 
 export interface LogViewerProps {
@@ -20,6 +23,11 @@ function formatTimestamp(iso: string): string {
 }
 
 // --- Parsed log entry types ---
+
+interface ParsedThinking {
+  kind: 'thinking';
+  text: string;
+}
 
 interface ParsedAssistant {
   kind: 'assistant';
@@ -48,10 +56,26 @@ interface ParsedResult {
 interface ParsedSystemExit {
   kind: 'system_exit';
   exitCode: number;
+  stderr?: string;
+}
+
+interface ParsedError {
+  kind: 'error';
+  message: string;
+  stackTrace?: string;
 }
 
 interface ParsedSystemInit {
   kind: 'system_init';
+}
+
+interface ParsedRateLimitEvent {
+  kind: 'rate_limit';
+}
+
+interface ParsedActivity {
+  kind: 'activity';
+  text: string;
 }
 
 interface ParsedRaw {
@@ -60,12 +84,16 @@ interface ParsedRaw {
 }
 
 type ParsedContent =
+  | ParsedThinking
   | ParsedAssistant
   | ParsedToolUse
   | ParsedToolResult
   | ParsedResult
   | ParsedSystemExit
+  | ParsedError
   | ParsedSystemInit
+  | ParsedRateLimitEvent
+  | ParsedActivity
   | ParsedRaw;
 
 function truncateStr(s: string, maxLen: number): string {
@@ -73,7 +101,11 @@ function truncateStr(s: string, maxLen: number): string {
   return s.slice(0, maxLen - 3) + '...';
 }
 
-function extractTextFromContent(contentArr: unknown): string {
+function extractBlockContent(
+  contentArr: unknown,
+  blockType: string,
+  textField: string,
+): string {
   if (!Array.isArray(contentArr)) return '';
   const parts: string[] = [];
   for (const block of contentArr) {
@@ -81,21 +113,43 @@ function extractTextFromContent(contentArr: unknown): string {
       block != null &&
       typeof block === 'object' &&
       'type' in block &&
-      block.type === 'text' &&
-      'text' in block &&
-      typeof block.text === 'string'
+      block.type === blockType &&
+      textField in block &&
+      typeof (block as Record<string, unknown>)[textField] === 'string'
     ) {
-      parts.push(block.text);
+      parts.push((block as Record<string, unknown>)[textField] as string);
     }
   }
   return parts.join('\n');
+}
+
+function extractTextFromContent(contentArr: unknown): string {
+  return extractBlockContent(contentArr, 'text', 'text');
+}
+
+function extractThinkingFromContent(contentArr: unknown): string {
+  return extractBlockContent(contentArr, 'thinking', 'thinking');
+}
+
+function getFirstMeaningfulLine(text: string): string {
+  const lines = text.split('\n');
+  for (const line of lines) {
+    const trimmed = line.trim();
+    if (trimmed.length > 0) {
+      return truncateStr(trimmed, 200);
+    }
+  }
+  return truncateStr(text, 200);
 }
 
 function parseLogContent(content: string): ParsedContent {
   // Handle non-JSON process exit messages
   const exitMatch = content.match(/^Process exited with code (\d+)$/);
   if (exitMatch) {
-    return { kind: 'system_exit', exitCode: parseInt(exitMatch[1] ?? '0', 10) };
+    return {
+      kind: 'system_exit',
+      exitCode: parseInt(exitMatch[1] ?? '0', 10),
+    };
   }
 
   let parsed: unknown;
@@ -112,15 +166,34 @@ function parseLogContent(content: string): ParsedContent {
   const obj = parsed as Record<string, unknown>;
   const eventType = obj.type;
 
+  // Executor activity logs: {"subtype": "activity", "message": "..."}
+  if (obj.subtype === 'activity' && typeof obj.message === 'string') {
+    return { kind: 'activity', text: obj.message };
+  }
+
   if (eventType === 'assistant') {
     const message = obj.message as Record<string, unknown> | undefined;
     if (message) {
+      // Check for thinking blocks first
+      const thinkingText = extractThinkingFromContent(message.content);
+      if (thinkingText) {
+        return { kind: 'thinking', text: thinkingText };
+      }
+
       const text = extractTextFromContent(message.content);
       if (text) {
         return { kind: 'assistant', text };
       }
+
+      // Check for stop_reason indicating this is a ResultMessage
+      if (typeof message.stop_reason === 'string' && message.stop_reason) {
+        const resultText = extractTextFromContent(message.content);
+        if (resultText) {
+          return { kind: 'result', text: resultText };
+        }
+      }
     }
-    // Streaming partial with no text yet — hide it
+    // Streaming partial with no text yet
     return { kind: 'raw', text: '' };
   }
 
@@ -149,7 +222,6 @@ function parseLogContent(content: string): ParsedContent {
         }
       }
     }
-    // Tool use event with no parseable tool — hide it
     return { kind: 'raw', text: '' };
   }
 
@@ -161,16 +233,15 @@ function parseLogContent(content: string): ParsedContent {
         return {
           kind: 'tool_result',
           content: text,
-          summary: truncateStr(text, 200),
+          summary: getFirstMeaningfulLine(text),
         };
       }
     }
-    // Also handle direct content field
     if (typeof obj.content === 'string') {
       return {
         kind: 'tool_result',
         content: obj.content,
-        summary: truncateStr(obj.content, 200),
+        summary: getFirstMeaningfulLine(obj.content),
       };
     }
     return {
@@ -190,6 +261,22 @@ function parseLogContent(content: string): ParsedContent {
     return { kind: 'result', text: resultText };
   }
 
+  if (eventType === 'error') {
+    const message =
+      typeof obj.message === 'string'
+        ? obj.message
+        : typeof obj.error === 'string'
+          ? obj.error
+          : 'Unknown error';
+    const stackTrace =
+      typeof obj.stack === 'string'
+        ? obj.stack
+        : typeof obj.traceback === 'string'
+          ? obj.traceback
+          : undefined;
+    return { kind: 'error', message, stackTrace };
+  }
+
   if (eventType === 'system') {
     const subtype = obj.subtype ?? obj.event;
     if (subtype === 'process_exit' || subtype === 'exit') {
@@ -200,19 +287,20 @@ function parseLogContent(content: string): ParsedContent {
                 ?.exit_code === 'number'
             ? ((obj.payload as Record<string, unknown>).exit_code as number)
             : 0;
-      return { kind: 'system_exit', exitCode };
+      const stderr = typeof obj.stderr === 'string' ? obj.stderr : undefined;
+      return { kind: 'system_exit', exitCode, stderr };
     }
-    // Hide all other system subtypes (init, start, task_progress, etc.)
+    if (subtype === 'init' || subtype === 'start') {
+      return { kind: 'system_init' };
+    }
     return { kind: 'raw', text: '' };
   }
 
   if (eventType === 'rate_limit_event') {
-    // Hide rate limit noise — return null-like marker
-    return { kind: 'raw', text: '' };
+    return { kind: 'rate_limit' };
   }
 
   if (eventType === 'user') {
-    // User events are tool results sent back to the model — hide by default
     return { kind: 'raw', text: '' };
   }
 
@@ -224,13 +312,85 @@ function parseLogContent(content: string): ParsedContent {
   return { kind: 'raw', text: content };
 }
 
-function LogEntryContent({ content }: { content: string }) {
+// --- Visibility classification ---
+
+type VisibilityCategory = 'visible' | 'noise' | 'hidden';
+
+function classifyEntry(content: string): VisibilityCategory {
+  const parsed = parseLogContent(content);
+  // Completely hidden: empty raw text (user, unknown JSON types)
+  if (parsed.kind === 'raw' && parsed.text === '') return 'hidden';
+  // Noise: system init, rate limit (accessible via "Show all")
+  if (parsed.kind === 'system_init') return 'noise';
+  if (parsed.kind === 'rate_limit') return 'noise';
+  return 'visible';
+}
+
+// --- Log entry content rendering ---
+
+const REMARK_PLUGINS = [remarkGfm];
+
+interface ThinkingBlockProps {
+  text: string;
+  isActive: boolean;
+}
+
+function ThinkingBlock({ text, isActive }: ThinkingBlockProps) {
+  const [expanded, setExpanded] = useState(false);
+
+  return (
+    <div className="log-thinking-block">
+      <div
+        className={`log-thinking-header ${isActive ? '' : 'log-thinking-header-done'}`}
+        onClick={() => setExpanded((prev) => !prev)}
+        role="button"
+        tabIndex={0}
+        onKeyDown={(e) => {
+          if (e.key === 'Enter' || e.key === ' ') {
+            e.preventDefault();
+            setExpanded((prev) => !prev);
+          }
+        }}
+        aria-expanded={expanded}
+      >
+        <span className="log-thinking-chevron">
+          {expanded ? '\u25BE' : '\u25B8'}
+        </span>
+        <span className="log-thinking-label">
+          {isActive ? 'Thinking' : 'Thoughts'}
+        </span>
+        {isActive && (
+          <span className="log-thinking-dots">
+            <span className="dot">.</span>
+            <span className="dot">.</span>
+            <span className="dot">.</span>
+          </span>
+        )}
+      </div>
+      {expanded && <div className="log-thinking-content">{text}</div>}
+    </div>
+  );
+}
+
+interface LogEntryContentProps {
+  content: string;
+  isLastEntry?: boolean;
+}
+
+function LogEntryContent({
+  content,
+  isLastEntry = false,
+}: LogEntryContentProps) {
   const parsed = useMemo(() => parseLogContent(content), [content]);
 
   switch (parsed.kind) {
+    case 'thinking':
+      return <ThinkingBlock text={parsed.text} isActive={isLastEntry} />;
     case 'assistant':
       return (
-        <span className="log-parsed log-parsed-assistant">{parsed.text}</span>
+        <div className="log-parsed log-parsed-assistant">
+          <Markdown remarkPlugins={REMARK_PLUGINS}>{parsed.text}</Markdown>
+        </div>
       );
     case 'tool_use':
       return (
@@ -249,32 +409,47 @@ function LogEntryContent({ content }: { content: string }) {
       );
     case 'result':
       return (
-        <span className="log-parsed log-parsed-result">{parsed.text}</span>
+        <div className="log-parsed log-parsed-result">
+          <Markdown remarkPlugins={REMARK_PLUGINS}>{parsed.text}</Markdown>
+        </div>
       );
     case 'system_exit':
       return (
-        <span
-          className={`log-parsed log-parsed-exit ${parsed.exitCode === 0 ? 'exit-success' : 'exit-failure'}`}
-        >
-          Process exited with code {parsed.exitCode}
+        <span className="log-parsed log-parsed-exit-container">
+          <span
+            className={`log-exit-badge ${parsed.exitCode === 0 ? 'exit-success' : 'exit-failure'}`}
+          >
+            Exit {parsed.exitCode}
+          </span>
+          {parsed.stderr && (
+            <CollapsibleSection label="stderr">
+              <pre className="log-stderr-content">{parsed.stderr}</pre>
+            </CollapsibleSection>
+          )}
         </span>
+      );
+    case 'error':
+      return (
+        <div className="log-parsed log-parsed-error">
+          <span className="log-error-message">{parsed.message}</span>
+          {parsed.stackTrace && (
+            <CollapsibleSection label="Stack trace">
+              <pre className="log-stacktrace">{parsed.stackTrace}</pre>
+            </CollapsibleSection>
+          )}
+        </div>
       );
     case 'system_init':
       return (
         <span className="log-parsed log-parsed-system">Session started</span>
       );
+    case 'rate_limit':
+      return <span className="log-parsed log-parsed-system">Rate limited</span>;
+    case 'activity':
+      return <span className="log-parsed log-activity">{parsed.text}</span>;
     case 'raw':
       return <span className="log-content">{parsed.text}</span>;
   }
-}
-
-function shouldHideEntry(content: string): boolean {
-  const parsed = parseLogContent(content);
-  // Hide entries that parsed to empty raw text (rate_limit, user, unknown JSON types)
-  if (parsed.kind === 'raw' && parsed.text === '') return true;
-  // Hide system init (noise)
-  if (parsed.kind === 'system_init') return true;
-  return false;
 }
 
 // --- Grouped log entry types ---
@@ -324,7 +499,7 @@ function groupLogEntries(logs: LogEntry[]): GroupedEntry[] {
           continue;
         }
       }
-      // No matching result yet — tool is still running
+      // No matching result yet -- tool is still running
       result.push({
         type: 'tool_call',
         toolUse: parsed,
@@ -336,11 +511,8 @@ function groupLogEntries(logs: LogEntry[]): GroupedEntry[] {
       continue;
     }
 
-    // Skip standalone tool_results that were already consumed in a group.
-    // This handles the case where the render loop already grouped them above.
-    // However, standalone tool_results (not preceded by a tool_use) still render.
+    // Skip standalone tool_results that were already consumed in a group
     if (parsed.kind === 'tool_result') {
-      // Check if this was already consumed by the previous group
       if (result.length > 0) {
         const lastGroup = result[result.length - 1];
         if (
@@ -364,15 +536,27 @@ function groupLogEntries(logs: LogEntry[]): GroupedEntry[] {
 export function LogViewer({ logs, taskName, onClear }: LogViewerProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const [pinned, setPinned] = useState(true);
+  const [showAll, setShowAll] = useState(false);
 
-  const visibleLogs = useMemo(
-    () => logs.filter((entry) => !shouldHideEntry(entry.content)),
-    [logs],
-  );
+  const { filteredLogs, noiseCount } = useMemo(() => {
+    const filtered: LogEntry[] = [];
+    let noise = 0;
+    for (const entry of logs) {
+      const category = classifyEntry(entry.content);
+      if (category === 'noise') {
+        noise++;
+        if (showAll) filtered.push(entry);
+      } else if (category === 'visible') {
+        filtered.push(entry);
+      }
+      // 'hidden' entries are always excluded
+    }
+    return { filteredLogs: filtered, noiseCount: noise };
+  }, [logs, showAll]);
 
   const groupedEntries = useMemo(
-    () => groupLogEntries(visibleLogs),
-    [visibleLogs],
+    () => groupLogEntries(filteredLogs),
+    [filteredLogs],
   );
 
   // Auto-scroll when pinned and new logs arrive
@@ -385,6 +569,7 @@ export function LogViewer({ logs, taskName, onClear }: LogViewerProps) {
   // Reset pin state when task changes
   useEffect(() => {
     setPinned(true);
+    setShowAll(false);
   }, [taskName]);
 
   // Detect manual scroll-up to auto-unpin
@@ -410,6 +595,19 @@ export function LogViewer({ logs, taskName, onClear }: LogViewerProps) {
       <div className="log-viewer-header">
         <span className="log-viewer-title">{taskName}</span>
         <div className="log-viewer-controls">
+          {noiseCount > 0 && (
+            <button
+              className={`log-viewer-show-all ${showAll ? 'active' : ''}`}
+              onClick={() => setShowAll((prev) => !prev)}
+              title={
+                showAll
+                  ? 'Hide system noise'
+                  : `Show all (${noiseCount} hidden)`
+              }
+            >
+              {showAll ? 'Hide noise' : `Show all (${noiseCount})`}
+            </button>
+          )}
           <button
             className={`log-viewer-pin ${pinned ? 'active' : ''}`}
             onClick={() => {
@@ -437,7 +635,8 @@ export function LogViewer({ logs, taskName, onClear }: LogViewerProps) {
         {groupedEntries.length === 0 ? (
           <div className="log-viewer-no-output">No output yet</div>
         ) : (
-          groupedEntries.map((grouped) => {
+          groupedEntries.map((grouped, index) => {
+            const isLast = index === groupedEntries.length - 1;
             if (grouped.type === 'tool_call') {
               const key = grouped.ids.join('-');
               return (
@@ -466,7 +665,10 @@ export function LogViewer({ logs, taskName, onClear }: LogViewerProps) {
                 <span className="log-timestamp">
                   {formatTimestamp(grouped.entry.timestamp)}
                 </span>
-                <LogEntryContent content={grouped.entry.content} />
+                <LogEntryContent
+                  content={grouped.entry.content}
+                  isLastEntry={isLast}
+                />
               </div>
             );
           })

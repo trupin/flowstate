@@ -45,6 +45,12 @@
   color: #fff;
 }
 
+.log-viewer-show-all.active {
+  background: var(--bg-tertiary);
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
 .log-viewer-content {
   flex: 1;
   overflow-y: auto;
@@ -91,9 +97,96 @@
   color: var(--text-primary);
 }
 
-/* Assistant message: normal text */
+/* Assistant message: markdown rendered */
 .log-parsed-assistant {
-  white-space: pre-wrap;
+  white-space: normal;
+  flex: 1;
+  min-width: 0;
+}
+
+/* Markdown content styling */
+.log-parsed-assistant p {
+  margin: 0.25em 0;
+}
+
+.log-parsed-assistant h1,
+.log-parsed-assistant h2,
+.log-parsed-assistant h3,
+.log-parsed-assistant h4 {
+  margin: 0.5em 0 0.25em;
+  font-size: 1em;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+.log-parsed-assistant h1 {
+  font-size: 1.1em;
+}
+
+.log-parsed-assistant h2 {
+  font-size: 1.05em;
+}
+
+.log-parsed-assistant code {
+  font-family: var(--font-mono);
+  background: var(--bg-tertiary);
+  padding: 1px 4px;
+  border-radius: 3px;
+  font-size: 0.9em;
+}
+
+.log-parsed-assistant pre {
+  background: var(--bg-tertiary);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 8px;
+  margin: 4px 0;
+  overflow-x: auto;
+  white-space: pre;
+}
+
+.log-parsed-assistant pre code {
+  background: none;
+  padding: 0;
+  border-radius: 0;
+}
+
+.log-parsed-assistant ul,
+.log-parsed-assistant ol {
+  margin: 0.25em 0;
+  padding-left: 1.5em;
+}
+
+.log-parsed-assistant li {
+  margin: 0.1em 0;
+}
+
+.log-parsed-assistant blockquote {
+  border-left: 3px solid var(--border);
+  margin: 0.25em 0;
+  padding-left: 8px;
+  color: var(--text-secondary);
+}
+
+.log-parsed-assistant table {
+  border-collapse: collapse;
+  margin: 0.25em 0;
+}
+
+.log-parsed-assistant th,
+.log-parsed-assistant td {
+  border: 1px solid var(--border);
+  padding: 4px 8px;
+  text-align: left;
+}
+
+.log-parsed-assistant th {
+  background: var(--bg-tertiary);
+  font-weight: 600;
+}
+
+.log-parsed-assistant a {
+  color: var(--accent);
 }
 
 /* Tool use: tool name highlighted */
@@ -119,11 +212,41 @@
   font-size: 11px;
 }
 
-/* Result: completion summary */
+/* Result: completion summary with markdown */
 .log-parsed-result {
   color: var(--success);
   font-weight: 500;
-  white-space: pre-wrap;
+  white-space: normal;
+  flex: 1;
+  min-width: 0;
+}
+
+.log-parsed-result p {
+  margin: 0.25em 0;
+}
+
+.log-parsed-result code {
+  font-family: var(--font-mono);
+  background: var(--bg-tertiary);
+  padding: 1px 4px;
+  border-radius: 3px;
+  font-size: 0.9em;
+}
+
+.log-parsed-result pre {
+  background: var(--bg-tertiary);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 8px;
+  margin: 4px 0;
+  overflow-x: auto;
+  white-space: pre;
+  color: var(--text-primary);
+}
+
+.log-parsed-result pre code {
+  background: none;
+  padding: 0;
 }
 
 /* System messages: dimmed */
@@ -132,15 +255,191 @@
   font-style: italic;
 }
 
-/* Exit codes */
-.log-parsed-exit {
+/* Executor activity logs: orchestration decisions */
+.log-activity {
+  color: var(--text-secondary);
+  font-style: italic;
+  font-size: 0.85em;
+  padding: 2px 0;
+  opacity: 0.8;
+}
+
+/* Exit code badge */
+.log-parsed-exit-container {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.log-exit-badge {
+  display: inline-block;
+  padding: 1px 8px;
+  border-radius: 10px;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.3px;
+}
+
+.log-exit-badge.exit-success {
+  background: rgba(34, 197, 94, 0.15);
+  color: var(--success);
+  border: 1px solid rgba(34, 197, 94, 0.3);
+}
+
+.log-exit-badge.exit-failure {
+  background: rgba(239, 68, 68, 0.15);
+  color: var(--error);
+  border: 1px solid rgba(239, 68, 68, 0.3);
+}
+
+/* Error entries */
+.log-parsed-error {
+  color: var(--error);
+}
+
+.log-error-message {
   font-weight: 500;
 }
 
-.log-parsed-exit.exit-success {
-  color: var(--success);
+.log-stacktrace {
+  font-size: 11px;
+  color: var(--text-secondary);
+  margin: 4px 0;
+  padding: 6px 8px;
+  background: var(--bg-tertiary);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  overflow-x: auto;
+  white-space: pre;
 }
 
-.log-parsed-exit.exit-failure {
+.log-stderr-content {
+  font-size: 11px;
   color: var(--error);
+  margin: 4px 0;
+  padding: 6px 8px;
+  background: var(--bg-tertiary);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  overflow-x: auto;
+  white-space: pre;
+}
+
+/* --- Thinking block styles --- */
+
+.log-thinking-block {
+  display: flex;
+  flex-direction: column;
+}
+
+.log-thinking-header {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  cursor: pointer;
+  user-select: none;
+  color: var(--text-secondary);
+  font-style: italic;
+}
+
+.log-thinking-header:hover {
+  opacity: 0.85;
+}
+
+.log-thinking-header-done {
+  font-style: normal;
+}
+
+.log-thinking-header-done .log-thinking-label {
+  font-style: normal;
+  opacity: 0.7;
+}
+
+.log-thinking-chevron {
+  width: 12px;
+  flex-shrink: 0;
+  font-size: 10px;
+  text-align: center;
+  font-style: normal;
+}
+
+.log-thinking-label {
+  font-style: italic;
+}
+
+.log-thinking-dots {
+  display: inline-flex;
+  gap: 0;
+}
+
+.log-thinking-dots .dot {
+  font-style: normal;
+  animation: thinking-dot-pulse 1.4s ease-in-out infinite;
+}
+
+.log-thinking-dots .dot:nth-child(2) {
+  animation-delay: 0.2s;
+}
+
+.log-thinking-dots .dot:nth-child(3) {
+  animation-delay: 0.4s;
+}
+
+@keyframes thinking-dot-pulse {
+  0%,
+  60%,
+  100% {
+    opacity: 0.3;
+  }
+  30% {
+    opacity: 1;
+  }
+}
+
+.log-thinking-content {
+  padding: 4px 0 4px 16px;
+  color: var(--text-secondary);
+  font-style: italic;
+  font-size: 11px;
+  white-space: pre-wrap;
+  border-left: 2px solid var(--border);
+  margin-left: 5px;
+  margin-top: 2px;
+}
+
+/* --- Collapsible section styles --- */
+
+.collapsible-section {
+  margin-top: 2px;
+}
+
+.collapsible-header {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  cursor: pointer;
+  user-select: none;
+  color: var(--text-secondary);
+  font-size: 11px;
+}
+
+.collapsible-header:hover {
+  opacity: 0.85;
+}
+
+.collapsible-chevron {
+  width: 12px;
+  flex-shrink: 0;
+  font-size: 10px;
+  text-align: center;
+}
+
+.collapsible-label {
+  text-decoration: underline;
+  text-decoration-style: dotted;
+  text-underline-offset: 2px;
+}
+
+.collapsible-content {
+  margin-top: 2px;
 }

@@ -1,0 +1,204 @@
+/* --- FlowDetailPanel --- */
+
+.flow-detail-panel {
+  padding: 0 20px 20px 20px;
+  overflow-y: auto;
+  font-size: 13px;
+  color: var(--text-primary);
+}
+
+/* Section spacing */
+.flow-detail-section {
+  margin-bottom: 20px;
+}
+
+.flow-detail-section-title {
+  font-size: 12px;
+  text-transform: uppercase;
+  letter-spacing: 0.8px;
+  color: var(--text-secondary);
+  margin: 0 0 8px 0;
+  font-weight: 600;
+}
+
+/* Settings grid */
+.flow-settings-grid {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 4px 16px;
+  background: var(--bg-secondary);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 10px 14px;
+}
+
+.flow-settings-key {
+  font-size: 12px;
+  color: var(--text-secondary);
+  white-space: nowrap;
+}
+
+.flow-settings-value {
+  font-size: 12px;
+  color: var(--text-primary);
+  font-family: var(--font-mono);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* Node summary */
+.flow-node-summary {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.flow-node-group {
+  font-size: 12px;
+  color: var(--text-primary);
+}
+
+.flow-node-type-label {
+  color: var(--text-secondary);
+  font-weight: 500;
+}
+
+/* Edge summary */
+.flow-edge-summary {
+  font-size: 12px;
+  color: var(--text-primary);
+}
+
+/* Empty state text */
+.flow-detail-empty {
+  color: var(--text-secondary);
+  font-style: italic;
+  font-size: 12px;
+}
+
+/* Parameters */
+.flow-params-list {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.flow-param-item {
+  font-size: 12px;
+  font-family: var(--font-mono);
+  color: var(--text-primary);
+}
+
+.flow-param-name {
+  font-weight: 600;
+}
+
+.flow-param-type {
+  color: var(--text-secondary);
+}
+
+.flow-param-default {
+  color: var(--text-secondary);
+}
+
+/* Recent runs */
+.flow-recent-runs {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.flow-run-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 10px;
+  background: var(--bg-secondary);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  cursor: pointer;
+  transition: background 0.1s;
+  font-size: 12px;
+}
+
+.flow-run-item:hover {
+  background: var(--bg-tertiary);
+}
+
+.flow-run-status-dot {
+  font-size: 10px;
+  flex-shrink: 0;
+}
+
+.flow-run-status-dot.status-completed {
+  color: var(--success);
+}
+
+.flow-run-status-dot.status-running {
+  color: var(--accent);
+}
+
+.flow-run-status-dot.status-failed,
+.flow-run-status-dot.status-budget_exceeded {
+  color: var(--error);
+}
+
+.flow-run-status-dot.status-paused {
+  color: var(--warning);
+}
+
+.flow-run-status-dot.status-cancelled,
+.flow-run-status-dot.status-created {
+  color: var(--text-secondary);
+}
+
+.flow-run-status-label {
+  color: var(--text-primary);
+  min-width: 80px;
+}
+
+.flow-run-time {
+  color: var(--text-secondary);
+  flex: 1;
+  text-align: right;
+}
+
+.flow-run-elapsed {
+  color: var(--text-secondary);
+}
+
+/* Source DSL toggle */
+.flow-source-toggle {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  cursor: pointer;
+  font-size: 13px;
+  color: var(--text-primary);
+  padding: 4px 0;
+  user-select: none;
+}
+
+.flow-source-toggle:hover {
+  color: var(--accent);
+}
+
+.flow-source-chevron {
+  font-size: 10px;
+  width: 12px;
+  text-align: center;
+}
+
+.flow-source-code {
+  background: var(--bg-secondary);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 12px 14px;
+  margin-top: 8px;
+  overflow-x: auto;
+  font-size: 12px;
+  line-height: 1.5;
+  font-family: var(--font-mono);
+  color: var(--text-primary);
+}

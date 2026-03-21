@@ -54,6 +54,32 @@ export interface FlowEdgeDef {
   join_sources?: string[];
 }
 
+export interface FlowAstJson {
+  name: string;
+  budget_seconds: number;
+  on_error: string;
+  context: string;
+  workspace: string | null;
+  schedule: string | null;
+  on_overlap: string;
+  skip_permissions: boolean;
+  judge: boolean;
+  worktree: boolean;
+  params: Array<{ name: string; type: string; default: unknown }>;
+  nodes: Record<
+    string,
+    { name: string; node_type: string; prompt: string; cwd?: string }
+  >;
+  edges: Array<{
+    edge_type: string;
+    source?: string;
+    target?: string;
+    condition?: string;
+    fork_targets?: string[];
+    join_sources?: string[];
+  }>;
+}
+
 export interface DiscoveredFlow {
   id: string;
   name: string;
@@ -65,6 +91,7 @@ export interface DiscoveredFlow {
   nodes: FlowNodeDef[];
   edges: FlowEdgeDef[];
   last_modified: string; // ISO 8601 timestamp
+  ast_json?: FlowAstJson; // included by GET /api/flows/:id
 }
 
 export interface FlowRun {

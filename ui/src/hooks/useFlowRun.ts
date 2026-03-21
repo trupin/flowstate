@@ -26,6 +26,7 @@ function applyEvent(
   setTasks: React.Dispatch<React.SetStateAction<Map<string, TaskExecution>>>,
   setEdges: React.Dispatch<React.SetStateAction<EdgeTransition[]>>,
   setLogs: React.Dispatch<React.SetStateAction<Map<string, LogEntry[]>>>,
+  fetchRunDetail: () => void,
 ) {
   const { type, payload } = event;
   switch (type) {
@@ -41,6 +42,14 @@ function applyEvent(
             }
           : prev,
       );
+      // Re-fetch on terminal status changes to update task statuses
+      if (
+        ['completed', 'failed', 'cancelled'].includes(
+          payload.new_status as string,
+        )
+      ) {
+        fetchRunDetail();
+      }
       break;
     case 'flow.completed':
       setRun((prev) =>
@@ -52,6 +61,8 @@ function applyEvent(
             }
           : prev,
       );
+      // Re-fetch full run detail to update task statuses in the graph
+      fetchRunDetail();
       break;
     case 'flow.budget_warning':
       setRun((prev) =>
@@ -227,7 +238,14 @@ export function useFlowRun(runId: string): UseFlowRunReturn {
   // Process incoming events
   useEffect(() => {
     if (!ws.lastEvent || ws.lastEvent.flow_run_id !== runId) return;
-    applyEvent(ws.lastEvent, setRun, setTasks, setEdges, setLogs);
+    applyEvent(
+      ws.lastEvent,
+      setRun,
+      setTasks,
+      setEdges,
+      setLogs,
+      fetchRunDetail,
+    );
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [ws.lastEvent]);
 

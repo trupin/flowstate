@@ -1,10 +1,11 @@
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect } from 'react';
 import { useSearchParams } from 'react-router-dom';
 import { api } from '../api/client';
 import { useFlowWatcher } from '../hooks/useFlowWatcher';
 import { GraphView } from '../components/GraphView';
 import { ErrorBanner } from '../components/ErrorBanner';
 import { StartRunModal } from '../components/StartRunModal';
+import { FlowDetailPanel } from '../components/FlowDetailPanel';
 import { expandEdges } from '../utils/edges';
 import type { DiscoveredFlow } from '../api/types';
 import './FlowLibrary.css';
@@ -43,13 +44,6 @@ export function FlowLibrary() {
     }
   }, [selectedFlowId, flows, setSearchParams]);
 
-  const handleSelectFlow = useCallback(
-    (flowId: string) => {
-      setSearchParams({ flow: flowId });
-    },
-    [setSearchParams],
-  );
-
   // Compute expanded edges for GraphView
   const graphEdges = selectedFlow ? expandEdges(selectedFlow.edges) : [];
   const graphNodes = selectedFlow
@@ -63,48 +57,12 @@ export function FlowLibrary() {
 
   return (
     <div className="flow-library">
-      <div className="flow-library-list">
-        <h2>Flows</h2>
-        {flows.length === 0 && (
-          <div className="flow-library-empty">
-            No flows discovered. Add <code>.flow</code> files to the watched
-            directory.
-          </div>
-        )}
-        {flows.map((flow) => (
-          <div
-            key={flow.id}
-            className={`flow-library-item ${flow.id === selectedFlowId ? 'selected' : ''}`}
-            onClick={() => handleSelectFlow(flow.id)}
-            role="button"
-            tabIndex={0}
-            onKeyDown={(e) => {
-              if (e.key === 'Enter' || e.key === ' ') {
-                e.preventDefault();
-                handleSelectFlow(flow.id);
-              }
-            }}
-          >
-            <span
-              className={`validity-dot ${flow.is_valid ? 'valid' : 'invalid'}`}
-              aria-label={flow.is_valid ? 'Valid' : 'Has errors'}
-            />
-            <div className="flow-library-item-info">
-              <span className="flow-library-item-name">{flow.name}</span>
-              <span className="flow-library-item-modified">
-                {new Date(flow.last_modified).toLocaleString()}
-              </span>
-            </div>
-          </div>
-        ))}
-      </div>
-
-      <div className="flow-library-preview">
+      <div className="flow-library-content">
         {fetchError && <div className="flow-library-error">{fetchError}</div>}
 
         {selectedFlow ? (
           <>
-            <div className="flow-library-preview-header">
+            <div className="flow-library-header">
               <h2>{selectedFlow.name}</h2>
               {selectedFlow.is_valid && (
                 <button
@@ -121,6 +79,8 @@ export function FlowLibrary() {
               <ErrorBanner errors={selectedFlow.errors} />
             )}
 
+            <FlowDetailPanel flow={selectedFlow} />
+
             <div className="flow-library-graph">
               <GraphView nodes={graphNodes} edges={graphEdges} readOnly />
             </div>
@@ -128,7 +88,7 @@ export function FlowLibrary() {
         ) : (
           !fetchError && (
             <div className="flow-library-no-selection">
-              Select a flow to preview its graph
+              Select a flow from the sidebar
             </div>
           )
         )}

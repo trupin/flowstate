@@ -245,6 +245,28 @@ class FlowExecutor:
         except Exception:
             logger.exception("Event callback raised an exception for event %s", event.type)
 
+    def _emit_activity(self, flow_run_id: str, task_id: str, message: str) -> None:
+        """Emit a human-readable executor activity log entry.
+
+        Stores a system log in the DB and emits a TASK_LOG FlowEvent so the
+        UI console can display executor orchestration decisions alongside
+        normal task output.
+        """
+        content = json.dumps({"subtype": "activity", "message": message})
+        self._db.insert_task_log(task_id, "system", content)
+        self._emit(
+            FlowEvent(
+                type=EventType.TASK_LOG,
+                flow_run_id=flow_run_id,
+                timestamp=_now_iso(),
+                payload={
+                    "task_execution_id": task_id,
+                    "log_type": "system",
+                    "content": content,
+                },
+            )
+        )
+
     async def execute(
         self,
         flow: Flow,
@@ -561,6 +583,11 @@ class FlowExecutor:
                     },
                 )
             )
+            self._emit_activity(
+                flow_run_id,
+                completed_id,
+                f"\u2192 Edge transition: {task_exec.node_name} \u2192 {edge.target}",
+            )
 
         # Check fork group completion for fork members (only if still active)
         fork_info = _get_fork_group_for_member(completed_id, flow_run_id, self._db)
@@ -633,6 +660,9 @@ class FlowExecutor:
                 edge_type="fork",
             )
 
+        task_exec = self._db.get_task_execution(source_task_id)
+        source_node_name = task_exec.node_name if task_exec else "unknown"
+
         self._emit(
             FlowEvent(
                 type=EventType.FORK_STARTED,
@@ -640,9 +670,7 @@ class FlowExecutor:
                 timestamp=_now_iso(),
                 payload={
                     "fork_group_id": fork_group_id,
-                    "source_node": self._db.get_task_execution(source_task_id).node_name  # type: ignore[union-attr]
-                    if self._db.get_task_execution(source_task_id)
-                    else "unknown",
+                    "source_node": source_node_name,
                     "targets": list(fork_edge.fork_targets),
                 },
             )
@@ -654,15 +682,19 @@ class FlowExecutor:
                 flow_run_id=flow_run_id,
                 timestamp=_now_iso(),
                 payload={
-                    "from_node": self._db.get_task_execution(source_task_id).node_name  # type: ignore[union-attr]
-                    if self._db.get_task_execution(source_task_id)
-                    else "unknown",
+                    "from_node": source_node_name,
                     "to_node": ", ".join(fork_edge.fork_targets),
                     "edge_type": "fork",
                     "condition": None,
                     "judge_reasoning": None,
                 },
             )
+        )
+        targets_str = ", ".join(fork_edge.fork_targets)
+        self._emit_activity(
+            flow_run_id,
+            source_task_id,
+            f"\u2442 Fork: {source_node_name} \u2192 [{targets_str}]",
         )
 
     async def _check_fork_join_completion(
@@ -744,19 +776,26 @@ class FlowExecutor:
             )
         )
 
+        member_names = ", ".join(m.node_name for m in members)
         self._emit(
             FlowEvent(
                 type=EventType.EDGE_TRANSITION,
                 flow_run_id=flow_run_id,
                 timestamp=_now_iso(),
                 payload={
-                    "from_node": ", ".join(m.node_name for m in members),
+                    "from_node": member_names,
                     "to_node": fork_group.join_node_name,
                     "edge_type": "join",
                     "condition": None,
                     "judge_reasoning": None,
                 },
             )
+        )
+        join_node = flow.nodes[fork_group.join_node_name]
+        self._emit_activity(
+            flow_run_id,
+            join_task_id,
+            f"\u2295 Join: [{member_names}] \u2192 {join_node.name}",
         )
 
     # ------------------------------------------------------------------ #
@@ -853,6 +892,12 @@ class FlowExecutor:
                     "confidence": decision.confidence,
                 },
             )
+        )
+        self._emit_activity(
+            flow_run_id,
+            completed_id,
+            f"\u2696 Judge decided: {task_exec.node_name} \u2192 {decision.target}"
+            f" (confidence: {decision.confidence:.2f})",
         )
 
         # Handle special cases
@@ -963,6 +1008,12 @@ class FlowExecutor:
                     "confidence": decision.confidence,
                 },
             )
+        )
+        self._emit_activity(
+            flow_run_id,
+            completed_id,
+            f"\u2696 Judge decided: {task_exec.node_name} \u2192 {decision.target}"
+            f" (confidence: {decision.confidence:.2f})",
         )
 
         # On __none__ or low confidence, follow the DEFAULT edge instead of pausing
@@ -1377,6 +1428,11 @@ class FlowExecutor:
                 },
             )
         )
+        self._emit_activity(
+            flow_run_id,
+            task_execution_id,
+            f"\u25b6 Dispatching node '{node.name}' (generation {task_exec.generation})",
+        )
 
         try:
             skip_perms = flow.skip_permissions
@@ -1455,6 +1511,12 @@ class FlowExecutor:
                                 "percent_used": w,
                             },
                         )
+                    )
+                    self._emit_activity(
+                        flow_run_id,
+                        task_execution_id,
+                        f"\u26a0 Budget warning: {w}% used"
+                        f" ({budget.elapsed:.0f}s / {budget.budget_seconds}s)",
                     )
                 self._emit(
                     FlowEvent(
@@ -1660,6 +1722,17 @@ class FlowExecutor:
         run = self._db.get_flow_run(flow_run_id)
         old_status = run.status if run else "unknown"
         self._db.update_flow_run_status(flow_run_id, "paused", error_message=reason)
+
+        # Emit activity log on the most recent task execution for this run
+        tasks = self._db.list_task_executions(flow_run_id)
+        if tasks:
+            latest_task = max(tasks, key=lambda t: t.created_at or "")
+            self._emit_activity(
+                flow_run_id,
+                latest_task.id,
+                f"\u23f8 Flow paused: {reason}",
+            )
+
         self._emit(
             FlowEvent(
                 type=EventType.FLOW_STATUS_CHANGED,
