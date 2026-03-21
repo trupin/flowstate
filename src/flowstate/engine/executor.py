@@ -1425,6 +1425,8 @@ class FlowExecutor:
                     "task_execution_id": task_execution_id,
                     "node_name": node.name,
                     "generation": task_exec.generation,
+                    "cwd": task_exec.cwd,
+                    "task_dir": task_exec.task_dir,
                 },
             )
         )

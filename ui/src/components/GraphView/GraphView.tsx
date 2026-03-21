@@ -20,6 +20,9 @@ export interface GraphViewProps {
   taskStatuses?: Map<string, TaskStatus>;
   taskGenerations?: Map<string, number>;
   taskElapsed?: Map<string, number>;
+  taskDirs?: Map<string, string>;
+  taskCwds?: Map<string, string>;
+  worktreePath?: string;
   activeEdges?: Set<string>;
   traversedEdges?: Set<string>;
   readOnly?: boolean;
@@ -72,21 +75,33 @@ function convertToReactFlowNodes(
   waitUntilMap?: Map<string, string>,
   generations?: Map<string, number>,
   elapsed?: Map<string, number>,
+  taskDirs?: Map<string, string>,
+  taskCwds?: Map<string, string>,
+  worktreePath?: string,
 ): Node<NodePillData>[] {
-  return nodeDefs.map((n) => ({
-    id: n.name,
-    type: 'flowNode',
-    data: {
-      label: n.name,
-      nodeType: n.type,
-      status: statuses?.get(n.name) ?? 'pending',
-      waitUntil: waitUntilMap?.get(n.name),
-      generation: generations?.get(n.name),
-      elapsedSeconds: elapsed?.get(n.name),
-      cwd: n.cwd,
-    },
-    position: { x: 0, y: 0 },
-  }));
+  return nodeDefs.map((n) => {
+    const hasExecution = statuses?.has(n.name) ?? false;
+    // Use runtime cwd from the task execution if available, fall back to the
+    // flow definition's static cwd
+    const runtimeCwd = taskCwds?.get(n.name);
+    return {
+      id: n.name,
+      type: 'flowNode',
+      data: {
+        label: n.name,
+        nodeType: n.type,
+        status: statuses?.get(n.name) ?? 'pending',
+        waitUntil: waitUntilMap?.get(n.name),
+        generation: generations?.get(n.name),
+        elapsedSeconds: elapsed?.get(n.name),
+        cwd: runtimeCwd ?? n.cwd,
+        taskDir: taskDirs?.get(n.name),
+        worktreeDir: worktreePath,
+        hasExecution,
+      },
+      position: { x: 0, y: 0 },
+    };
+  });
 }
 
 function convertToReactFlowEdges(
@@ -155,6 +170,9 @@ export function GraphView({
   taskStatuses,
   taskGenerations,
   taskElapsed,
+  taskDirs,
+  taskCwds,
+  worktreePath,
   activeEdges,
   traversedEdges,
   readOnly = false,
@@ -169,8 +187,20 @@ export function GraphView({
         waitUntil,
         taskGenerations,
         taskElapsed,
+        taskDirs,
+        taskCwds,
+        worktreePath,
       ),
-    [nodes, taskStatuses, waitUntil, taskGenerations, taskElapsed],
+    [
+      nodes,
+      taskStatuses,
+      waitUntil,
+      taskGenerations,
+      taskElapsed,
+      taskDirs,
+      taskCwds,
+      worktreePath,
+    ],
   );
   const nodeOrder = useMemo(() => {
     const order = new Map<string, number>();

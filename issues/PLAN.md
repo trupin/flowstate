@@ -113,7 +113,7 @@
 | UI-017 | Edge Animation Persists After State Transition         | ui     | P0       | UI-004                                 | done   |
 | UI-020 | Thinking label transitions to "Thoughts" when done     | ui     | P1       | UI-006                                 | done   |
 | UI-021 | Graph UI stuck on completion — requires manual re-select | ui     | P0       | UI-008, UI-011                         | done   |
-| UI-022 | Show cwd, task_dir, worktree in node details             | ui     | P1       | UI-005, ENGINE-025                     | todo   |
+| UI-022 | Show cwd, task_dir, worktree in node details             | ui     | P1       | UI-005, ENGINE-025                     | done   |
 | UI-023 | Replace Flows list with selected flow detail view        | ui     | P1       | UI-010                                 | done   |
 
 

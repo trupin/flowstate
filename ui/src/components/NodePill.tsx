@@ -12,6 +12,9 @@ export interface NodePillData {
   generation?: number;
   elapsedSeconds?: number;
   cwd?: string;
+  taskDir?: string;
+  worktreeDir?: string;
+  hasExecution?: boolean;
   waitUntil?: string;
   [key: string]: unknown;
 }
@@ -108,10 +111,35 @@ export function NodePill({ data }: NodeProps<Node<NodePillData>>) {
               {formatElapsed(data.elapsedSeconds)}
             </span>
           )}
-          {data.cwd && (
-            <span className="node-pill-cwd" title={data.cwd}>
-              {truncatePath(data.cwd)}
-            </span>
+          {data.hasExecution ? (
+            <div className="node-pill-dirs">
+              {data.cwd && (
+                <span className="node-pill-dir" title={data.cwd}>
+                  <span className="node-pill-dir-label">cwd</span>
+                  <span className="node-pill-dir-value">
+                    {truncatePath(data.cwd, 28)}
+                  </span>
+                </span>
+              )}
+              {data.taskDir && (
+                <span className="node-pill-dir" title={data.taskDir}>
+                  <span className="node-pill-dir-label">task</span>
+                  <span className="node-pill-dir-value">
+                    {truncatePath(data.taskDir, 28)}
+                  </span>
+                </span>
+              )}
+              {data.worktreeDir && (
+                <span className="node-pill-dir" title={data.worktreeDir}>
+                  <span className="node-pill-dir-label">worktree</span>
+                  <span className="node-pill-dir-value">
+                    {truncatePath(data.worktreeDir, 28)}
+                  </span>
+                </span>
+              )}
+            </div>
+          ) : (
+            <span className="node-pill-not-executed">Not yet executed</span>
           )}
           {data.status === 'waiting' && data.waitUntil && (
             <span className="node-pill-countdown">

@@ -64,6 +64,27 @@ export function RunDetail() {
     return map;
   }, [tasks]);
 
+  // Build task directory maps for the graph
+  const taskDirs = useMemo(() => {
+    const map = new Map<string, string>();
+    tasks.forEach((task, nodeName) => {
+      if (task.task_dir) {
+        map.set(nodeName, task.task_dir);
+      }
+    });
+    return map;
+  }, [tasks]);
+
+  const taskCwds = useMemo(() => {
+    const map = new Map<string, string>();
+    tasks.forEach((task, nodeName) => {
+      if (task.cwd) {
+        map.set(nodeName, task.cwd);
+      }
+    });
+    return map;
+  }, [tasks]);
+
   // Get logs for the selected task
   const selectedTaskExecution = selectedTask
     ? tasks.get(selectedTask)
@@ -219,6 +240,9 @@ export function RunDetail() {
             taskStatuses={taskStatuses}
             taskGenerations={taskGenerations}
             taskElapsed={taskElapsed}
+            taskDirs={taskDirs}
+            taskCwds={taskCwds}
+            worktreePath={detail?.worktree_path}
             activeEdges={activeEdges}
             traversedEdges={traversedEdges}
             waitUntil={waitUntil}

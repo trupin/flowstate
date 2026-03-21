@@ -88,6 +88,7 @@ function applyEvent(
           generation: payload.generation as number,
           context_mode: (payload.context_mode as string) ?? 'full_history',
           cwd: (payload.cwd as string) ?? '.',
+          task_dir: (payload.task_dir as string) ?? undefined,
         });
         return next;
       });

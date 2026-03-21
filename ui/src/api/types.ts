@@ -106,6 +106,7 @@ export interface FlowRun {
   completed_at?: string;
   created_at: string;
   error_message?: string;
+  worktree_path?: string;
 }
 
 export interface FlowRunDetail extends FlowRun {
@@ -123,6 +124,7 @@ export interface TaskExecution {
   generation: number;
   context_mode: string;
   cwd: string;
+  task_dir?: string;
   started_at?: string;
   completed_at?: string;
   elapsed_seconds?: number;

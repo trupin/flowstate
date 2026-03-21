@@ -38,6 +38,8 @@ class TaskExecutionResponse(BaseModel):
     elapsed_seconds: float | None
     exit_code: int | None
     error_message: str | None = None
+    cwd: str | None = None
+    task_dir: str | None = None
 
 
 class EdgeTransitionResponse(BaseModel):

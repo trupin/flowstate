@@ -339,16 +339,18 @@ async def get_run(request: Request, run_id: str) -> dict[str, Any]:
         "error_message": run.error_message,
         "created_at": run.created_at if hasattr(run, "created_at") else run.started_at,
         "flow": flow_data,
+        "worktree_path": run.worktree_path,
         "tasks": [
             {
                 "id": t.id,
                 "flow_run_id": run_id,
                 "node_name": t.node_name,
-                "node_type": "task",  # default, overridden below if possible
+                "node_type": t.node_type or "task",
                 "status": t.status,
                 "generation": t.generation,
-                "context_mode": "handoff",
-                "cwd": ".",
+                "context_mode": t.context_mode or "handoff",
+                "cwd": t.cwd,
+                "task_dir": t.task_dir,
                 "started_at": t.started_at,
                 "elapsed_seconds": t.elapsed_seconds,
                 "exit_code": t.exit_code,
