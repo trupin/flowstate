@@ -26,7 +26,8 @@ CREATE TABLE IF NOT EXISTS flow_runs (
     completed_at TIMESTAMP,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     error_message TEXT,
-    worktree_path TEXT
+    worktree_path TEXT,
+    task_id TEXT REFERENCES tasks(id)
 );
 
 -- Task executions (individual node runs within a flow run)
@@ -112,6 +113,38 @@ CREATE TABLE IF NOT EXISTS flow_schedules (
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 
+-- Tasks (work items submitted to a flow's queue)
+CREATE TABLE IF NOT EXISTS tasks (
+    id TEXT PRIMARY KEY,
+    flow_name TEXT NOT NULL,
+    title TEXT NOT NULL,
+    description TEXT,
+    status TEXT NOT NULL CHECK(status IN (
+        'queued', 'running', 'waiting', 'completed', 'failed', 'cancelled', 'paused'
+    )),
+    current_node TEXT,
+    params_json TEXT,
+    output_json TEXT,
+    parent_task_id TEXT REFERENCES tasks(id),
+    created_by TEXT,
+    flow_run_id TEXT REFERENCES flow_runs(id),
+    priority INTEGER DEFAULT 0,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    started_at TIMESTAMP,
+    completed_at TIMESTAMP,
+    error_message TEXT
+);
+
+-- Task node history (which nodes a task passed through)
+CREATE TABLE IF NOT EXISTS task_node_history (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    task_id TEXT NOT NULL REFERENCES tasks(id),
+    node_name TEXT NOT NULL,
+    flow_run_id TEXT REFERENCES flow_runs(id),
+    started_at TIMESTAMP,
+    completed_at TIMESTAMP
+);
+
 -- Indexes
 CREATE INDEX IF NOT EXISTS idx_flow_runs_status ON flow_runs(status);
 CREATE INDEX IF NOT EXISTS idx_task_executions_flow_run ON task_executions(flow_run_id);
@@ -124,3 +157,9 @@ CREATE INDEX IF NOT EXISTS idx_task_logs_timestamp ON task_logs(task_execution_i
 CREATE INDEX IF NOT EXISTS idx_fork_groups_flow_run ON fork_groups(flow_run_id);
 CREATE INDEX IF NOT EXISTS idx_flow_schedules_next ON flow_schedules(next_trigger_at)
     WHERE enabled = 1;
+CREATE INDEX IF NOT EXISTS idx_tasks_flow_name ON tasks(flow_name);
+CREATE INDEX IF NOT EXISTS idx_tasks_status ON tasks(flow_name, status);
+CREATE INDEX IF NOT EXISTS idx_tasks_queue ON tasks(flow_name, status, priority DESC, created_at ASC)
+    WHERE status = 'queued';
+CREATE INDEX IF NOT EXISTS idx_tasks_parent ON tasks(parent_task_id);
+CREATE INDEX IF NOT EXISTS idx_task_node_history_task ON task_node_history(task_id);

@@ -1358,3 +1358,75 @@ class TestDefaultEdgeFullScenario:
         flow = _minimal_flow(nodes=nodes, edges=edges, budget_seconds=1800)
         errors = check_flow(flow)
         assert len(errors) == 0, f"Expected zero errors, got: {errors}"
+
+
+# ===========================================================================
+# DSL-008: FILE and AWAIT edge types in type checker
+# ===========================================================================
+
+
+class TestFileAwaitEdgesTypeChecker:
+    """FILE and AWAIT edges should not trigger false E4 errors for their targets,
+    since targets are cross-flow names (not local node names)."""
+
+    def test_file_edge_no_false_e4(self) -> None:
+        """FILE edge target is a flow name, not a node name -- no E4 error."""
+        nodes = {
+            "start": Node(name="start", node_type=NodeType.ENTRY, prompt="begin"),
+            "end": Node(name="end", node_type=NodeType.EXIT, prompt="done"),
+        }
+        edges = (
+            Edge(edge_type=EdgeType.UNCONDITIONAL, source="start", target="end"),
+            Edge(edge_type=EdgeType.FILE, source="start", target="other_flow"),
+        )
+        flow = _minimal_flow(nodes=nodes, edges=edges)
+        errors = check_flow(flow)
+        e4 = _errors_with_rule(errors, "E4")
+        assert len(e4) == 0, f"Expected no E4 errors, got: {e4}"
+
+    def test_await_edge_no_false_e4(self) -> None:
+        """AWAIT edge target is a flow name, not a node name -- no E4 error."""
+        nodes = {
+            "start": Node(name="start", node_type=NodeType.ENTRY, prompt="begin"),
+            "end": Node(name="end", node_type=NodeType.EXIT, prompt="done"),
+        }
+        edges = (
+            Edge(edge_type=EdgeType.UNCONDITIONAL, source="start", target="end"),
+            Edge(edge_type=EdgeType.AWAIT, source="start", target="qa_flow"),
+        )
+        flow = _minimal_flow(nodes=nodes, edges=edges)
+        errors = check_flow(flow)
+        e4 = _errors_with_rule(errors, "E4")
+        assert len(e4) == 0, f"Expected no E4 errors, got: {e4}"
+
+    def test_file_edge_bad_source_triggers_e4(self) -> None:
+        """FILE edge with non-existent source node should still trigger E4."""
+        nodes = {
+            "start": Node(name="start", node_type=NodeType.ENTRY, prompt="begin"),
+            "end": Node(name="end", node_type=NodeType.EXIT, prompt="done"),
+        }
+        edges = (
+            Edge(edge_type=EdgeType.UNCONDITIONAL, source="start", target="end"),
+            Edge(edge_type=EdgeType.FILE, source="ghost", target="other_flow"),
+        )
+        flow = _minimal_flow(nodes=nodes, edges=edges)
+        errors = check_flow(flow)
+        e4 = _errors_with_rule(errors, "E4")
+        assert len(e4) >= 1
+        assert any("ghost" in e.message for e in e4)
+
+    def test_file_and_await_dont_affect_adjacency(self) -> None:
+        """FILE/AWAIT edges should not participate in graph topology checks
+        (no S3 unreachable errors, no S4 no-exit-path errors)."""
+        nodes = {
+            "start": Node(name="start", node_type=NodeType.ENTRY, prompt="begin"),
+            "end": Node(name="end", node_type=NodeType.EXIT, prompt="done"),
+        }
+        edges = (
+            Edge(edge_type=EdgeType.UNCONDITIONAL, source="start", target="end"),
+            Edge(edge_type=EdgeType.FILE, source="start", target="external_flow"),
+            Edge(edge_type=EdgeType.AWAIT, source="end", target="another_flow"),
+        )
+        flow = _minimal_flow(nodes=nodes, edges=edges)
+        errors = check_flow(flow)
+        assert len(errors) == 0, f"Expected no errors, got: {errors}"

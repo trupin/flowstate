@@ -804,3 +804,342 @@ class TestWorktreeParameter:
         )
         flow = parse_flow(source)
         assert flow.worktree is True
+
+
+# ---------------------------------------------------------------------------
+# Task type declaration
+# ---------------------------------------------------------------------------
+
+
+class TestTaskTypeDeclaration:
+    """Test task type declaration block parsing."""
+
+    def test_task_type_input_output(self):
+        source = """flow f {
+    budget = 1h
+    on_error = pause
+    context = handoff
+    task {
+        input {
+            title: string
+        }
+        output {
+            result: string
+        }
+    }
+    entry a { prompt = "x" }
+    exit b { prompt = "y" }
+    a -> b
+}"""
+        flow = parse_flow(source)
+        assert flow.task_type is not None
+        assert len(flow.task_type.input_fields) == 1
+        assert flow.task_type.input_fields[0].name == "title"
+        assert flow.task_type.input_fields[0].type == "string"
+        assert flow.task_type.input_fields[0].default is None
+        assert len(flow.task_type.output_fields) == 1
+        assert flow.task_type.output_fields[0].name == "result"
+        assert flow.task_type.output_fields[0].type == "string"
+
+    def test_task_type_with_defaults(self):
+        source = """flow f {
+    budget = 1h
+    on_error = pause
+    context = handoff
+    task {
+        input {
+            branch: string = "main"
+            retries: number = 3
+            verbose: bool = true
+        }
+    }
+    entry a { prompt = "x" }
+    exit b { prompt = "y" }
+    a -> b
+}"""
+        flow = parse_flow(source)
+        assert flow.task_type is not None
+        fields = flow.task_type.input_fields
+        assert len(fields) == 3
+        assert fields[0].name == "branch"
+        assert fields[0].type == "string"
+        assert fields[0].default == "main"
+        assert fields[1].name == "retries"
+        assert fields[1].type == "number"
+        assert fields[1].default == 3
+        assert fields[2].name == "verbose"
+        assert fields[2].type == "bool"
+        assert fields[2].default is True
+
+    def test_task_type_multiple_fields(self):
+        source = """flow f {
+    budget = 1h
+    on_error = pause
+    context = handoff
+    task {
+        input {
+            title: string
+            priority: number
+        }
+        output {
+            result: string
+            score: number
+            passed: bool
+        }
+    }
+    entry a { prompt = "x" }
+    exit b { prompt = "y" }
+    a -> b
+}"""
+        flow = parse_flow(source)
+        assert flow.task_type is not None
+        assert len(flow.task_type.input_fields) == 2
+        assert len(flow.task_type.output_fields) == 3
+        assert flow.task_type.output_fields[2].name == "passed"
+        assert flow.task_type.output_fields[2].type == "bool"
+
+    def test_task_type_input_only(self):
+        source = """flow f {
+    budget = 1h
+    on_error = pause
+    context = handoff
+    task {
+        input {
+            title: string
+        }
+    }
+    entry a { prompt = "x" }
+    exit b { prompt = "y" }
+    a -> b
+}"""
+        flow = parse_flow(source)
+        assert flow.task_type is not None
+        assert len(flow.task_type.input_fields) == 1
+        assert len(flow.task_type.output_fields) == 0
+
+    def test_task_type_output_only(self):
+        source = """flow f {
+    budget = 1h
+    on_error = pause
+    context = handoff
+    task {
+        output {
+            result: string
+        }
+    }
+    entry a { prompt = "x" }
+    exit b { prompt = "y" }
+    a -> b
+}"""
+        flow = parse_flow(source)
+        assert flow.task_type is not None
+        assert len(flow.task_type.input_fields) == 0
+        assert len(flow.task_type.output_fields) == 1
+
+    def test_task_type_empty(self):
+        source = """flow f {
+    budget = 1h
+    on_error = pause
+    context = handoff
+    task {
+    }
+    entry a { prompt = "x" }
+    exit b { prompt = "y" }
+    a -> b
+}"""
+        flow = parse_flow(source)
+        assert flow.task_type is not None
+        assert len(flow.task_type.input_fields) == 0
+        assert len(flow.task_type.output_fields) == 0
+
+    def test_no_task_type_is_none(self):
+        source = (
+            "flow f { budget = 1h on_error = pause context = handoff "
+            'entry a { prompt = "x" } exit b { prompt = "y" } a -> b }'
+        )
+        flow = parse_flow(source)
+        assert flow.task_type is None
+
+    def test_task_type_with_float_default(self):
+        source = """flow f {
+    budget = 1h
+    on_error = pause
+    context = handoff
+    task {
+        input {
+            ratio: number = 3.14
+        }
+    }
+    entry a { prompt = "x" }
+    exit b { prompt = "y" }
+    a -> b
+}"""
+        flow = parse_flow(source)
+        assert flow.task_type is not None
+        assert flow.task_type.input_fields[0].default == 3.14
+
+    def test_task_type_coexists_with_task_node(self):
+        """Task type declaration and task nodes should both parse correctly."""
+        source = """flow f {
+    budget = 1h
+    on_error = pause
+    context = handoff
+    task {
+        input {
+            title: string
+        }
+    }
+    entry a { prompt = "start" }
+    task b { prompt = "do work" }
+    exit c { prompt = "done" }
+    a -> b
+    b -> c
+}"""
+        flow = parse_flow(source)
+        assert flow.task_type is not None
+        assert len(flow.task_type.input_fields) == 1
+        assert "b" in flow.nodes
+        assert flow.nodes["b"].node_type == NodeType.TASK
+
+
+# ---------------------------------------------------------------------------
+# File and Await edge types
+# ---------------------------------------------------------------------------
+
+
+class TestFileEdges:
+    """Test file edge type parsing."""
+
+    def test_file_edge(self):
+        source = (
+            "flow f { budget = 1h on_error = pause context = handoff "
+            'entry a { prompt = "x" } exit b { prompt = "y" } '
+            "a files bugfix a -> b }"
+        )
+        flow = parse_flow(source)
+        file_edges = [e for e in flow.edges if e.edge_type == EdgeType.FILE]
+        assert len(file_edges) == 1
+        assert file_edges[0].source == "a"
+        assert file_edges[0].target == "bugfix"
+        assert file_edges[0].condition is None
+
+    def test_file_edge_conditional(self):
+        source = (
+            "flow f { budget = 1h on_error = pause context = handoff "
+            'entry a { prompt = "x" } exit b { prompt = "y" } '
+            'a files bugfix when "bugs found" a -> b }'
+        )
+        flow = parse_flow(source)
+        file_edges = [e for e in flow.edges if e.edge_type == EdgeType.FILE]
+        assert len(file_edges) == 1
+        assert file_edges[0].source == "a"
+        assert file_edges[0].target == "bugfix"
+        assert file_edges[0].condition == "bugs found"
+
+    def test_file_edge_has_line_info(self):
+        source = """flow f {
+    budget = 1h
+    on_error = pause
+    context = handoff
+    entry a { prompt = "x" }
+    exit b { prompt = "y" }
+    a files bugfix
+    a -> b
+}"""
+        flow = parse_flow(source)
+        file_edges = [e for e in flow.edges if e.edge_type == EdgeType.FILE]
+        assert len(file_edges) == 1
+        assert file_edges[0].line > 0
+
+
+class TestAwaitEdges:
+    """Test await edge type parsing."""
+
+    def test_await_edge(self):
+        source = (
+            "flow f { budget = 1h on_error = pause context = handoff "
+            'entry a { prompt = "x" } exit b { prompt = "y" } '
+            "a awaits qa_check a -> b }"
+        )
+        flow = parse_flow(source)
+        await_edges = [e for e in flow.edges if e.edge_type == EdgeType.AWAIT]
+        assert len(await_edges) == 1
+        assert await_edges[0].source == "a"
+        assert await_edges[0].target == "qa_check"
+        assert await_edges[0].condition is None
+
+    def test_await_edge_conditional(self):
+        source = (
+            "flow f { budget = 1h on_error = pause context = handoff "
+            'entry a { prompt = "x" } exit b { prompt = "y" } '
+            'a awaits qa_check when "needs qa" a -> b }'
+        )
+        flow = parse_flow(source)
+        await_edges = [e for e in flow.edges if e.edge_type == EdgeType.AWAIT]
+        assert len(await_edges) == 1
+        assert await_edges[0].source == "a"
+        assert await_edges[0].target == "qa_check"
+        assert await_edges[0].condition == "needs qa"
+
+    def test_await_edge_has_line_info(self):
+        source = """flow f {
+    budget = 1h
+    on_error = pause
+    context = handoff
+    entry a { prompt = "x" }
+    exit b { prompt = "y" }
+    a awaits qa_check
+    a -> b
+}"""
+        flow = parse_flow(source)
+        await_edges = [e for e in flow.edges if e.edge_type == EdgeType.AWAIT]
+        assert len(await_edges) == 1
+        assert await_edges[0].line > 0
+
+
+class TestFileAwaitEdgeMixed:
+    """Test mixing file/await edges with regular edges."""
+
+    def test_file_and_await_together(self):
+        source = """flow f {
+    budget = 1h
+    on_error = pause
+    context = handoff
+    entry review { prompt = "review code" }
+    task fix { prompt = "fix issues" }
+    exit done { prompt = "completed" }
+    review files bugfix
+    review awaits qa_check
+    review -> fix
+    fix -> done
+}"""
+        flow = parse_flow(source)
+        file_edges = [e for e in flow.edges if e.edge_type == EdgeType.FILE]
+        await_edges = [e for e in flow.edges if e.edge_type == EdgeType.AWAIT]
+        regular_edges = [
+            e for e in flow.edges if e.edge_type in (EdgeType.UNCONDITIONAL, EdgeType.CONDITIONAL)
+        ]
+        assert len(file_edges) == 1
+        assert len(await_edges) == 1
+        assert len(regular_edges) == 2
+
+    def test_file_and_task_type_together(self):
+        """Task type and file edges coexist in the same flow."""
+        source = """flow f {
+    budget = 1h
+    on_error = pause
+    context = handoff
+    task {
+        input { title: string }
+        output { result: string }
+    }
+    entry a { prompt = "x" }
+    exit b { prompt = "y" }
+    a files other_flow
+    a -> b
+}"""
+        flow = parse_flow(source)
+        assert flow.task_type is not None
+        assert len(flow.task_type.input_fields) == 1
+        file_edges = [e for e in flow.edges if e.edge_type == EdgeType.FILE]
+        assert len(file_edges) == 1

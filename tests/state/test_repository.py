@@ -1225,3 +1225,478 @@ class TestWaitingTasks:
         # After the wait_until time
         waiting_after = db.get_waiting_tasks(flow_run_id, now="2025-06-01T13:00:00")
         assert len(waiting_after) == 1
+
+
+# ================================================================== #
+# Task Queue Operations (tasks table)
+# ================================================================== #
+
+
+class TestTaskOperations:
+    """Tests for task queue CRUD operations (tasks table)."""
+
+    def test_create_and_get_task(self, db: FlowstateDB) -> None:
+        """Create a task and retrieve it by ID, verify all fields."""
+        task_id = db.create_task(
+            flow_name="my-flow",
+            title="Fix login bug",
+            description="The login page crashes on submit",
+            params_json='{"repo": "myapp"}',
+            created_by="user",
+            priority=5,
+        )
+
+        result = db.get_task(task_id)
+        assert result is not None
+        assert result.id == task_id
+        assert result.flow_name == "my-flow"
+        assert result.title == "Fix login bug"
+        assert result.description == "The login page crashes on submit"
+        assert result.status == "queued"
+        assert result.current_node is None
+        assert result.params_json == '{"repo": "myapp"}'
+        assert result.output_json is None
+        assert result.parent_task_id is None
+        assert result.created_by == "user"
+        assert result.flow_run_id is None
+        assert result.priority == 5
+        assert result.created_at is not None
+        assert result.started_at is None
+        assert result.completed_at is None
+        assert result.error_message is None
+
+    def test_create_task_minimal(self, db: FlowstateDB) -> None:
+        """Create a task with only required params, verify defaults."""
+        task_id = db.create_task(flow_name="my-flow", title="Do something")
+
+        result = db.get_task(task_id)
+        assert result is not None
+        assert result.description is None
+        assert result.params_json is None
+        assert result.parent_task_id is None
+        assert result.created_by is None
+        assert result.priority == 0
+
+    def test_get_task_not_found(self, db: FlowstateDB) -> None:
+        """get_task with bogus ID returns None."""
+        result = db.get_task("nonexistent-task-id")
+        assert result is None
+
+    def test_list_tasks_all(self, db: FlowstateDB) -> None:
+        """Create multiple tasks, list without filters returns all."""
+        db.create_task("flow-a", "Task 1")
+        db.create_task("flow-a", "Task 2")
+        db.create_task("flow-b", "Task 3")
+
+        results = db.list_tasks()
+        assert len(results) == 3
+
+    def test_list_tasks_by_flow_name(self, db: FlowstateDB) -> None:
+        """Filter tasks by flow_name."""
+        db.create_task("flow-a", "Task 1")
+        db.create_task("flow-a", "Task 2")
+        db.create_task("flow-b", "Task 3")
+
+        results = db.list_tasks(flow_name="flow-a")
+        assert len(results) == 2
+        assert all(r.flow_name == "flow-a" for r in results)
+
+    def test_list_tasks_by_status(self, db: FlowstateDB) -> None:
+        """Filter tasks by status."""
+        t1 = db.create_task("flow-a", "Task 1")
+        db.create_task("flow-a", "Task 2")
+        db.update_task_queue_status(t1, "running")
+
+        queued = db.list_tasks(status="queued")
+        assert len(queued) == 1
+        assert queued[0].title == "Task 2"
+
+        running = db.list_tasks(status="running")
+        assert len(running) == 1
+        assert running[0].id == t1
+
+    def test_list_tasks_with_limit(self, db: FlowstateDB) -> None:
+        """Limit the number of returned tasks."""
+        db.create_task("flow-a", "Task 1")
+        db.create_task("flow-a", "Task 2")
+        db.create_task("flow-a", "Task 3")
+
+        results = db.list_tasks(limit=2)
+        assert len(results) == 2
+
+    def test_list_tasks_combined_filters(self, db: FlowstateDB) -> None:
+        """Use both flow_name and status filters together."""
+        db.create_task("flow-a", "A1")
+        t2 = db.create_task("flow-a", "A2")
+        db.create_task("flow-b", "B1")
+        db.update_task_queue_status(t2, "running")
+
+        results = db.list_tasks(flow_name="flow-a", status="queued")
+        assert len(results) == 1
+        assert results[0].title == "A1"
+
+    def test_list_tasks_empty(self, db: FlowstateDB) -> None:
+        """list_tasks on empty table returns empty list."""
+        results = db.list_tasks()
+        assert results == []
+
+    def test_update_task_queue_status_to_running(self, db: FlowstateDB) -> None:
+        """Transition to 'running' sets started_at automatically."""
+        task_id = db.create_task("my-flow", "Task 1")
+        db.update_task_queue_status(task_id, "running", current_node="plan")
+
+        result = db.get_task(task_id)
+        assert result is not None
+        assert result.status == "running"
+        assert result.current_node == "plan"
+        assert result.started_at is not None
+
+    def test_update_task_queue_status_to_completed(self, db: FlowstateDB) -> None:
+        """Transition to 'completed' sets completed_at and output_json."""
+        task_id = db.create_task("my-flow", "Task 1")
+        db.update_task_queue_status(task_id, "running")
+        db.update_task_queue_status(
+            task_id,
+            "completed",
+            output_json='{"result": "done"}',
+        )
+
+        result = db.get_task(task_id)
+        assert result is not None
+        assert result.status == "completed"
+        assert result.completed_at is not None
+        assert result.output_json == '{"result": "done"}'
+
+    def test_update_task_queue_status_to_failed(self, db: FlowstateDB) -> None:
+        """Transition to 'failed' sets completed_at and error_message."""
+        task_id = db.create_task("my-flow", "Task 1")
+        db.update_task_queue_status(task_id, "running")
+        db.update_task_queue_status(
+            task_id,
+            "failed",
+            error_message="Node crashed",
+        )
+
+        result = db.get_task(task_id)
+        assert result is not None
+        assert result.status == "failed"
+        assert result.completed_at is not None
+        assert result.error_message == "Node crashed"
+
+    def test_update_task_queue_status_with_flow_run_id(
+        self, db: FlowstateDB, flow_run_id: str
+    ) -> None:
+        """Set flow_run_id when starting a task."""
+        task_id = db.create_task("my-flow", "Task 1")
+        db.update_task_queue_status(
+            task_id,
+            "running",
+            flow_run_id=flow_run_id,
+            current_node="entry",
+        )
+
+        result = db.get_task(task_id)
+        assert result is not None
+        assert result.flow_run_id == flow_run_id
+
+    def test_update_task_queue_status_cancelled(self, db: FlowstateDB) -> None:
+        """Transition to 'cancelled' sets completed_at."""
+        task_id = db.create_task("my-flow", "Task 1")
+        db.update_task_queue_status(task_id, "cancelled")
+
+        result = db.get_task(task_id)
+        assert result is not None
+        assert result.status == "cancelled"
+        assert result.completed_at is not None
+
+    def test_update_task(self, db: FlowstateDB) -> None:
+        """Edit mutable fields of a queued task."""
+        task_id = db.create_task("my-flow", "Original Title", description="Old desc")
+
+        db.update_task(
+            task_id,
+            title="New Title",
+            description="New desc",
+            params_json='{"key": "value"}',
+            priority=10,
+        )
+
+        result = db.get_task(task_id)
+        assert result is not None
+        assert result.title == "New Title"
+        assert result.description == "New desc"
+        assert result.params_json == '{"key": "value"}'
+        assert result.priority == 10
+
+    def test_update_task_partial(self, db: FlowstateDB) -> None:
+        """Update only some fields, others remain unchanged."""
+        task_id = db.create_task("my-flow", "Original", description="Keep this")
+        db.update_task(task_id, title="Changed")
+
+        result = db.get_task(task_id)
+        assert result is not None
+        assert result.title == "Changed"
+        assert result.description == "Keep this"
+
+    def test_update_task_no_changes(self, db: FlowstateDB) -> None:
+        """Calling update_task with no kwargs is a no-op."""
+        task_id = db.create_task("my-flow", "No Change")
+        db.update_task(task_id)  # should not raise
+
+        result = db.get_task(task_id)
+        assert result is not None
+        assert result.title == "No Change"
+
+    def test_delete_task_queued(self, db: FlowstateDB) -> None:
+        """Deleting a queued task removes it from the database."""
+        task_id = db.create_task("my-flow", "Delete me")
+        db.delete_task(task_id)
+
+        result = db.get_task(task_id)
+        assert result is None
+
+    def test_delete_task_running_is_noop(self, db: FlowstateDB) -> None:
+        """Deleting a running task is a no-op (only queued tasks can be deleted)."""
+        task_id = db.create_task("my-flow", "Running task")
+        db.update_task_queue_status(task_id, "running")
+
+        db.delete_task(task_id)
+
+        result = db.get_task(task_id)
+        assert result is not None
+        assert result.status == "running"
+
+    def test_delete_task_completed_is_noop(self, db: FlowstateDB) -> None:
+        """Deleting a completed task is a no-op."""
+        task_id = db.create_task("my-flow", "Done task")
+        db.update_task_queue_status(task_id, "completed")
+
+        db.delete_task(task_id)
+
+        result = db.get_task(task_id)
+        assert result is not None
+        assert result.status == "completed"
+
+    def test_delete_task_nonexistent_is_noop(self, db: FlowstateDB) -> None:
+        """Deleting a non-existent task ID is a no-op."""
+        db.delete_task("nonexistent-id")  # should not raise
+
+    def test_get_next_queued_task_fifo(self, db: FlowstateDB) -> None:
+        """When priorities are equal, the oldest task is returned first (FIFO)."""
+        t1 = db.create_task("my-flow", "First")
+        db.create_task("my-flow", "Second")
+
+        result = db.get_next_queued_task("my-flow")
+        assert result is not None
+        assert result.id == t1
+        assert result.title == "First"
+
+    def test_get_next_queued_task_respects_priority(self, db: FlowstateDB) -> None:
+        """Higher priority task is returned first even if created later."""
+        db.create_task("my-flow", "Normal priority", priority=0)
+        t2 = db.create_task("my-flow", "High priority", priority=10)
+
+        result = db.get_next_queued_task("my-flow")
+        assert result is not None
+        assert result.id == t2
+        assert result.title == "High priority"
+
+    def test_get_next_queued_task_skips_running(self, db: FlowstateDB) -> None:
+        """Running tasks are not returned by get_next_queued_task."""
+        t1 = db.create_task("my-flow", "Running")
+        db.create_task("my-flow", "Queued")
+        db.update_task_queue_status(t1, "running")
+
+        result = db.get_next_queued_task("my-flow")
+        assert result is not None
+        assert result.title == "Queued"
+
+    def test_get_next_queued_task_empty(self, db: FlowstateDB) -> None:
+        """No queued tasks returns None."""
+        result = db.get_next_queued_task("my-flow")
+        assert result is None
+
+    def test_get_next_queued_task_filters_by_flow(self, db: FlowstateDB) -> None:
+        """Only returns tasks for the specified flow."""
+        db.create_task("flow-a", "Task A")
+        db.create_task("flow-b", "Task B")
+
+        result = db.get_next_queued_task("flow-a")
+        assert result is not None
+        assert result.flow_name == "flow-a"
+
+    def test_count_running_tasks(self, db: FlowstateDB) -> None:
+        """Count only tasks with status 'running' for the given flow."""
+        t1 = db.create_task("my-flow", "Task 1")
+        t2 = db.create_task("my-flow", "Task 2")
+        db.create_task("my-flow", "Task 3")
+        db.create_task("other-flow", "Other task")
+
+        assert db.count_running_tasks("my-flow") == 0
+
+        db.update_task_queue_status(t1, "running")
+        assert db.count_running_tasks("my-flow") == 1
+
+        db.update_task_queue_status(t2, "running")
+        assert db.count_running_tasks("my-flow") == 2
+
+        # Other flow is unaffected
+        assert db.count_running_tasks("other-flow") == 0
+
+    def test_count_running_tasks_no_flow(self, db: FlowstateDB) -> None:
+        """count_running_tasks for a non-existent flow returns 0."""
+        assert db.count_running_tasks("nonexistent") == 0
+
+    def test_reorder_tasks(self, db: FlowstateDB) -> None:
+        """Reorder queued tasks by setting priorities based on list position."""
+        t1 = db.create_task("my-flow", "Task 1")
+        t2 = db.create_task("my-flow", "Task 2")
+        t3 = db.create_task("my-flow", "Task 3")
+
+        # Reorder: t3 first, then t1, then t2
+        db.reorder_tasks("my-flow", [t3, t1, t2])
+
+        # t3 should now be the next queued task (highest priority)
+        result = db.get_next_queued_task("my-flow")
+        assert result is not None
+        assert result.id == t3
+
+        # Verify priorities: t3=2, t1=1, t2=0
+        task3 = db.get_task(t3)
+        task1 = db.get_task(t1)
+        task2 = db.get_task(t2)
+        assert task3 is not None and task3.priority == 2
+        assert task1 is not None and task1.priority == 1
+        assert task2 is not None and task2.priority == 0
+
+    def test_reorder_tasks_ignores_non_queued(self, db: FlowstateDB) -> None:
+        """Reorder only affects queued tasks; running tasks are untouched."""
+        t1 = db.create_task("my-flow", "Task 1")
+        t2 = db.create_task("my-flow", "Task 2")
+        db.update_task_queue_status(t1, "running")
+
+        db.reorder_tasks("my-flow", [t1, t2])
+
+        # t1 is running -- its priority should not change
+        task1 = db.get_task(t1)
+        assert task1 is not None
+        assert task1.status == "running"
+
+    def test_task_node_history_crud(self, db: FlowstateDB) -> None:
+        """Add, complete, and retrieve task node history entries."""
+        task_id = db.create_task("my-flow", "Task with history")
+
+        # Add two history entries
+        h1 = db.add_task_node_history(task_id, "plan")
+        h2 = db.add_task_node_history(task_id, "implement")
+
+        assert h1 > 0
+        assert h2 > h1
+
+        # Complete the first entry
+        db.complete_task_node_history(task_id, "plan")
+
+        # Retrieve all history
+        history = db.get_task_history(task_id)
+        assert len(history) == 2
+
+        assert history[0].node_name == "plan"
+        assert history[0].started_at is not None
+        assert history[0].completed_at is not None
+
+        assert history[1].node_name == "implement"
+        assert history[1].started_at is not None
+        assert history[1].completed_at is None  # not completed yet
+
+    def test_task_node_history_with_flow_run_id(self, db: FlowstateDB, flow_run_id: str) -> None:
+        """Node history entries can be associated with a flow run."""
+        task_id = db.create_task("my-flow", "Task with run")
+
+        entry_id = db.add_task_node_history(task_id, "build", flow_run_id=flow_run_id)
+        assert entry_id > 0
+
+        history = db.get_task_history(task_id)
+        assert len(history) == 1
+        assert history[0].flow_run_id == flow_run_id
+
+    def test_task_node_history_empty(self, db: FlowstateDB) -> None:
+        """get_task_history for a task with no history returns empty list."""
+        task_id = db.create_task("my-flow", "No history")
+        history = db.get_task_history(task_id)
+        assert history == []
+
+    def test_get_child_tasks(self, db: FlowstateDB) -> None:
+        """Create parent and child tasks, verify lineage."""
+        parent_id = db.create_task("flow-a", "Parent task")
+        child1_id = db.create_task(
+            "flow-b",
+            "Child 1",
+            parent_task_id=parent_id,
+            created_by="flow:flow-a/node:review",
+        )
+        child2_id = db.create_task(
+            "flow-c",
+            "Child 2",
+            parent_task_id=parent_id,
+            created_by="flow:flow-a/node:report",
+        )
+
+        children = db.get_child_tasks(parent_id)
+        assert len(children) == 2
+        child_ids = {c.id for c in children}
+        assert child_ids == {child1_id, child2_id}
+
+        # Verify parent_task_id is set
+        for child in children:
+            assert child.parent_task_id == parent_id
+
+    def test_get_child_tasks_empty(self, db: FlowstateDB) -> None:
+        """get_child_tasks for a task with no children returns empty list."""
+        task_id = db.create_task("my-flow", "No children")
+        children = db.get_child_tasks(task_id)
+        assert children == []
+
+    def test_get_child_tasks_nonexistent_parent(self, db: FlowstateDB) -> None:
+        """get_child_tasks for a non-existent parent returns empty list."""
+        children = db.get_child_tasks("nonexistent-parent-id")
+        assert children == []
+
+    def test_task_with_parent_lineage(self, db: FlowstateDB) -> None:
+        """Multi-level parent-child lineage is tracked correctly."""
+        grandparent = db.create_task("flow-a", "Grandparent")
+        parent = db.create_task("flow-b", "Parent", parent_task_id=grandparent)
+        child = db.create_task("flow-c", "Child", parent_task_id=parent)
+
+        # Verify each level
+        gp = db.get_task(grandparent)
+        assert gp is not None
+        assert gp.parent_task_id is None
+
+        p = db.get_task(parent)
+        assert p is not None
+        assert p.parent_task_id == grandparent
+
+        c = db.get_task(child)
+        assert c is not None
+        assert c.parent_task_id == parent
+
+        # get_child_tasks only returns direct children
+        gp_children = db.get_child_tasks(grandparent)
+        assert len(gp_children) == 1
+        assert gp_children[0].id == parent
+
+        p_children = db.get_child_tasks(parent)
+        assert len(p_children) == 1
+        assert p_children[0].id == child
+
+    def test_flow_run_task_id_field(self, db: FlowstateDB, flow_def_id: str) -> None:
+        """FlowRunRow includes the new task_id field (defaults to None)."""
+        run_id = db.create_flow_run(
+            flow_definition_id=flow_def_id,
+            data_dir="/tmp/run",
+            budget_seconds=300,
+            on_error="pause",
+        )
+        result = db.get_flow_run(run_id)
+        assert result is not None
+        assert result.task_id is None

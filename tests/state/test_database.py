@@ -18,6 +18,8 @@ EXPECTED_TABLES = {
     "fork_group_members",
     "task_logs",
     "flow_schedules",
+    "tasks",
+    "task_node_history",
 }
 
 EXPECTED_INDEXES = {
@@ -30,6 +32,11 @@ EXPECTED_INDEXES = {
     "idx_task_logs_timestamp",
     "idx_fork_groups_flow_run",
     "idx_flow_schedules_next",
+    "idx_tasks_flow_name",
+    "idx_tasks_status",
+    "idx_tasks_queue",
+    "idx_tasks_parent",
+    "idx_task_node_history_task",
 }
 
 

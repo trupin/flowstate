@@ -13,6 +13,8 @@ class EdgeType(StrEnum):
     CONDITIONAL = "conditional"
     FORK = "fork"
     JOIN = "join"
+    FILE = "file"
+    AWAIT = "await"
 
 
 class ContextMode(StrEnum):
@@ -44,6 +46,23 @@ class Param:
     name: str
     type: ParamType
     default: str | float | bool | None = None
+
+
+@dataclass(frozen=True)
+class TaskTypeField:
+    """A single field in a task type input or output declaration."""
+
+    name: str
+    type: str  # "string", "number", "bool"
+    default: str | float | bool | None = None
+
+
+@dataclass(frozen=True)
+class TaskType:
+    """Task type declaration: input and output field schemas."""
+
+    input_fields: tuple[TaskTypeField, ...] = ()
+    output_fields: tuple[TaskTypeField, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -90,5 +109,6 @@ class Flow:
     judge: bool = False
     worktree: bool = True
     params: tuple[Param, ...] = ()
+    task_type: TaskType | None = None
     nodes: dict[str, Node] = field(default_factory=dict)
     edges: tuple[Edge, ...] = ()

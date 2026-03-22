@@ -18,6 +18,8 @@ from flowstate.dsl.ast import (
     OverlapPolicy,
     Param,
     ParamType,
+    TaskType,
+    TaskTypeField,
 )
 from flowstate.dsl.exceptions import FlowParseError
 
@@ -111,6 +113,40 @@ class _FlowTransformer(Transformer[Token, Flow]):
         param_type = ParamType(str(items[1]))
         default = items[2] if len(items) > 2 else None
         return Param(name=name, type=param_type, default=default)
+
+    # -- Task type declaration --
+
+    def task_field(self, items: list[Token]) -> TaskTypeField:
+        name = str(items[0])
+        field_type = str(items[1])
+        return TaskTypeField(name=name, type=field_type)
+
+    def task_field_default(self, items: list[Token | str | float | bool]) -> TaskTypeField:
+        name = str(items[0])
+        field_type = str(items[1])
+        default = items[2]
+        return TaskTypeField(name=name, type=field_type, default=default)
+
+    def task_input_block(self, items: list[TaskTypeField]) -> tuple[str, tuple[TaskTypeField, ...]]:
+        return ("input", tuple(items))
+
+    def task_output_block(
+        self, items: list[TaskTypeField]
+    ) -> tuple[str, tuple[TaskTypeField, ...]]:
+        return ("output", tuple(items))
+
+    def task_type_body(self, items: list[tuple[str, tuple[TaskTypeField, ...]]]) -> TaskType:
+        input_fields: tuple[TaskTypeField, ...] = ()
+        output_fields: tuple[TaskTypeField, ...] = ()
+        for key, fields in items:
+            if key == "input":
+                input_fields = fields
+            elif key == "output":
+                output_fields = fields
+        return TaskType(input_fields=input_fields, output_fields=output_fields)
+
+    def task_type_decl(self, items: list[TaskType]) -> tuple[str, TaskType]:
+        return ("task_type", items[0])
 
     # -- Node attributes (named alternatives) --
 
@@ -275,6 +311,50 @@ class _FlowTransformer(Transformer[Token, Flow]):
             column=_meta_column(meta),
         )
 
+    # -- File/Await edges (with meta for line/column) --
+
+    @v_args(meta=True)
+    def file_edge(self, meta: Any, items: list[Token]) -> Edge:
+        return Edge(
+            edge_type=EdgeType.FILE,
+            source=str(items[0]),
+            target=str(items[1]),
+            line=_meta_line(meta),
+            column=_meta_column(meta),
+        )
+
+    @v_args(meta=True)
+    def file_cond_edge(self, meta: Any, items: list[Token | str]) -> Edge:
+        return Edge(
+            edge_type=EdgeType.FILE,
+            source=str(items[0]),
+            target=str(items[1]),
+            condition=str(items[2]),
+            line=_meta_line(meta),
+            column=_meta_column(meta),
+        )
+
+    @v_args(meta=True)
+    def await_edge(self, meta: Any, items: list[Token]) -> Edge:
+        return Edge(
+            edge_type=EdgeType.AWAIT,
+            source=str(items[0]),
+            target=str(items[1]),
+            line=_meta_line(meta),
+            column=_meta_column(meta),
+        )
+
+    @v_args(meta=True)
+    def await_cond_edge(self, meta: Any, items: list[Token | str]) -> Edge:
+        return Edge(
+            edge_type=EdgeType.AWAIT,
+            source=str(items[0]),
+            target=str(items[1]),
+            condition=str(items[2]),
+            line=_meta_line(meta),
+            column=_meta_column(meta),
+        )
+
     def edge_decl(self, items: list[Edge]) -> Edge:
         return items[0]
 
@@ -321,13 +401,17 @@ class _FlowTransformer(Transformer[Token, Flow]):
 
         attrs: dict[str, str | int] = {}
         params: list[Param] = []
+        task_type: TaskType | None = None
         nodes: dict[str, Node] = {}
         edges: list[Edge] = []
 
         for item in body_items:
             if isinstance(item, tuple):
                 key, value = item
-                attrs[key] = value  # type: ignore[assignment]
+                if key == "task_type":
+                    task_type = value  # type: ignore[assignment]
+                else:
+                    attrs[key] = value  # type: ignore[assignment]
             elif isinstance(item, Param):
                 params.append(item)
             elif isinstance(item, Node):
@@ -360,6 +444,7 @@ class _FlowTransformer(Transformer[Token, Flow]):
             judge=bool(attrs.get("judge", False)),
             worktree=bool(attrs.get("worktree", True)),
             params=tuple(params),
+            task_type=task_type,
             nodes=nodes,
             edges=tuple(edges),
         )

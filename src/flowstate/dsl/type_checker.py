@@ -264,7 +264,20 @@ def _check_edges(flow: Flow) -> list[FlowTypeError]:
     outgoing_edges = _build_outgoing_edges(flow)
 
     # E4: Every edge references existing nodes (run early to avoid confusing cascading errors)
+    # FILE and AWAIT edges reference cross-flow targets (flow names, not node names),
+    # so skip target validation for those — deferred to runtime.
     for edge in flow.edges:
+        if edge.edge_type in (EdgeType.FILE, EdgeType.AWAIT):
+            # Only validate the source (must be a local node); target is a flow name.
+            if edge.source and edge.source not in flow.nodes:
+                errors.append(
+                    FlowTypeError(
+                        "E4",
+                        f"Edge references non-existent node '{edge.source}' as source",
+                        edge.source,
+                    )
+                )
+            continue
         if edge.source and edge.source not in flow.nodes:
             errors.append(
                 FlowTypeError(

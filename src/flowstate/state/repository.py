@@ -20,6 +20,8 @@ from flowstate.state.models import (
     ForkGroupRow,
     TaskExecutionRow,
     TaskLogRow,
+    TaskNodeHistoryRow,
+    TaskRow,
 )
 
 
@@ -682,3 +684,324 @@ class FlowstateDB:
             (flow_run_id, now),
         )
         return [TaskExecutionRow(**dict(r)) for r in rows]
+
+    # ================================================================== #
+    # Tasks (Queue Work Items)
+    # ================================================================== #
+
+    def create_task(
+        self,
+        flow_name: str,
+        title: str,
+        description: str | None = None,
+        params_json: str | None = None,
+        parent_task_id: str | None = None,
+        created_by: str | None = None,
+        priority: int = 0,
+    ) -> str:
+        """Create a new queued task and return its UUID.
+
+        Args:
+            flow_name: The flow this task should be processed by.
+            title: Human-readable task title.
+            description: Optional detailed description.
+            params_json: Optional JSON string of task-specific parameters.
+            parent_task_id: Optional parent task ID for cross-flow lineage.
+            created_by: Who created this task (e.g. "user" or "flow:X/node:Y").
+            priority: Priority level (higher = processed first). Defaults to 0.
+
+        Returns:
+            The UUID of the newly created task.
+        """
+        task_id = str(uuid.uuid4())
+        now = datetime.now(UTC).isoformat()
+        self._execute(
+            """INSERT INTO tasks
+               (id, flow_name, title, description, status, params_json,
+                parent_task_id, created_by, priority, created_at)
+               VALUES (?, ?, ?, ?, 'queued', ?, ?, ?, ?, ?)""",
+            (
+                task_id,
+                flow_name,
+                title,
+                description,
+                params_json,
+                parent_task_id,
+                created_by,
+                priority,
+                now,
+            ),
+        )
+        self._commit()
+        return task_id
+
+    def get_task(self, task_id: str) -> TaskRow | None:
+        """Retrieve a task by ID, or None if not found."""
+        row = self._fetchone("SELECT * FROM tasks WHERE id = ?", (task_id,))
+        return TaskRow(**dict(row)) if row else None
+
+    def list_tasks(
+        self,
+        flow_name: str | None = None,
+        status: str | None = None,
+        limit: int | None = None,
+    ) -> list[TaskRow]:
+        """List tasks with optional filters.
+
+        Args:
+            flow_name: Filter by flow name (optional).
+            status: Filter by status (optional).
+            limit: Maximum number of tasks to return (optional).
+
+        Returns:
+            List of tasks ordered by created_at descending.
+        """
+        conditions: list[str] = []
+        params: list[object] = []
+        if flow_name is not None:
+            conditions.append("flow_name = ?")
+            params.append(flow_name)
+        if status is not None:
+            conditions.append("status = ?")
+            params.append(status)
+
+        where = (" WHERE " + " AND ".join(conditions)) if conditions else ""
+        sql = f"SELECT * FROM tasks{where} ORDER BY created_at DESC"
+        if limit is not None:
+            sql += " LIMIT ?"
+            params.append(limit)
+
+        rows = self._fetchall(sql, tuple(params))
+        return [TaskRow(**dict(r)) for r in rows]
+
+    def update_task_queue_status(
+        self,
+        task_id: str,
+        status: str,
+        *,
+        current_node: str | None = None,
+        flow_run_id: str | None = None,
+        output_json: str | None = None,
+        error_message: str | None = None,
+    ) -> None:
+        """Update a task's status and optional related fields.
+
+        Named update_task_queue_status to avoid collision with the existing
+        update_task_status method (which operates on the task_executions table).
+
+        Automatically sets started_at when transitioning to 'running' and
+        completed_at when transitioning to a terminal status.
+
+        Args:
+            task_id: The task to update.
+            status: New status value.
+            current_node: Current node the task is at (optional).
+            flow_run_id: Associated flow run ID (optional).
+            output_json: JSON string of task output (optional).
+            error_message: Error message for failed tasks (optional).
+        """
+        now = datetime.now(UTC).isoformat()
+        updates: dict[str, object] = {"status": status}
+
+        if current_node is not None:
+            updates["current_node"] = current_node
+        if flow_run_id is not None:
+            updates["flow_run_id"] = flow_run_id
+        if output_json is not None:
+            updates["output_json"] = output_json
+        if error_message is not None:
+            updates["error_message"] = error_message
+
+        terminal = {"completed", "failed", "cancelled"}
+        if status == "running":
+            updates["started_at"] = now
+        if status in terminal:
+            updates["completed_at"] = now
+
+        set_clause = ", ".join(f"{k} = ?" for k in updates)
+        values = [*list(updates.values()), task_id]
+        self._execute(
+            f"UPDATE tasks SET {set_clause} WHERE id = ?",
+            tuple(values),
+        )
+        self._commit()
+
+    def update_task(
+        self,
+        task_id: str,
+        *,
+        title: str | None = None,
+        description: str | None = None,
+        params_json: str | None = None,
+        priority: int | None = None,
+    ) -> None:
+        """Update mutable fields of a task (typically while still queued).
+
+        Args:
+            task_id: The task to update.
+            title: New title (optional).
+            description: New description (optional).
+            params_json: New params JSON (optional).
+            priority: New priority (optional).
+        """
+        updates: dict[str, object] = {}
+        if title is not None:
+            updates["title"] = title
+        if description is not None:
+            updates["description"] = description
+        if params_json is not None:
+            updates["params_json"] = params_json
+        if priority is not None:
+            updates["priority"] = priority
+        if not updates:
+            return
+
+        set_clause = ", ".join(f"{k} = ?" for k in updates)
+        values = [*list(updates.values()), task_id]
+        self._execute(
+            f"UPDATE tasks SET {set_clause} WHERE id = ?",
+            tuple(values),
+        )
+        self._commit()
+
+    def delete_task(self, task_id: str) -> None:
+        """Delete a task, but only if it is still queued.
+
+        No-op if the task does not exist or is not in 'queued' status.
+        """
+        self._execute(
+            "DELETE FROM tasks WHERE id = ? AND status = 'queued'",
+            (task_id,),
+        )
+        self._commit()
+
+    # ------------------------------------------------------------------ #
+    # Queue Operations
+    # ------------------------------------------------------------------ #
+
+    def get_next_queued_task(self, flow_name: str) -> TaskRow | None:
+        """Get the highest-priority oldest queued task for a flow.
+
+        Returns the next task that should be processed, ordered by
+        priority DESC (higher first) then created_at ASC (oldest first).
+        """
+        row = self._fetchone(
+            """SELECT * FROM tasks
+               WHERE flow_name = ? AND status = 'queued'
+               ORDER BY priority DESC, created_at ASC
+               LIMIT 1""",
+            (flow_name,),
+        )
+        return TaskRow(**dict(row)) if row else None
+
+    def count_running_tasks(self, flow_name: str) -> int:
+        """Count tasks with status 'running' for a given flow.
+
+        Used by the queue manager to check capacity before starting new tasks.
+        """
+        row = self._fetchone(
+            "SELECT COUNT(*) as cnt FROM tasks WHERE flow_name = ? AND status = 'running'",
+            (flow_name,),
+        )
+        return int(row["cnt"]) if row else 0
+
+    def reorder_tasks(self, flow_name: str, task_ids: list[str]) -> None:
+        """Reorder queued tasks by assigning priority based on list position.
+
+        The first task in the list gets the highest priority (len - 1),
+        the last gets priority 0. Only updates tasks that are still queued
+        and belong to the specified flow.
+
+        Args:
+            flow_name: The flow whose tasks to reorder.
+            task_ids: Task IDs in desired processing order (first = next).
+        """
+        with self._transaction():
+            for idx, tid in enumerate(task_ids):
+                priority = len(task_ids) - 1 - idx
+                self._execute(
+                    "UPDATE tasks SET priority = ? WHERE id = ? AND flow_name = ?"
+                    " AND status = 'queued'",
+                    (priority, tid, flow_name),
+                )
+
+    # ------------------------------------------------------------------ #
+    # Task Node History
+    # ------------------------------------------------------------------ #
+
+    def add_task_node_history(
+        self,
+        task_id: str,
+        node_name: str,
+        flow_run_id: str | None = None,
+    ) -> int:
+        """Record that a task entered a node. Returns the history entry ID.
+
+        Args:
+            task_id: The task that entered the node.
+            node_name: The name of the node entered.
+            flow_run_id: Optional flow run ID associated with this node execution.
+
+        Returns:
+            The integer ID of the new history row.
+        """
+        now = datetime.now(UTC).isoformat()
+        cursor = self._execute(
+            """INSERT INTO task_node_history (task_id, node_name, flow_run_id, started_at)
+               VALUES (?, ?, ?, ?)""",
+            (task_id, node_name, flow_run_id, now),
+        )
+        self._commit()
+        return cursor.lastrowid or 0
+
+    def complete_task_node_history(self, task_id: str, node_name: str) -> None:
+        """Mark the most recent uncompleted history entry for this task+node as completed.
+
+        Sets completed_at to the current UTC time on the latest entry where
+        completed_at IS NULL for the given task_id and node_name.
+        """
+        now = datetime.now(UTC).isoformat()
+        self._execute(
+            """UPDATE task_node_history SET completed_at = ?
+               WHERE id = (
+                   SELECT id FROM task_node_history
+                   WHERE task_id = ? AND node_name = ? AND completed_at IS NULL
+                   ORDER BY started_at DESC LIMIT 1
+               )""",
+            (now, task_id, node_name),
+        )
+        self._commit()
+
+    def get_task_history(self, task_id: str) -> list[TaskNodeHistoryRow]:
+        """Get the full node history for a task, ordered by start time.
+
+        Args:
+            task_id: The task to get history for.
+
+        Returns:
+            List of history entries ordered by started_at ascending.
+        """
+        rows = self._fetchall(
+            "SELECT * FROM task_node_history WHERE task_id = ? ORDER BY started_at ASC, id ASC",
+            (task_id,),
+        )
+        return [TaskNodeHistoryRow(**dict(r)) for r in rows]
+
+    # ------------------------------------------------------------------ #
+    # Task Lineage
+    # ------------------------------------------------------------------ #
+
+    def get_child_tasks(self, parent_task_id: str) -> list[TaskRow]:
+        """Get all tasks that were filed by a given parent task.
+
+        Args:
+            parent_task_id: The parent task ID.
+
+        Returns:
+            List of child tasks ordered by created_at ascending.
+        """
+        rows = self._fetchall(
+            "SELECT * FROM tasks WHERE parent_task_id = ? ORDER BY created_at ASC",
+            (parent_task_id,),
+        )
+        return [TaskRow(**dict(r)) for r in rows]

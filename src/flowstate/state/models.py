@@ -36,6 +36,7 @@ class FlowRunRow(BaseModel):
     created_at: str
     error_message: str | None = None
     worktree_path: str | None = None
+    task_id: str | None = None
 
 
 class TaskExecutionRow(BaseModel):
@@ -118,3 +119,35 @@ class FlowScheduleRow(BaseModel):
     last_triggered_at: str | None = None
     next_trigger_at: str | None = None
     created_at: str
+
+
+class TaskRow(BaseModel):
+    """Row model for the tasks table (queue work items)."""
+
+    id: str
+    flow_name: str
+    title: str
+    description: str | None = None
+    status: str
+    current_node: str | None = None
+    params_json: str | None = None
+    output_json: str | None = None
+    parent_task_id: str | None = None
+    created_by: str | None = None
+    flow_run_id: str | None = None
+    priority: int = 0
+    created_at: str
+    started_at: str | None = None
+    completed_at: str | None = None
+    error_message: str | None = None
+
+
+class TaskNodeHistoryRow(BaseModel):
+    """Row model for the task_node_history table."""
+
+    id: int
+    task_id: str
+    node_name: str
+    flow_run_id: str | None = None
+    started_at: str | None = None
+    completed_at: str | None = None

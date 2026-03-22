@@ -8,6 +8,7 @@ flow_body: flow_stmt*
 
 flow_stmt: flow_attr
          | param_decl
+         | task_type_decl
          | node_decl
          | edge_decl
 
@@ -32,6 +33,15 @@ param_decl: "param" NAME ":" TYPE
 
 TYPE.2: "string" | "number" | "bool"
 
+// Task type declaration
+task_type_decl: "task" "{" task_type_body "}"
+task_type_body: (task_input_block | task_output_block)*
+task_input_block: "input" "{" task_field_decl* "}"
+task_output_block: "output" "{" task_field_decl* "}"
+task_field_decl: NAME ":" FIELD_TYPE             -> task_field
+              | NAME ":" FIELD_TYPE "=" literal  -> task_field_default
+FIELD_TYPE.2: "string" | "number" | "bool"
+
 literal: STRING
        | NUMBER
        | "true" -> true_lit
@@ -50,12 +60,17 @@ node_attr: "prompt" "=" string  -> node_prompt
          | "judge" "=" BOOL_LIT -> node_judge
 
 // Edges
-edge_decl: simple_edge | cond_edge | fork_edge | join_edge
+edge_decl: simple_edge | cond_edge | fork_edge | join_edge | file_edge | file_cond_edge | await_edge | await_cond_edge
 
 simple_edge: NAME "->" NAME edge_config?
 cond_edge:   NAME "->" NAME "when" string edge_config?
 fork_edge:   NAME "->" "[" name_list "]"
 join_edge:   "[" name_list "]" "->" NAME
+
+file_edge: NAME "files" NAME
+file_cond_edge: NAME "files" NAME "when" string
+await_edge: NAME "awaits" NAME
+await_cond_edge: NAME "awaits" NAME "when" string
 
 name_list: NAME ("," NAME)*
 
