@@ -207,7 +207,7 @@ function GraphViewInner({
   onNodeClick,
   waitUntil,
 }: GraphViewProps) {
-  const { fitView, getNodes, getEdges } = useReactFlow();
+  const { fitView } = useReactFlow();
   const containerRef = useRef<HTMLDivElement>(null);
   const mountedRef = useRef(false);
 
@@ -275,28 +275,40 @@ function GraphViewInner({
     [fitView],
   );
 
-  // Debounced dagre relayout — re-runs layout with actual measured dimensions
+  // Track measured dimensions from onNodesChange so we can relayout with them
+  const measuredDimsRef = useRef<
+    Map<string, { width: number; height: number }>
+  >(new Map());
+
+  // Debounced dagre relayout — re-runs layout using tracked measured dimensions
   const relayoutTimerRef = useRef<ReturnType<typeof setTimeout>>();
   const scheduleDagreRelayout = useCallback(() => {
     if (relayoutTimerRef.current) clearTimeout(relayoutTimerRef.current);
     relayoutTimerRef.current = setTimeout(() => {
-      const currentNodes = getNodes() as Node<NodePillData>[];
-      const currentEdges = getEdges();
+      // Build nodes with measured dimensions injected
+      const nodesWithMeasured = layoutedNodes.map((node) => {
+        const dims = measuredDimsRef.current.get(node.id);
+        if (dims) {
+          return {
+            ...node,
+            measured: dims,
+          };
+        }
+        return node;
+      });
 
       const { nodes: repositioned } = runDagreLayout(
-        currentNodes,
-        currentEdges,
+        nodesWithMeasured,
+        layoutedEdges,
       );
 
-      // Update our state (source of truth for <ReactFlow nodes={...}>)
       setLayoutedNodes(repositioned);
 
-      // Fit view after layout settles
       setTimeout(() => {
         fitView({ duration: 300, padding: 0.15 });
       }, 50);
-    }, 100);
-  }, [getNodes, getEdges, setLayoutedNodes, fitView]);
+    }, 200);
+  }, [layoutedNodes, layoutedEdges, setLayoutedNodes, fitView]);
 
   // Re-fit when container size changes (e.g., detail panel opens/closes)
   useEffect(() => {
@@ -314,7 +326,13 @@ function GraphViewInner({
   // Re-layout when node dimensions change (e.g., node expanded/collapsed on click)
   const handleNodesChange = useCallback(
     (changes: NodeChange<Node<NodePillData>>[]) => {
-      const hasDimensionChange = changes.some((c) => c.type === 'dimensions');
+      let hasDimensionChange = false;
+      for (const change of changes) {
+        if (change.type === 'dimensions' && change.dimensions) {
+          measuredDimsRef.current.set(change.id, change.dimensions);
+          hasDimensionChange = true;
+        }
+      }
       if (hasDimensionChange && mountedRef.current) {
         scheduleDagreRelayout();
       }
