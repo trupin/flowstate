@@ -1,4 +1,4 @@
-import { useMemo, useCallback, useEffect, useRef } from 'react';
+import { useState, useMemo, useCallback, useEffect, useRef } from 'react';
 import {
   ReactFlow,
   ReactFlowProvider,
@@ -190,7 +190,7 @@ function GraphViewInner({
   onNodeClick,
   waitUntil,
 }: GraphViewProps) {
-  const { fitView, getNodes, getEdges, setNodes } = useReactFlow();
+  const { fitView, getNodes, getEdges } = useReactFlow();
   const containerRef = useRef<HTMLDivElement>(null);
   const mountedRef = useRef(false);
 
@@ -227,10 +227,16 @@ function GraphViewInner({
       convertToReactFlowEdges(edges, nodeOrder, activeEdges, traversedEdges),
     [edges, nodeOrder, activeEdges, traversedEdges],
   );
-  const layouted = useMemo(
-    () => runDagreLayout(rfNodes, rfEdges),
-    [rfNodes, rfEdges],
-  );
+  // Use state for layouted nodes so setNodes from relayout persists
+  const [layoutedNodes, setLayoutedNodes] = useState<Node<NodePillData>[]>([]);
+  const [layoutedEdges, setLayoutedEdges] = useState<Edge[]>([]);
+
+  // Re-run dagre when input nodes/edges change (new data from props)
+  useEffect(() => {
+    const result = runDagreLayout(rfNodes, rfEdges);
+    setLayoutedNodes(result.nodes);
+    setLayoutedEdges(result.edges);
+  }, [rfNodes, rfEdges]);
 
   const handleNodeClick = useCallback(
     (_: React.MouseEvent, node: Node<NodePillData>) => {
@@ -265,14 +271,15 @@ function GraphViewInner({
         currentEdges,
       );
 
-      setNodes(repositioned);
+      // Update our state (source of truth for <ReactFlow nodes={...}>)
+      setLayoutedNodes(repositioned);
 
       // Fit view after layout settles
       setTimeout(() => {
         fitView({ duration: 300, padding: 0.15 });
       }, 50);
     }, 100);
-  }, [getNodes, getEdges, setNodes, fitView]);
+  }, [getNodes, getEdges, setLayoutedNodes, fitView]);
 
   // Re-fit when container size changes (e.g., detail panel opens/closes)
   useEffect(() => {
@@ -320,8 +327,8 @@ function GraphViewInner({
   return (
     <div ref={containerRef} className="graph-view">
       <ReactFlow
-        nodes={layouted.nodes}
-        edges={layouted.edges}
+        nodes={layoutedNodes}
+        edges={layoutedEdges}
         nodeTypes={nodeTypes}
         onNodeClick={handleNodeClick}
         onNodesChange={handleNodesChange}
