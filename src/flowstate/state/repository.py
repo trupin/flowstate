@@ -715,11 +715,19 @@ class FlowstateDB:
         """
         task_id = str(uuid.uuid4())
         now = datetime.now(UTC).isoformat()
+
+        # Compute depth from parent chain (0 for root tasks)
+        depth = 0
+        if parent_task_id:
+            parent = self.get_task(parent_task_id)
+            if parent:
+                depth = parent.depth + 1
+
         self._execute(
             """INSERT INTO tasks
                (id, flow_name, title, description, status, params_json,
-                parent_task_id, created_by, priority, created_at)
-               VALUES (?, ?, ?, ?, 'queued', ?, ?, ?, ?, ?)""",
+                parent_task_id, created_by, priority, depth, created_at)
+               VALUES (?, ?, ?, ?, 'queued', ?, ?, ?, ?, ?, ?)""",
             (
                 task_id,
                 flow_name,
@@ -729,6 +737,7 @@ class FlowstateDB:
                 parent_task_id,
                 created_by,
                 priority,
+                depth,
                 now,
             ),
         )
@@ -878,6 +887,11 @@ class FlowstateDB:
     # ------------------------------------------------------------------ #
     # Queue Operations
     # ------------------------------------------------------------------ #
+
+    def list_queued_flow_names(self) -> list[str]:
+        """Return distinct flow names that have at least one queued task."""
+        rows = self._fetchall("SELECT DISTINCT flow_name FROM tasks WHERE status = 'queued'")
+        return [row["flow_name"] for row in rows]
 
     def get_next_queued_task(self, flow_name: str) -> TaskRow | None:
         """Get the highest-priority oldest queued task for a flow.

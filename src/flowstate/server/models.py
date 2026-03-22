@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 
 class OpenRequest(BaseModel):
@@ -120,10 +120,10 @@ class ScheduleResponse(BaseModel):
 class SubmitTaskRequest(BaseModel):
     """Request body for POST /api/flows/:flow_name/tasks."""
 
-    title: str
-    description: str = ""
+    title: str = Field(..., min_length=1, max_length=256)
+    description: str = Field("", max_length=4096)
     params: dict[str, str | float | bool] = {}
-    priority: int = 0
+    priority: int = Field(0, ge=0, le=100)
 
 
 class UpdateTaskRequest(BaseModel):

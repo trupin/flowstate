@@ -20,24 +20,12 @@ from flowstate.engine.executor import FlowExecutor
 
 if TYPE_CHECKING:
     from flowstate.engine.subprocess_mgr import SubprocessManager
-    from flowstate.server.flow_registry import DiscoveredFlow, FlowRegistry
+    from flowstate.server.flow_registry import FlowRegistry
     from flowstate.server.run_manager import RunManager
     from flowstate.state.models import TaskRow
     from flowstate.state.repository import FlowstateDB
 
 logger = logging.getLogger(__name__)
-
-
-def _find_flow_by_name(registry: FlowRegistry, flow_name: str) -> DiscoveredFlow | None:
-    """Search the registry for a flow whose parsed name matches *flow_name*.
-
-    The registry keys flows by file stem (``flow_id``), but the task table
-    stores the DSL flow name. This helper bridges the gap.
-    """
-    for flow in registry.list_flows():
-        if flow.name == flow_name:
-            return flow
-    return None
 
 
 class QueueManager:
@@ -94,8 +82,7 @@ class QueueManager:
 
     async def _process_queues(self) -> None:
         """Check all flows for queued tasks and start runs if capacity allows."""
-        all_tasks = self._db.list_tasks(status="queued")
-        flow_names: set[str] = {t.flow_name for t in all_tasks}
+        flow_names = self._db.list_queued_flow_names()
 
         for flow_name in flow_names:
             running_count = self._db.count_running_tasks(flow_name)
@@ -111,7 +98,7 @@ class QueueManager:
     async def _start_task(self, task: TaskRow) -> None:
         """Start a flow run to process a task."""
         # Look up the flow definition
-        flow = _find_flow_by_name(self._registry, task.flow_name)
+        flow = self._registry.get_flow_by_name(task.flow_name)
         if flow is None or flow.status != "valid":
             self._db.update_task_queue_status(
                 task.id,

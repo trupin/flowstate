@@ -11,7 +11,7 @@ from dataclasses import dataclass, field
 from typing import Any
 from unittest.mock import MagicMock
 
-from flowstate.engine.queue_manager import QueueManager, _find_flow_by_name
+from flowstate.engine.queue_manager import QueueManager
 from flowstate.state.repository import FlowstateDB
 
 # ---------------------------------------------------------------------------
@@ -44,6 +44,12 @@ class MockFlowRegistry:
 
     def get_flow(self, flow_id: str) -> MockDiscoveredFlow | None:
         return self._flows.get(flow_id)
+
+    def get_flow_by_name(self, name: str) -> MockDiscoveredFlow | None:
+        for flow in self._flows.values():
+            if flow.name == name:
+                return flow
+        return None
 
 
 class MockRunManager:
@@ -115,11 +121,11 @@ def _make_queue_manager(
 
 
 # ---------------------------------------------------------------------------
-# Tests: _find_flow_by_name helper
+# Tests: get_flow_by_name on registry
 # ---------------------------------------------------------------------------
 
 
-class TestFindFlowByName:
+class TestGetFlowByName:
     def test_finds_matching_flow(self) -> None:
         flow = MockDiscoveredFlow(
             id="my_flow",
@@ -129,13 +135,13 @@ class TestFindFlowByName:
             status="valid",
         )
         registry = MockFlowRegistry([flow])
-        result = _find_flow_by_name(registry, "test_flow")  # type: ignore[arg-type]
+        result = registry.get_flow_by_name("test_flow")
         assert result is not None
         assert result.name == "test_flow"
 
     def test_returns_none_for_unknown_name(self) -> None:
         registry = MockFlowRegistry([])
-        result = _find_flow_by_name(registry, "nonexistent")  # type: ignore[arg-type]
+        result = registry.get_flow_by_name("nonexistent")
         assert result is None
 
 

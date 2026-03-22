@@ -312,12 +312,12 @@ class FlowExecutor:
         )
         data_dir = os.path.expanduser(f"~/.flowstate/runs/{flow_run_id}")
 
-        # Store task_id for task-aware execution
+        # Store task_id and cached task row for task-aware execution
         self._task_id = task_id
+        self._task_row = self._db.get_task(task_id) if task_id else None
         if task_id:
             # Link flow_run -> task (only if the task exists in the DB)
-            task_row = self._db.get_task(task_id)
-            if task_row:
+            if self._task_row:
                 self._db._execute(  # type: ignore[attr-defined]
                     "UPDATE flow_runs SET task_id = ? WHERE id = ?",
                     (task_id, flow_run_id),
@@ -1239,15 +1239,9 @@ class FlowExecutor:
     # ------------------------------------------------------------------ #
 
     def _get_task_depth(self, task_id: str) -> int:
-        """Count the parent chain depth to prevent infinite filing."""
-        depth = 0
-        current = self._db.get_task(task_id)
-        while current and current.parent_task_id:
-            depth += 1
-            current = self._db.get_task(current.parent_task_id)
-            if depth > 10:
-                break
-        return depth
+        """Get the filing depth for a task (stored on the task row, avoids N+1 queries)."""
+        task = self._db.get_task(task_id)
+        return task.depth if task else 0
 
     async def _handle_file_edge(
         self,
@@ -1995,14 +1989,10 @@ class FlowExecutor:
     def _inject_task_context(self, prompt: str) -> str:
         """Prepend task queue context to a prompt when executing on behalf of a task.
 
-        If ``self._task_id`` is set, loads the task from the database and
-        prepends its title and description to the prompt so the subprocess
-        has full context about the work item it is processing.
+        Uses the cached ``_task_row`` (loaded once in ``execute()``) to avoid
+        repeated DB queries on every task creation.
         """
-        task_id = self._task_id
-        if not task_id:
-            return prompt
-        task = self._db.get_task(task_id)
+        task = self._task_row
         if task is None:
             return prompt
         task_context = f"## Task Context\nTitle: {task.title}\n"

@@ -129,6 +129,7 @@ CREATE TABLE IF NOT EXISTS tasks (
     created_by TEXT,
     flow_run_id TEXT REFERENCES flow_runs(id),
     priority INTEGER DEFAULT 0,
+    depth INTEGER DEFAULT 0,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     started_at TIMESTAMP,
     completed_at TIMESTAMP,

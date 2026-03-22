@@ -102,8 +102,15 @@ class FlowRegistry:
         return list(self._flows.values())
 
     def get_flow(self, flow_id: str) -> DiscoveredFlow | None:
-        """Return a single flow by ID, or None if not found."""
+        """Return a single flow by ID (file stem), or None if not found."""
         return self._flows.get(flow_id)
+
+    def get_flow_by_name(self, name: str) -> DiscoveredFlow | None:
+        """Return a flow by its declared name, or None if not found."""
+        for flow in self._flows.values():
+            if flow.name == name:
+                return flow
+        return None
 
     def _scan_all(self) -> None:
         """Scan watch_dir for all .flow files and process each."""

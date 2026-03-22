@@ -136,6 +136,7 @@ class TaskRow(BaseModel):
     created_by: str | None = None
     flow_run_id: str | None = None
     priority: int = 0
+    depth: int = 0
     created_at: str
     started_at: str | None = None
     completed_at: str | None = None
