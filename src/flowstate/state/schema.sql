@@ -146,6 +146,12 @@ CREATE TABLE IF NOT EXISTS task_node_history (
     completed_at TIMESTAMP
 );
 
+-- Flow enabled state (runtime toggle, separate from DSL definition)
+CREATE TABLE IF NOT EXISTS flow_enabled (
+    flow_name TEXT PRIMARY KEY,
+    enabled INTEGER DEFAULT 1
+);
+
 -- Indexes
 CREATE INDEX IF NOT EXISTS idx_flow_runs_status ON flow_runs(status);
 CREATE INDEX IF NOT EXISTS idx_task_executions_flow_run ON task_executions(flow_run_id);

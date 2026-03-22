@@ -1700,3 +1700,62 @@ class TestTaskOperations:
         result = db.get_flow_run(run_id)
         assert result is not None
         assert result.task_id is None
+
+
+# ================================================================== #
+# Flow Enable/Disable Tests
+# ================================================================== #
+
+
+class TestFlowEnabled:
+    """Tests for flow enable/disable operations."""
+
+    def test_default_is_enabled(self, db: FlowstateDB) -> None:
+        """A flow with no explicit state is enabled by default."""
+        assert db.is_flow_enabled("my-flow") is True
+
+    def test_disable_flow(self, db: FlowstateDB) -> None:
+        """Disabling a flow sets enabled to False."""
+        db.set_flow_enabled("my-flow", False)
+        assert db.is_flow_enabled("my-flow") is False
+
+    def test_enable_flow(self, db: FlowstateDB) -> None:
+        """Enabling a flow after disabling it sets enabled to True."""
+        db.set_flow_enabled("my-flow", False)
+        assert db.is_flow_enabled("my-flow") is False
+
+        db.set_flow_enabled("my-flow", True)
+        assert db.is_flow_enabled("my-flow") is True
+
+    def test_enable_already_enabled(self, db: FlowstateDB) -> None:
+        """Enabling an already-enabled flow is idempotent."""
+        db.set_flow_enabled("my-flow", True)
+        assert db.is_flow_enabled("my-flow") is True
+
+        db.set_flow_enabled("my-flow", True)
+        assert db.is_flow_enabled("my-flow") is True
+
+    def test_disable_already_disabled(self, db: FlowstateDB) -> None:
+        """Disabling an already-disabled flow is idempotent."""
+        db.set_flow_enabled("my-flow", False)
+        assert db.is_flow_enabled("my-flow") is False
+
+        db.set_flow_enabled("my-flow", False)
+        assert db.is_flow_enabled("my-flow") is False
+
+    def test_independent_flows(self, db: FlowstateDB) -> None:
+        """Different flows have independent enabled states."""
+        db.set_flow_enabled("flow-a", False)
+        db.set_flow_enabled("flow-b", True)
+
+        assert db.is_flow_enabled("flow-a") is False
+        assert db.is_flow_enabled("flow-b") is True
+        assert db.is_flow_enabled("flow-c") is True  # default
+
+    def test_toggle_multiple_times(self, db: FlowstateDB) -> None:
+        """Toggling enabled state multiple times works correctly."""
+        for _ in range(5):
+            db.set_flow_enabled("my-flow", False)
+            assert db.is_flow_enabled("my-flow") is False
+            db.set_flow_enabled("my-flow", True)
+            assert db.is_flow_enabled("my-flow") is True

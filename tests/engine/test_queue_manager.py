@@ -310,6 +310,99 @@ class TestProcessQueues:
         await qm._process_queues()
         assert len(rm.started_runs) == 0
 
+    async def test_disabled_flow_skipped(self) -> None:
+        """When a flow is disabled, its queued tasks are not started."""
+        flow = MockDiscoveredFlow(
+            id="test_flow",
+            name="test_flow",
+            file_path="/tmp/test_flow.flow",
+            source_dsl=SIMPLE_FLOW_DSL,
+            status="valid",
+        )
+        registry = MockFlowRegistry([flow])
+        qm, db, _, rm = _make_queue_manager(registry=registry)
+
+        # Disable the flow
+        db.set_flow_enabled("test_flow", False)
+
+        # Create a queued task
+        task_id = db.create_task("test_flow", "Should not start")
+
+        await qm._process_queues()
+
+        # No runs should have started
+        assert len(rm.started_runs) == 0
+
+        # Task should still be queued
+        task = db.get_task(task_id)
+        assert task is not None
+        assert task.status == "queued"
+
+    async def test_reenabled_flow_processes_tasks(self) -> None:
+        """After re-enabling a flow, queued tasks are picked up again."""
+        flow = MockDiscoveredFlow(
+            id="test_flow",
+            name="test_flow",
+            file_path="/tmp/test_flow.flow",
+            source_dsl=SIMPLE_FLOW_DSL,
+            status="valid",
+        )
+        registry = MockFlowRegistry([flow])
+        qm, db, _, rm = _make_queue_manager(registry=registry)
+
+        # Disable the flow and create a task
+        db.set_flow_enabled("test_flow", False)
+        task_id = db.create_task("test_flow", "Waiting task")
+
+        # Process -- nothing should happen
+        await qm._process_queues()
+        assert len(rm.started_runs) == 0
+
+        # Re-enable the flow
+        db.set_flow_enabled("test_flow", True)
+
+        # Process again -- task should start
+        await qm._process_queues()
+        assert len(rm.started_runs) == 1
+
+        task = db.get_task(task_id)
+        assert task is not None
+        assert task.status == "running"
+
+    async def test_disabled_flow_does_not_affect_other_flows(self) -> None:
+        """Disabling one flow does not affect other flows."""
+        flow_a = MockDiscoveredFlow(
+            id="flow_a",
+            name="flow_a",
+            file_path="/tmp/flow_a.flow",
+            source_dsl=SIMPLE_FLOW_DSL.replace("test_flow", "flow_a"),
+            status="valid",
+        )
+        flow_b = MockDiscoveredFlow(
+            id="flow_b",
+            name="flow_b",
+            file_path="/tmp/flow_b.flow",
+            source_dsl=SIMPLE_FLOW_DSL.replace("test_flow", "flow_b"),
+            status="valid",
+        )
+        registry = MockFlowRegistry([flow_a, flow_b])
+        qm, db, _, rm = _make_queue_manager(registry=registry, max_concurrent=1)
+
+        # Disable flow_a only
+        db.set_flow_enabled("flow_a", False)
+
+        db.create_task("flow_a", "Task A")
+        task_b_id = db.create_task("flow_b", "Task B")
+
+        await qm._process_queues()
+
+        # Only flow_b's task should start
+        assert len(rm.started_runs) == 1
+
+        task_b = db.get_task(task_b_id)
+        assert task_b is not None
+        assert task_b.status == "running"
+
 
 # ---------------------------------------------------------------------------
 # Tests: QueueManager start/stop lifecycle

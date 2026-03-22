@@ -165,8 +165,14 @@ def _flow_to_frontend(f: DiscoveredFlow, include_detail: bool = False) -> dict[s
 async def list_flows(request: Request) -> list[dict[str, Any]]:
     """List all discovered flows from the watch directory."""
     registry: FlowRegistry = request.app.state.flow_registry
+    db = _get_db(request)
     flows = registry.list_flows()
-    return [_flow_to_frontend(f) for f in flows]
+    result: list[dict[str, Any]] = []
+    for f in flows:
+        data = _flow_to_frontend(f)
+        data["enabled"] = db.is_flow_enabled(f.name or f.id)
+        result.append(data)
+    return result
 
 
 @router.get("/flows/{flow_id}")
@@ -176,7 +182,31 @@ async def get_flow(request: Request, flow_id: str) -> dict[str, Any]:
     flow = registry.get_flow(flow_id)
     if not flow:
         raise FlowstateError(f"Flow '{flow_id}' not found", status_code=404)
-    return _flow_to_frontend(flow, include_detail=True)
+    data = _flow_to_frontend(flow, include_detail=True)
+    db = _get_db(request)
+    data["enabled"] = db.is_flow_enabled(flow.name or flow.id)
+    return data
+
+
+# ---------------------------------------------------------------------------
+# Flow enable/disable endpoints
+# ---------------------------------------------------------------------------
+
+
+@router.post("/flows/{flow_name}/enable")
+async def enable_flow(request: Request, flow_name: str) -> dict[str, str]:
+    """Enable a flow to process its task queue."""
+    db = _get_db(request)
+    db.set_flow_enabled(flow_name, enabled=True)
+    return {"status": "enabled", "flow_name": flow_name}
+
+
+@router.post("/flows/{flow_name}/disable")
+async def disable_flow(request: Request, flow_name: str) -> dict[str, str]:
+    """Disable a flow -- finish current task, stop processing queue."""
+    db = _get_db(request)
+    db.set_flow_enabled(flow_name, enabled=False)
+    return {"status": "disabled", "flow_name": flow_name}
 
 
 # ---------------------------------------------------------------------------
@@ -200,7 +230,7 @@ def _validate_params(flow: DiscoveredFlow, params: dict[str, str | float | bool]
             )
     # Check required params (those without defaults) are provided
     for name, decl in declared.items():
-        if decl.get("default") is None and name not in params:
+        if decl.get("default_value") is None and name not in params:
             raise FlowstateError(
                 f"Required parameter '{name}' not provided",
                 status_code=400,

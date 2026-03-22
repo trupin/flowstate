@@ -85,6 +85,10 @@ class QueueManager:
         flow_names = self._db.list_queued_flow_names()
 
         for flow_name in flow_names:
+            # Skip disabled flows
+            if not self._db.is_flow_enabled(flow_name):
+                continue
+
             running_count = self._db.count_running_tasks(flow_name)
             if running_count >= self._max_concurrent:
                 continue

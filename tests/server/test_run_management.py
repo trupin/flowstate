@@ -50,7 +50,7 @@ VALID_FLOW = DiscoveredFlow(
     status="valid",
     errors=[],
     ast_json={"name": "code_review", "nodes": {}, "edges": []},
-    params=[{"name": "focus", "type": "string", "default": "all"}],
+    params=[{"name": "focus", "type": "string", "default_value": "all"}],
 )
 
 VALID_FLOW_WITH_REQUIRED_PARAM = DiscoveredFlow(
@@ -64,7 +64,9 @@ VALID_FLOW_WITH_REQUIRED_PARAM = DiscoveredFlow(
         "    context = handoff\n"
         '    workspace = "."\n'
         "\n"
-        "    param focus: string\n"
+        "    input {\n"
+        "        focus: string\n"
+        "    }\n"
         "\n"
         "    entry start {\n"
         '        prompt = "go"\n'
@@ -80,7 +82,7 @@ VALID_FLOW_WITH_REQUIRED_PARAM = DiscoveredFlow(
     status="valid",
     errors=[],
     ast_json={"name": "needs_param", "nodes": {}, "edges": []},
-    params=[{"name": "focus", "type": "string", "default": None}],
+    params=[{"name": "focus", "type": "string", "default_value": None}],
 )
 
 VALID_FLOW_NO_WORKSPACE = DiscoveredFlow(

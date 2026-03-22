@@ -1019,3 +1019,38 @@ class FlowstateDB:
             (parent_task_id,),
         )
         return [TaskRow(**dict(r)) for r in rows]
+
+    # ================================================================== #
+    # Flow Enable/Disable
+    # ================================================================== #
+
+    def set_flow_enabled(self, flow_name: str, enabled: bool) -> None:
+        """Enable or disable a flow's task queue processing.
+
+        Uses upsert semantics: creates the row if it doesn't exist, updates if it does.
+
+        Args:
+            flow_name: The flow to enable or disable.
+            enabled: True to enable, False to disable.
+        """
+        self._execute(
+            "INSERT INTO flow_enabled (flow_name, enabled) VALUES (?, ?) "
+            "ON CONFLICT(flow_name) DO UPDATE SET enabled = ?",
+            (flow_name, int(enabled), int(enabled)),
+        )
+        self._commit()
+
+    def is_flow_enabled(self, flow_name: str) -> bool:
+        """Check if a flow is enabled for task processing.
+
+        Returns True by default if no row exists (flows are enabled unless
+        explicitly disabled).
+
+        Args:
+            flow_name: The flow to check.
+
+        Returns:
+            True if the flow is enabled, False if disabled.
+        """
+        row = self._fetchone("SELECT enabled FROM flow_enabled WHERE flow_name = ?", (flow_name,))
+        return bool(row["enabled"]) if row else True

@@ -20,6 +20,7 @@ EXPECTED_TABLES = {
     "flow_schedules",
     "tasks",
     "task_node_history",
+    "flow_enabled",
 }
 
 EXPECTED_INDEXES = {

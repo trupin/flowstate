@@ -81,8 +81,10 @@ flow parameterized {
     context = handoff
     workspace = "."
 
-    param focus: string = "all"
-    param verbose: bool = false
+    input {
+        focus: string = "all"
+        verbose: bool = false
+    }
 
     entry start {
         prompt = "go"
@@ -416,7 +418,10 @@ class TestEventCallback:
 # ---------------------------------------------------------------------------
 
 
-def _make_test_app(flows: dict[str, DiscoveredFlow] | None = None) -> TestClient:
+def _make_test_app(
+    flows: dict[str, DiscoveredFlow] | None = None,
+    db_mock: MagicMock | None = None,
+) -> TestClient:
     """Create a TestClient with a mocked FlowRegistry on app.state."""
     config = FlowstateConfig(watch_dir="/tmp/nonexistent-for-test")
     app = create_app(config=config)
@@ -427,6 +432,12 @@ def _make_test_app(flows: dict[str, DiscoveredFlow] | None = None) -> TestClient
     mock_registry.list_flows.return_value = list(flows.values())
     mock_registry.get_flow.side_effect = lambda fid: flows.get(fid)
     app.state.flow_registry = mock_registry
+
+    # Mock DB — flow endpoints now call db.is_flow_enabled
+    if db_mock is None:
+        db_mock = MagicMock()
+        db_mock.is_flow_enabled.return_value = True
+    app.state.db = db_mock
 
     return TestClient(app, raise_server_exceptions=False)
 
@@ -439,7 +450,7 @@ SAMPLE_FLOW = DiscoveredFlow(
     status="valid",
     errors=[],
     ast_json={"name": "code_review", "nodes": {}, "edges": []},
-    params=[{"name": "focus", "type": "string", "default": "all"}],
+    params=[{"name": "focus", "type": "string", "default_value": "all"}],
 )
 
 SAMPLE_FLOW_ERROR = DiscoveredFlow(
@@ -470,7 +481,9 @@ class TestRestListFlows:
         assert valid["name"] == "code_review"
         assert valid["status"] == "valid"
         assert valid["errors"] == []
-        assert valid["params"] == [{"name": "focus", "type": "string", "default": "all"}]
+        assert valid["params"] == [{"name": "focus", "type": "string", "default_value": "all"}]
+        # Enabled field should be present
+        assert valid["enabled"] is True
         # List endpoint should NOT include source_dsl or ast_json
         assert "source_dsl" not in valid
         assert "ast_json" not in valid
@@ -498,6 +511,7 @@ class TestRestGetFlow:
         assert body["source_dsl"] == SAMPLE_FLOW.source_dsl
         assert body["ast_json"] == SAMPLE_FLOW.ast_json
         assert body["params"] == SAMPLE_FLOW.params
+        assert body["enabled"] is True
 
 
 class TestRestGetFlowNotFound:
@@ -524,3 +538,93 @@ class TestRestGetFlowWithErrors:
         assert len(body["errors"]) > 0
         assert body["ast_json"] is None
         assert body["source_dsl"] == "invalid dsl"
+
+
+# ---------------------------------------------------------------------------
+# Flow enable/disable endpoint tests
+# ---------------------------------------------------------------------------
+
+
+class TestEnableFlow:
+    def test_enable_flow_returns_200(self) -> None:
+        """POST /api/flows/{name}/enable returns 200 with status enabled."""
+        mock_db = MagicMock()
+        mock_db.is_flow_enabled.return_value = True
+        client = _make_test_app(db_mock=mock_db)
+        response = client.post("/api/flows/my_flow/enable")
+        assert response.status_code == 200
+        body = response.json()
+        assert body["status"] == "enabled"
+        assert body["flow_name"] == "my_flow"
+        mock_db.set_flow_enabled.assert_called_once_with("my_flow", enabled=True)
+
+
+class TestDisableFlow:
+    def test_disable_flow_returns_200(self) -> None:
+        """POST /api/flows/{name}/disable returns 200 with status disabled."""
+        mock_db = MagicMock()
+        mock_db.is_flow_enabled.return_value = True
+        client = _make_test_app(db_mock=mock_db)
+        response = client.post("/api/flows/my_flow/disable")
+        assert response.status_code == 200
+        body = response.json()
+        assert body["status"] == "disabled"
+        assert body["flow_name"] == "my_flow"
+        mock_db.set_flow_enabled.assert_called_once_with("my_flow", enabled=False)
+
+
+class TestFlowEnabledFieldInList:
+    def test_flow_list_includes_enabled_field(self) -> None:
+        """GET /api/flows includes enabled field for each flow."""
+        mock_db = MagicMock()
+        mock_db.is_flow_enabled.return_value = True
+        client = _make_test_app(
+            {"code_review": SAMPLE_FLOW},
+            db_mock=mock_db,
+        )
+        response = client.get("/api/flows")
+        assert response.status_code == 200
+        body = response.json()
+        assert len(body) == 1
+        assert body[0]["enabled"] is True
+        mock_db.is_flow_enabled.assert_called_once_with("code_review")
+
+    def test_flow_list_disabled_flow(self) -> None:
+        """GET /api/flows shows enabled=False for disabled flows."""
+        mock_db = MagicMock()
+        mock_db.is_flow_enabled.return_value = False
+        client = _make_test_app(
+            {"code_review": SAMPLE_FLOW},
+            db_mock=mock_db,
+        )
+        response = client.get("/api/flows")
+        assert response.status_code == 200
+        body = response.json()
+        assert len(body) == 1
+        assert body[0]["enabled"] is False
+
+
+class TestEnableDisableToggle:
+    def test_enable_then_disable_toggle(self) -> None:
+        """Enable and disable toggle calls the DB with correct values."""
+        mock_db = MagicMock()
+        mock_db.is_flow_enabled.return_value = True
+        client = _make_test_app(db_mock=mock_db)
+
+        # Enable
+        response = client.post("/api/flows/my_flow/enable")
+        assert response.status_code == 200
+        assert response.json()["status"] == "enabled"
+
+        # Disable
+        response = client.post("/api/flows/my_flow/disable")
+        assert response.status_code == 200
+        assert response.json()["status"] == "disabled"
+
+        # Verify both DB calls were made
+        calls = mock_db.set_flow_enabled.call_args_list
+        assert len(calls) == 2
+        assert calls[0].args == ("my_flow",)
+        assert calls[0].kwargs == {"enabled": True}
+        assert calls[1].args == ("my_flow",)
+        assert calls[1].kwargs == {"enabled": False}
