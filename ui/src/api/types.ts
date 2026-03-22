@@ -92,6 +92,7 @@ export interface DiscoveredFlow {
   edges: FlowEdgeDef[];
   last_modified: string; // ISO 8601 timestamp
   ast_json?: FlowAstJson; // included by GET /api/flows/:id
+  enabled?: boolean; // runtime state: whether the flow's queue is active
 }
 
 export interface FlowRun {
@@ -170,10 +171,6 @@ export interface OrchestratorInfo {
   session_id: string;
   system_prompt: string;
   data_dir: string;
-}
-
-export interface StartRunRequest {
-  params?: Record<string, string | number | boolean>;
 }
 
 // --- Task queue types ---

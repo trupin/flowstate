@@ -6,7 +6,7 @@
   height: 100vh;
 }
 
-/* Header with flow name and start button */
+/* Header with flow name and controls */
 .flow-library-header {
   display: flex;
   justify-content: space-between;
@@ -21,34 +21,73 @@
   font-size: 18px;
 }
 
-.start-run-btn {
-  background: var(--accent);
-  border-color: var(--accent);
-  color: #fff;
-  font-weight: 500;
-  padding: 8px 20px;
-  border-radius: 4px;
+/* Controls group: toggle + submit button */
+.flow-controls {
+  display: flex;
+  align-items: center;
+  gap: 10px;
 }
 
-.start-run-btn:hover {
+/* Enable/disable toggle */
+.flow-toggle {
+  padding: 4px 12px;
+  border-radius: 12px;
+  border: 1px solid var(--border);
+  font-size: 12px;
+  cursor: pointer;
+  transition:
+    background 0.15s,
+    color 0.15s,
+    border-color 0.15s;
+}
+
+.flow-toggle.enabled {
+  background: rgba(52, 211, 153, 0.15);
+  border-color: var(--success);
+  color: var(--success);
+}
+
+.flow-toggle.disabled {
+  background: var(--bg-secondary);
+  color: var(--text-secondary);
+}
+
+.flow-toggle:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+/* Submit task button */
+.submit-task-btn {
+  background: var(--accent);
+  border: 1px solid var(--accent);
+  color: #fff;
+  padding: 8px 20px;
+  border-radius: 4px;
+  font-weight: 500;
+  cursor: pointer;
+  font-size: 13px;
+}
+
+.submit-task-btn:hover {
   opacity: 0.9;
 }
 
-/* Body: horizontal split — graph (left) + detail sidebar (right) */
+/* Body: horizontal split -- graph (left) + detail sidebar (right) */
 .flow-library-body {
   display: flex;
   flex: 1;
   overflow: hidden;
 }
 
-/* Graph canvas — takes remaining width */
+/* Graph canvas -- takes remaining width */
 .flow-library-graph {
   flex: 1;
   min-width: 0;
   position: relative;
 }
 
-/* Detail sidebar — fixed width, scrollable */
+/* Detail sidebar -- fixed width, scrollable */
 .flow-library-detail-sidebar {
   width: 350px;
   flex-shrink: 0;

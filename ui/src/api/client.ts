@@ -6,7 +6,6 @@ import type {
   LogEntry,
   OrchestratorInfo,
   QueuedTask,
-  StartRunRequest,
 } from './types';
 
 export class ApiError extends Error {
@@ -62,13 +61,15 @@ export const api = {
   flows: {
     list: () => get<DiscoveredFlow[]>('/api/flows'),
     get: (id: string) => get<DiscoveredFlow>(`/api/flows/${id}`),
+    enable: (flowName: string) =>
+      post<{ status: string }>(`/api/flows/${flowName}/enable`, {}),
+    disable: (flowName: string) =>
+      post<{ status: string }>(`/api/flows/${flowName}/disable`, {}),
   },
   runs: {
     list: (status?: string) =>
       get<FlowRun[]>(`/api/runs${status ? `?status=${status}` : ''}`),
     get: (id: string) => get<FlowRunDetail>(`/api/runs/${id}`),
-    start: (flowId: string, req: StartRunRequest) =>
-      post<{ flow_run_id: string }>(`/api/flows/${flowId}/runs`, req),
     pause: (id: string) => post<void>(`/api/runs/${id}/pause`),
     resume: (id: string) => post<void>(`/api/runs/${id}/resume`),
     cancel: (id: string) => post<void>(`/api/runs/${id}/cancel`),

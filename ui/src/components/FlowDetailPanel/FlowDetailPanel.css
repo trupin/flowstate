@@ -47,6 +47,15 @@
   white-space: nowrap;
 }
 
+/* Enabled/disabled state in settings */
+.flow-enabled {
+  color: var(--success);
+}
+
+.flow-disabled {
+  color: var(--text-secondary);
+}
+
 /* Node summary */
 .flow-node-summary {
   display: flex;

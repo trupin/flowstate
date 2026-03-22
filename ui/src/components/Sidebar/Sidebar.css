@@ -112,6 +112,10 @@
   background: transparent;
 }
 
+.validity-dot.disabled {
+  background: var(--text-secondary);
+}
+
 /* Status dots */
 .status-dot {
   width: 8px;

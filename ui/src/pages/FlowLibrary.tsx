@@ -1,10 +1,10 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useCallback } from 'react';
 import { useSearchParams } from 'react-router-dom';
 import { api } from '../api/client';
 import { useFlowWatcher } from '../hooks/useFlowWatcher';
 import { GraphView } from '../components/GraphView';
 import { ErrorBanner } from '../components/ErrorBanner';
-import { StartRunModal } from '../components/StartRunModal';
+import { TaskModal } from '../components/TaskModal';
 import { FlowDetailPanel } from '../components/FlowDetailPanel';
 import { expandEdges } from '../utils/edges';
 import type { DiscoveredFlow } from '../api/types';
@@ -18,7 +18,9 @@ export function FlowLibrary() {
   const { flows } = useFlowWatcher();
   const [selectedFlow, setSelectedFlow] = useState<DiscoveredFlow | null>(null);
   const [fetchError, setFetchError] = useState<string | null>(null);
-  const [showStartModal, setShowStartModal] = useState(false);
+  const [showTaskModal, setShowTaskModal] = useState(false);
+  const [isEnabled, setIsEnabled] = useState(true);
+  const [toggling, setToggling] = useState(false);
 
   // Fetch the selected flow's full details whenever selectedFlowId or flows change
   useEffect(() => {
@@ -27,6 +29,7 @@ export function FlowLibrary() {
         .get(selectedFlowId)
         .then((flow) => {
           setSelectedFlow(flow);
+          setIsEnabled(flow.enabled !== false);
           setFetchError(null);
         })
         .catch(() => {
@@ -43,6 +46,24 @@ export function FlowLibrary() {
       setSelectedFlow(null);
     }
   }, [selectedFlowId, flows, setSearchParams]);
+
+  const toggleEnabled = useCallback(async () => {
+    if (!selectedFlow || toggling) return;
+    setToggling(true);
+    try {
+      if (isEnabled) {
+        await api.flows.disable(selectedFlow.name);
+        setIsEnabled(false);
+      } else {
+        await api.flows.enable(selectedFlow.name);
+        setIsEnabled(true);
+      }
+    } catch {
+      // Revert on error — keep current state
+    } finally {
+      setToggling(false);
+    }
+  }, [selectedFlow, isEnabled, toggling]);
 
   // Compute expanded edges for GraphView
   const graphEdges = selectedFlow ? expandEdges(selectedFlow.edges) : [];
@@ -63,15 +84,24 @@ export function FlowLibrary() {
         <>
           <div className="flow-library-header">
             <h2>{selectedFlow.name}</h2>
-            {selectedFlow.is_valid && (
+            <div className="flow-controls">
               <button
-                className="start-run-btn"
-                data-testid="start-run-btn"
-                onClick={() => setShowStartModal(true)}
+                className={`flow-toggle ${isEnabled ? 'enabled' : 'disabled'}`}
+                onClick={toggleEnabled}
+                disabled={toggling}
               >
-                Start Flow
+                {isEnabled ? '\u25CF Enabled' : '\u25CB Disabled'}
               </button>
-            )}
+              {selectedFlow.is_valid && (
+                <button
+                  className="submit-task-btn"
+                  data-testid="submit-task-btn"
+                  onClick={() => setShowTaskModal(true)}
+                >
+                  Submit Task
+                </button>
+              )}
+            </div>
           </div>
 
           {!selectedFlow.is_valid && (
@@ -83,7 +113,7 @@ export function FlowLibrary() {
               <GraphView nodes={graphNodes} edges={graphEdges} readOnly />
             </div>
             <div className="flow-library-detail-sidebar">
-              <FlowDetailPanel flow={selectedFlow} />
+              <FlowDetailPanel flow={selectedFlow} isEnabled={isEnabled} />
             </div>
           </div>
         </>
@@ -95,10 +125,12 @@ export function FlowLibrary() {
         )
       )}
 
-      {showStartModal && selectedFlow && (
-        <StartRunModal
-          flow={selectedFlow}
-          onClose={() => setShowStartModal(false)}
+      {showTaskModal && selectedFlow && (
+        <TaskModal
+          flowName={selectedFlow.name}
+          flowParams={selectedFlow.params}
+          onClose={() => setShowTaskModal(false)}
+          onSubmit={() => setShowTaskModal(false)}
         />
       )}
     </div>

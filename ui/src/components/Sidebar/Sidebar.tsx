@@ -182,8 +182,14 @@ export function Sidebar() {
                   }}
                 >
                   <span
-                    className={`validity-dot ${flow.is_valid ? 'valid' : 'invalid'}`}
-                    aria-label={flow.is_valid ? 'Valid' : 'Has errors'}
+                    className={`validity-dot ${flow.is_valid ? (flow.enabled !== false ? 'valid' : 'disabled') : 'invalid'}`}
+                    aria-label={
+                      flow.is_valid
+                        ? flow.enabled !== false
+                          ? 'Enabled'
+                          : 'Disabled'
+                        : 'Has errors'
+                    }
                   />
                   <span className="sidebar-item-name">{flow.name}</span>
                   {taskCount > 0 && (

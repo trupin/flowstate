@@ -8,6 +8,7 @@ import './FlowDetailPanel.css';
 
 interface FlowDetailPanelProps {
   flow: DiscoveredFlow;
+  isEnabled?: boolean;
 }
 
 function formatBudget(seconds: number): string {
@@ -59,7 +60,7 @@ const STATUS_SYMBOLS: Record<string, string> = {
   created: '\u25CB',
 };
 
-export function FlowDetailPanel({ flow }: FlowDetailPanelProps) {
+export function FlowDetailPanel({ flow, isEnabled }: FlowDetailPanelProps) {
   const navigate = useNavigate();
   const [recentRuns, setRecentRuns] = useState<FlowRun[]>([]);
   const [sourceExpanded, setSourceExpanded] = useState(false);
@@ -130,6 +131,17 @@ export function FlowDetailPanel({ flow }: FlowDetailPanelProps) {
         <section className="flow-detail-section">
           <h3 className="flow-detail-section-title">Settings</h3>
           <div className="flow-settings-grid">
+            {isEnabled !== undefined && (
+              <>
+                <span className="flow-settings-key">Status</span>
+                <span
+                  className={`flow-settings-value ${isEnabled ? 'flow-enabled' : 'flow-disabled'}`}
+                >
+                  {isEnabled ? 'Enabled' : 'Disabled'}
+                </span>
+              </>
+            )}
+
             <span className="flow-settings-key">Budget</span>
             <span className="flow-settings-value">
               {formatBudget(ast.budget_seconds)}
