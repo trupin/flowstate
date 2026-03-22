@@ -120,6 +120,7 @@
 | UI-026 | Flow library: side panel layout + centered graph         | ui     | P1       | UI-023, UI-025                         | done   |
 | UI-027 | "NaNd ago" in recent runs — guard time formatters        | ui     | P0       | —                                      | done   |
 | UI-028 | Clickable paths open in IDE + settings panel             | ui     | P1       | UI-022                                 | done   |
+| UI-029 | Graph doesn't refit when nodes expand or log panel opens | ui     | P0       | UI-025                                 | done   |
 
 
 ### Phase 5 — Integration

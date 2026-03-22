@@ -7,6 +7,7 @@ import {
   useReactFlow,
   type Node,
   type Edge,
+  type NodeChange,
 } from '@xyflow/react';
 import '@xyflow/react/dist/style.css';
 import dagre from 'dagre';
@@ -230,46 +231,59 @@ function GraphViewInner({
     [onNodeClick],
   );
 
+  // Debounced fitView helper — waits for React Flow to re-measure nodes
+  const fitTimerRef = useRef<ReturnType<typeof setTimeout>>();
+  const scheduleFitView = useCallback(
+    (delay = 100) => {
+      if (fitTimerRef.current) clearTimeout(fitTimerRef.current);
+      fitTimerRef.current = setTimeout(() => {
+        const duration = mountedRef.current ? 200 : 0;
+        fitView({ duration, padding: 0.15 });
+      }, delay);
+    },
+    [fitView],
+  );
+
   // Re-fit when container size changes (e.g., detail panel opens/closes)
   useEffect(() => {
     const el = containerRef.current;
     if (!el) return;
 
-    let rafId: number | undefined;
     const observer = new ResizeObserver(() => {
-      // Cancel any pending frame to debounce rapid resize events
-      if (rafId !== undefined) {
-        cancelAnimationFrame(rafId);
-      }
-      rafId = requestAnimationFrame(() => {
-        // Skip animation on initial mount; animate on subsequent resizes
-        const duration = mountedRef.current ? 200 : 0;
-        fitView({ duration, padding: 0.15 });
-      });
+      // Delay to let React Flow re-measure node dimensions after layout shift
+      scheduleFitView(150);
     });
     observer.observe(el);
-    return () => {
-      if (rafId !== undefined) {
-        cancelAnimationFrame(rafId);
-      }
-      observer.disconnect();
-    };
-  }, [fitView]);
+    return () => observer.disconnect();
+  }, [scheduleFitView]);
 
-  // Fit view when nodes change count (new nodes added or removed)
+  // Re-fit when node dimensions change (e.g., node expanded/collapsed on click)
+  const handleNodesChange = useCallback(
+    (changes: NodeChange<Node<NodePillData>>[]) => {
+      if (changes.some((c) => c.type === 'dimensions')) {
+        scheduleFitView(100);
+      }
+    },
+    [scheduleFitView],
+  );
+
+  // Fit view when nodes count changes (new nodes added or removed)
   useEffect(() => {
     if (!mountedRef.current) {
-      // Mark as mounted after initial render settles
       const timer = setTimeout(() => {
         mountedRef.current = true;
       }, 300);
       return () => clearTimeout(timer);
     }
-    const timer = setTimeout(() => {
-      fitView({ padding: 0.15, duration: 200 });
-    }, 100);
-    return () => clearTimeout(timer);
-  }, [nodes.length, fitView]);
+    scheduleFitView(100);
+  }, [nodes.length, scheduleFitView]);
+
+  // Cleanup timer on unmount
+  useEffect(() => {
+    return () => {
+      if (fitTimerRef.current) clearTimeout(fitTimerRef.current);
+    };
+  }, []);
 
   return (
     <div ref={containerRef} className="graph-view">
@@ -278,6 +292,7 @@ function GraphViewInner({
         edges={layouted.edges}
         nodeTypes={nodeTypes}
         onNodeClick={handleNodeClick}
+        onNodesChange={handleNodesChange}
         nodesDraggable={!readOnly}
         nodesConnectable={false}
         elementsSelectable={!readOnly}
