@@ -3424,3 +3424,450 @@ class TestTaskAwareExecution:
         run = db.get_flow_run(flow_run_id)
         assert run is not None
         assert run.task_id == task_id
+
+
+# ---------------------------------------------------------------------------
+# Cross-flow task filing (ENGINE-028)
+# ---------------------------------------------------------------------------
+
+
+def _make_file_edge_flow(
+    target_flow: str = "child-flow",
+    workspace: str = "/workspace",
+) -> Flow:
+    """Build a flow with a FILE edge: start -> work -files-> child-flow, work -> finish."""
+    nodes: dict[str, Node] = {
+        "start": Node(name="start", node_type=NodeType.ENTRY, prompt="Do the start step"),
+        "work": Node(name="work", node_type=NodeType.TASK, prompt="Do the work step"),
+        "finish": Node(name="finish", node_type=NodeType.EXIT, prompt="Do the finish step"),
+    }
+
+    edges = (
+        Edge(
+            edge_type=EdgeType.UNCONDITIONAL,
+            source="start",
+            target="work",
+        ),
+        Edge(
+            edge_type=EdgeType.UNCONDITIONAL,
+            source="work",
+            target="finish",
+        ),
+        Edge(
+            edge_type=EdgeType.FILE,
+            source="work",
+            target=target_flow,
+        ),
+    )
+
+    return Flow(
+        name="file-edge-flow",
+        budget_seconds=3600,
+        on_error=ErrorPolicy.PAUSE,
+        context=ContextMode.HANDOFF,
+        workspace=workspace,
+        nodes=nodes,
+        edges=edges,
+    )
+
+
+def _make_await_edge_flow(
+    target_flow: str = "child-flow",
+    workspace: str = "/workspace",
+) -> Flow:
+    """Build a flow with an AWAIT edge: start -> work -awaits-> child-flow, work -> finish."""
+    nodes: dict[str, Node] = {
+        "start": Node(name="start", node_type=NodeType.ENTRY, prompt="Do the start step"),
+        "work": Node(name="work", node_type=NodeType.TASK, prompt="Do the work step"),
+        "finish": Node(name="finish", node_type=NodeType.EXIT, prompt="Do the finish step"),
+    }
+
+    edges = (
+        Edge(
+            edge_type=EdgeType.UNCONDITIONAL,
+            source="start",
+            target="work",
+        ),
+        Edge(
+            edge_type=EdgeType.UNCONDITIONAL,
+            source="work",
+            target="finish",
+        ),
+        Edge(
+            edge_type=EdgeType.AWAIT,
+            source="work",
+            target=target_flow,
+        ),
+    )
+
+    return Flow(
+        name="await-edge-flow",
+        budget_seconds=3600,
+        on_error=ErrorPolicy.PAUSE,
+        context=ContextMode.HANDOFF,
+        workspace=workspace,
+        nodes=nodes,
+        edges=edges,
+    )
+
+
+class TestFileEdgeCreatesChildTask:
+    """FILE edge creates a child task in the target flow (async, non-blocking)."""
+
+    async def test_file_edge_creates_child_task(self) -> None:
+        """A FILE edge should create a queued child task in the target flow."""
+        flow = _make_file_edge_flow(target_flow="deploy-flow")
+        db = FlowstateDB(":memory:")
+        subprocess_mgr = MockSubprocessManager()
+        events: list[FlowEvent] = []
+
+        task_id = db.create_task("file-edge-flow", "Parent task")
+
+        executor = FlowExecutor(
+            db=db,
+            event_callback=events.append,
+            subprocess_mgr=subprocess_mgr,
+        )
+
+        flow_run_id = await executor.execute(flow, {}, "/workspace", task_id=task_id)
+
+        # Flow should have completed (FILE edges don't block)
+        run = db.get_flow_run(flow_run_id)
+        assert run is not None
+        assert run.status == "completed"
+
+        # A child task should have been created in the target flow
+        child_tasks = db.list_tasks(flow_name="deploy-flow")
+        assert len(child_tasks) == 1
+        child = child_tasks[0]
+        assert child.flow_name == "deploy-flow"
+        assert child.status == "queued"
+        assert child.parent_task_id == task_id
+        assert child.created_by == "flow:file-edge-flow/node:work"
+
+
+class TestFileEdgeChildTaskMetadata:
+    """FILE edge child task should have correct metadata."""
+
+    async def test_child_task_title_and_description(self) -> None:
+        """Child task title should reference the source node and parent title."""
+        flow = _make_file_edge_flow(target_flow="deploy-flow")
+        db = FlowstateDB(":memory:")
+        subprocess_mgr = MockSubprocessManager()
+        events: list[FlowEvent] = []
+
+        task_id = db.create_task("file-edge-flow", "My parent task")
+
+        executor = FlowExecutor(
+            db=db,
+            event_callback=events.append,
+            subprocess_mgr=subprocess_mgr,
+        )
+
+        await executor.execute(flow, {}, "/workspace", task_id=task_id)
+
+        child_tasks = db.list_tasks(flow_name="deploy-flow")
+        assert len(child_tasks) == 1
+        child = child_tasks[0]
+        assert "work" in child.title
+        assert "My parent task" in child.title
+        # Description should contain something (summary or fallback)
+        assert child.description is not None
+        assert len(child.description) > 0
+
+    async def test_child_task_inherits_params(self) -> None:
+        """Child task should inherit parent task params."""
+        flow = _make_file_edge_flow(target_flow="deploy-flow")
+        db = FlowstateDB(":memory:")
+        subprocess_mgr = MockSubprocessManager()
+        events: list[FlowEvent] = []
+
+        task_id = db.create_task(
+            "file-edge-flow",
+            "With params",
+            params_json=json.dumps({"env": "production"}),
+        )
+
+        executor = FlowExecutor(
+            db=db,
+            event_callback=events.append,
+            subprocess_mgr=subprocess_mgr,
+        )
+
+        await executor.execute(flow, {}, "/workspace", task_id=task_id)
+
+        child_tasks = db.list_tasks(flow_name="deploy-flow")
+        assert len(child_tasks) == 1
+        child = child_tasks[0]
+        assert child.params_json is not None
+        params = json.loads(child.params_json)
+        assert params["env"] == "production"
+
+
+class TestFileEdgeDoesNotBlockFlow:
+    """FILE edge should not block the current flow execution."""
+
+    async def test_flow_continues_after_file_edge(self) -> None:
+        """All normal nodes complete even when a FILE edge fires."""
+        flow = _make_file_edge_flow()
+        db = FlowstateDB(":memory:")
+        subprocess_mgr = MockSubprocessManager()
+        events: list[FlowEvent] = []
+
+        task_id = db.create_task("file-edge-flow", "Continue flowing")
+
+        executor = FlowExecutor(
+            db=db,
+            event_callback=events.append,
+            subprocess_mgr=subprocess_mgr,
+        )
+
+        flow_run_id = await executor.execute(flow, {}, "/workspace", task_id=task_id)
+
+        # All 3 node task executions should exist (start, work, finish)
+        task_execs = db.list_task_executions(flow_run_id)
+        assert len(task_execs) == 3
+        node_names = [t.node_name for t in task_execs]
+        assert node_names == ["start", "work", "finish"]
+        for t in task_execs:
+            assert t.status == "completed"
+
+
+class TestFileEdgeDepthLimit:
+    """Depth limit prevents infinite filing chains."""
+
+    async def test_depth_limit_prevents_deep_filing(self) -> None:
+        """When parent chain exceeds 10, FILE edges should be skipped."""
+        flow = _make_file_edge_flow(target_flow="deep-flow")
+        db = FlowstateDB(":memory:")
+        subprocess_mgr = MockSubprocessManager()
+        events: list[FlowEvent] = []
+
+        # Create a chain of 11 parent tasks
+        parent_ids: list[str] = []
+        prev_id: str | None = None
+        for i in range(11):
+            tid = db.create_task(
+                "file-edge-flow",
+                f"Task depth {i}",
+                parent_task_id=prev_id,
+            )
+            parent_ids.append(tid)
+            prev_id = tid
+
+        # Use the deepest task as the task_id
+        deepest_task_id = parent_ids[-1]
+
+        executor = FlowExecutor(
+            db=db,
+            event_callback=events.append,
+            subprocess_mgr=subprocess_mgr,
+        )
+
+        await executor.execute(flow, {}, "/workspace", task_id=deepest_task_id)
+
+        # No child task should have been created (depth limit reached)
+        child_tasks = db.list_tasks(flow_name="deep-flow")
+        assert len(child_tasks) == 0
+
+    async def test_within_depth_limit_files_normally(self) -> None:
+        """A task at depth 5 should still file normally."""
+        flow = _make_file_edge_flow(target_flow="shallow-flow")
+        db = FlowstateDB(":memory:")
+        subprocess_mgr = MockSubprocessManager()
+        events: list[FlowEvent] = []
+
+        # Create a chain of 5 parent tasks (depth 5, under limit of 10)
+        prev_id: str | None = None
+        for i in range(5):
+            prev_id = db.create_task(
+                "file-edge-flow",
+                f"Task depth {i}",
+                parent_task_id=prev_id,
+            )
+
+        executor = FlowExecutor(
+            db=db,
+            event_callback=events.append,
+            subprocess_mgr=subprocess_mgr,
+        )
+
+        await executor.execute(flow, {}, "/workspace", task_id=prev_id)
+
+        # Child task should be created (within depth limit)
+        child_tasks = db.list_tasks(flow_name="shallow-flow")
+        assert len(child_tasks) == 1
+
+
+class TestFileEdgeActivityLog:
+    """Activity log should be emitted for filed tasks."""
+
+    async def test_activity_log_emitted_for_file_edge(self) -> None:
+        """A system activity log should be emitted when a FILE edge fires."""
+        flow = _make_file_edge_flow(target_flow="deploy-flow")
+        db = FlowstateDB(":memory:")
+        subprocess_mgr = MockSubprocessManager()
+        events: list[FlowEvent] = []
+
+        task_id = db.create_task("file-edge-flow", "Log me")
+
+        executor = FlowExecutor(
+            db=db,
+            event_callback=events.append,
+            subprocess_mgr=subprocess_mgr,
+        )
+
+        await executor.execute(flow, {}, "/workspace", task_id=task_id)
+
+        # Find activity log events that mention filing
+        activity_events = [
+            e
+            for e in events
+            if e.type == EventType.TASK_LOG and e.payload.get("log_type") == "system"
+        ]
+        activity_messages: list[str] = []
+        for e in activity_events:
+            content = e.payload.get("content", "")
+            try:
+                parsed = json.loads(content)
+                if isinstance(parsed, dict):
+                    activity_messages.append(parsed.get("message", ""))
+            except (json.JSONDecodeError, TypeError):
+                pass
+        filed_messages = [m for m in activity_messages if "Filed task to deploy-flow" in m]
+        assert len(filed_messages) == 1
+
+
+class TestFileEdgeWithoutTaskId:
+    """FILE edge should still create child task even without parent task_id."""
+
+    async def test_file_edge_without_task_id(self) -> None:
+        """FILE edge fires even when executor has no task_id (no depth check)."""
+        flow = _make_file_edge_flow(target_flow="orphan-flow")
+        db = FlowstateDB(":memory:")
+        subprocess_mgr = MockSubprocessManager()
+        events: list[FlowEvent] = []
+
+        executor = FlowExecutor(
+            db=db,
+            event_callback=events.append,
+            subprocess_mgr=subprocess_mgr,
+        )
+
+        # Execute without task_id
+        flow_run_id = await executor.execute(flow, {}, "/workspace")
+
+        run = db.get_flow_run(flow_run_id)
+        assert run is not None
+        assert run.status == "completed"
+
+        # Child task should exist with no parent_task_id
+        child_tasks = db.list_tasks(flow_name="orphan-flow")
+        assert len(child_tasks) == 1
+        child = child_tasks[0]
+        assert child.parent_task_id is None
+        assert child.created_by == "flow:file-edge-flow/node:work"
+
+
+class TestAwaitEdgeCreatesChildTask:
+    """AWAIT edge creates a child task and sets current task to waiting."""
+
+    async def test_await_edge_creates_child_task(self) -> None:
+        """An AWAIT edge should create a child task in the target flow."""
+        flow = _make_await_edge_flow(target_flow="blocking-flow")
+        db = FlowstateDB(":memory:")
+        subprocess_mgr = MockSubprocessManager()
+        events: list[FlowEvent] = []
+
+        task_id = db.create_task("await-edge-flow", "Wait for child")
+
+        executor = FlowExecutor(
+            db=db,
+            event_callback=events.append,
+            subprocess_mgr=subprocess_mgr,
+        )
+
+        # Run in background since AWAIT blocks. Complete the child after
+        # a short delay so the executor can finish.
+        async def complete_child_after_delay() -> None:
+            """Find and complete the child task after it's created."""
+            for _ in range(100):
+                await asyncio.sleep(0.05)
+                child_tasks = db.list_tasks(flow_name="blocking-flow")
+                if child_tasks:
+                    child = child_tasks[0]
+                    if child.status == "queued":
+                        db.update_task_queue_status(child.id, "completed")
+                        return
+
+        # Start executor and child completer concurrently
+        execute_task = asyncio.create_task(
+            executor.execute(flow, {}, "/workspace", task_id=task_id)
+        )
+        helper_task = asyncio.create_task(complete_child_after_delay())
+
+        flow_run_id = await asyncio.wait_for(execute_task, timeout=10)
+        await helper_task
+
+        # Flow should complete after child task finishes
+        run = db.get_flow_run(flow_run_id)
+        assert run is not None
+        assert run.status == "completed"
+
+        # Child task should exist
+        child_tasks = db.list_tasks(flow_name="blocking-flow")
+        assert len(child_tasks) == 1
+        child = child_tasks[0]
+        assert child.parent_task_id == task_id
+        assert child.created_by == "flow:await-edge-flow/node:work"
+
+
+class TestAwaitEdgeSetsWaitingStatus:
+    """AWAIT edge should set the current task to 'waiting' status."""
+
+    async def test_task_set_to_waiting_during_await(self) -> None:
+        """While waiting for a child, the parent task should be in 'waiting' status."""
+        flow = _make_await_edge_flow(target_flow="wait-flow")
+        db = FlowstateDB(":memory:")
+        subprocess_mgr = MockSubprocessManager()
+        events: list[FlowEvent] = []
+
+        task_id = db.create_task("await-edge-flow", "Check waiting status")
+
+        executor = FlowExecutor(
+            db=db,
+            event_callback=events.append,
+            subprocess_mgr=subprocess_mgr,
+        )
+
+        waiting_observed = False
+
+        async def observe_and_complete() -> None:
+            """Observe the waiting status, then complete the child."""
+            nonlocal waiting_observed
+            for _ in range(100):
+                await asyncio.sleep(0.05)
+                # Check if parent task is waiting
+                task = db.get_task(task_id)
+                if task and task.status == "waiting":
+                    waiting_observed = True
+                    # Now complete the child
+                    child_tasks = db.list_tasks(flow_name="wait-flow")
+                    if child_tasks:
+                        db.update_task_queue_status(child_tasks[0].id, "completed")
+                        return
+
+        execute_task = asyncio.create_task(
+            executor.execute(flow, {}, "/workspace", task_id=task_id)
+        )
+        helper_task = asyncio.create_task(observe_and_complete())
+
+        await asyncio.wait_for(execute_task, timeout=10)
+        await helper_task
+
+        assert waiting_observed, "Parent task was never observed in 'waiting' status"
+
+        # After completion, parent task should be back to running or completed
+        final_task = db.get_task(task_id)
+        assert final_task is not None
+        assert final_task.status == "completed"

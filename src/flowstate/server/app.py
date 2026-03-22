@@ -181,9 +181,25 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None]:
 
     app.state.flow_registry = registry
     await registry.start()
+
+    # Initialize queue manager (SHARED-003: task queue model)
+    from flowstate.engine.queue_manager import QueueManager
+
+    queue_manager = QueueManager(
+        db=db,
+        flow_registry=registry,
+        run_manager=run_manager,
+        subprocess_mgr=app.state.subprocess_manager,
+        ws_hub=ws_hub,
+        config=config,
+    )
+    app.state.queue_manager = queue_manager
+    await queue_manager.start()
+
     try:
         yield
     finally:
+        await queue_manager.stop()
         await run_manager.shutdown()
         await registry.stop()
         db.close()

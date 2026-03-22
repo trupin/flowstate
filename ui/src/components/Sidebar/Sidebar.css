@@ -148,6 +148,70 @@
   background-color: var(--warning);
 }
 
+/* Flow group with task sub-items */
+.sidebar-flow-group {
+  /* no extra styles needed, just a grouping container */
+}
+
+/* Task badge next to flow name */
+.sidebar-task-badge {
+  font-size: 10px;
+  font-weight: 600;
+  min-width: 16px;
+  height: 16px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 8px;
+  background: var(--accent);
+  color: #fff;
+  flex-shrink: 0;
+  line-height: 1;
+}
+
+/* Task sub-items under a flow */
+.sidebar-task-sub-item {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 12px 4px 32px;
+  cursor: pointer;
+  font-size: 12px;
+  color: var(--text-secondary);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.sidebar-task-sub-item:hover {
+  background: var(--bg-tertiary);
+  color: var(--text-primary);
+}
+
+.sidebar-task-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+
+.sidebar-task-dot.running {
+  background: var(--status-running);
+}
+
+.sidebar-task-dot.queued {
+  border: 1px solid var(--text-secondary);
+  background: transparent;
+}
+
+.sidebar-task-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  flex: 1;
+  min-width: 0;
+}
+
 /* Sidebar footer with settings button */
 .sidebar-footer {
   margin-top: auto;

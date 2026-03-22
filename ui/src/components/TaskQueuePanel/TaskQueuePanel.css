@@ -1,0 +1,158 @@
+/* --- TaskQueuePanel --- */
+
+.task-queue-panel {
+  margin-bottom: 20px;
+}
+
+.task-queue-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 10px;
+}
+
+.task-queue-title {
+  font-size: 12px;
+  text-transform: uppercase;
+  letter-spacing: 0.8px;
+  color: var(--text-secondary);
+  margin: 0;
+  font-weight: 600;
+}
+
+.task-queue-add-btn {
+  font-size: 11px;
+  padding: 3px 10px;
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #fff;
+  font-weight: 500;
+  border-radius: 4px;
+}
+
+.task-queue-add-btn:hover {
+  opacity: 0.9;
+}
+
+/* Group labels */
+.task-queue-group {
+  margin-bottom: 10px;
+}
+
+.task-queue-group-label {
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  color: var(--text-secondary);
+  margin-bottom: 4px;
+  font-weight: 600;
+}
+
+/* Task items */
+.task-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 10px;
+  background: var(--bg-secondary);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  font-size: 12px;
+  margin-bottom: 4px;
+}
+
+.task-item:last-child {
+  margin-bottom: 0;
+}
+
+/* Status indicator dots */
+.task-status-indicator {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+
+.task-status-indicator.running {
+  background: var(--status-running);
+  box-shadow: 0 0 4px var(--status-running);
+}
+
+.task-status-indicator.queued {
+  border: 1.5px solid var(--text-secondary);
+  background: transparent;
+}
+
+.task-status-indicator.completed {
+  background: var(--status-completed);
+}
+
+.task-status-indicator.failed {
+  background: var(--status-failed);
+}
+
+.task-item-title {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--text-primary);
+}
+
+.task-item-node {
+  font-size: 11px;
+  color: var(--text-secondary);
+  font-family: var(--font-mono);
+  flex-shrink: 0;
+}
+
+.task-item-status {
+  font-size: 11px;
+  color: var(--text-secondary);
+  flex-shrink: 0;
+}
+
+/* Action buttons on task items */
+.task-action-btn {
+  background: none;
+  border: none;
+  color: var(--text-secondary);
+  font-size: 13px;
+  cursor: pointer;
+  padding: 0 4px;
+  line-height: 1;
+  flex-shrink: 0;
+  opacity: 0;
+  transition: opacity 0.1s;
+}
+
+.task-item:hover .task-action-btn {
+  opacity: 1;
+}
+
+.task-action-btn:hover {
+  color: var(--text-primary);
+  background: none;
+}
+
+.task-cancel-btn:hover,
+.task-remove-btn:hover {
+  color: var(--error);
+}
+
+.task-edit-btn:hover {
+  color: var(--accent);
+}
+
+/* Empty state */
+.task-queue-empty {
+  padding: 12px 10px;
+  color: var(--text-secondary);
+  font-size: 12px;
+  font-style: italic;
+  text-align: center;
+  background: var(--bg-secondary);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+}

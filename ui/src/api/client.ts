@@ -5,6 +5,7 @@ import type {
   FlowSchedule,
   LogEntry,
   OrchestratorInfo,
+  QueuedTask,
   StartRunRequest,
 } from './types';
 
@@ -107,6 +108,48 @@ export const api = {
     pause: (id: string) => post<void>(`/api/schedules/${id}/pause`),
     resume: (id: string) => post<void>(`/api/schedules/${id}/resume`),
     trigger: (id: string) => post<void>(`/api/schedules/${id}/trigger`),
+  },
+  tasks: {
+    submit: (
+      flowName: string,
+      data: {
+        title: string;
+        description?: string;
+        params?: Record<string, unknown>;
+        priority?: number;
+      },
+    ) => post<QueuedTask>(`/api/flows/${flowName}/tasks`, data),
+    list: (flowName?: string, status?: string) => {
+      const params = new URLSearchParams();
+      if (status) params.set('status', status);
+      const query = params.toString();
+      const url = flowName ? `/api/flows/${flowName}/tasks` : '/api/tasks';
+      return get<QueuedTask[]>(query ? `${url}?${query}` : url);
+    },
+    get: (taskId: string) => get<QueuedTask>(`/api/tasks/${taskId}`),
+    cancel: (taskId: string) =>
+      post<{ status: string }>(`/api/tasks/${taskId}/cancel`, {}),
+    update: (
+      taskId: string,
+      data: Partial<{
+        title: string;
+        description: string;
+        params: Record<string, unknown>;
+        priority: number;
+      }>,
+    ) =>
+      request<QueuedTask>(`/api/tasks/${taskId}`, {
+        method: 'PATCH',
+        body: JSON.stringify(data),
+      }),
+    remove: (taskId: string) =>
+      request<{ status: string }>(`/api/tasks/${taskId}`, {
+        method: 'DELETE',
+      }),
+    reorder: (flowName: string, taskIds: string[]) =>
+      post<{ status: string }>(`/api/flows/${flowName}/tasks/reorder`, {
+        task_ids: taskIds,
+      }),
   },
   open: (path: string, command?: string) =>
     post<{ status: string; path: string; command: string }>('/api/open', {

@@ -176,6 +176,47 @@ export interface StartRunRequest {
   params?: Record<string, string | number | boolean>;
 }
 
+// --- Task queue types ---
+
+export type QueuedTaskStatus =
+  | 'queued'
+  | 'running'
+  | 'waiting'
+  | 'completed'
+  | 'failed'
+  | 'cancelled'
+  | 'paused';
+
+export interface QueuedTaskNodeHistory {
+  id: number;
+  task_id: string;
+  node_name: string;
+  flow_run_id?: string;
+  started_at?: string;
+  completed_at?: string;
+}
+
+export interface QueuedTask {
+  id: string;
+  flow_name: string;
+  title: string;
+  description?: string;
+  status: QueuedTaskStatus;
+  current_node?: string;
+  params_json?: string;
+  output_json?: string;
+  parent_task_id?: string;
+  created_by?: string;
+  flow_run_id?: string;
+  priority: number;
+  created_at: string;
+  started_at?: string;
+  completed_at?: string;
+  error_message?: string;
+  history?: QueuedTaskNodeHistory[];
+  children?: QueuedTask[];
+}
+
 // --- WebSocket event types ---
 
 export interface FlowEvent {

@@ -2,6 +2,7 @@ import { useState, useEffect, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { api } from '../../api/client';
 import { ClickablePath } from '../ClickablePath';
+import { TaskQueuePanel } from '../TaskQueuePanel';
 import type { DiscoveredFlow, FlowRun, EdgeType } from '../../api/types';
 import './FlowDetailPanel.css';
 
@@ -235,6 +236,9 @@ export function FlowDetailPanel({ flow }: FlowDetailPanelProps) {
           </div>
         </section>
       )}
+
+      {/* Task Queue */}
+      <TaskQueuePanel flowName={flow.name} flowParams={flow.params} />
 
       {/* Recent runs */}
       <section className="flow-detail-section">

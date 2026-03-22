@@ -69,7 +69,7 @@ export function FlowLibrary() {
                 data-testid="start-run-btn"
                 onClick={() => setShowStartModal(true)}
               >
-                Start Run
+                Start Flow
               </button>
             )}
           </div>

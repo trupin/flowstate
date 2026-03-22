@@ -3,7 +3,7 @@ import { useNavigate } from 'react-router-dom';
 import { api } from '../../api/client';
 import { useFlowWatcher } from '../../hooks/useFlowWatcher';
 import { SettingsPanel } from '../SettingsPanel';
-import type { FlowRun, FlowSchedule } from '../../api/types';
+import type { FlowRun, FlowSchedule, QueuedTask } from '../../api/types';
 import './Sidebar.css';
 
 interface SidebarSectionProps {
@@ -81,6 +81,9 @@ export function Sidebar() {
   const [activeRuns, setActiveRuns] = useState<FlowRun[]>([]);
   const [recentRuns, setRecentRuns] = useState<FlowRun[]>([]);
   const [schedules, setSchedules] = useState<FlowSchedule[]>([]);
+  const [flowTasks, setFlowTasks] = useState<Map<string, QueuedTask[]>>(
+    new Map(),
+  );
   const [showSettings, setShowSettings] = useState(false);
   const [collapsed, setCollapsed] = useState({
     flows: false,
@@ -121,6 +124,32 @@ export function Sidebar() {
       });
   }, []);
 
+  // Fetch tasks for each flow and poll every 3 seconds
+  useEffect(() => {
+    const fetchTasks = () => {
+      api.tasks
+        .list()
+        .then((allTasks) => {
+          const grouped = new Map<string, QueuedTask[]>();
+          for (const task of allTasks) {
+            const active =
+              task.status === 'running' || task.status === 'queued';
+            if (!active) continue;
+            const existing = grouped.get(task.flow_name) ?? [];
+            existing.push(task);
+            grouped.set(task.flow_name, existing);
+          }
+          setFlowTasks(grouped);
+        })
+        .catch(() => {
+          // silently ignore fetch errors
+        });
+    };
+    fetchTasks();
+    const interval = setInterval(fetchTasks, 3000);
+    return () => clearInterval(interval);
+  }, []);
+
   return (
     <aside className="sidebar" aria-label="Navigation sidebar">
       <div className="sidebar-brand">FLOWSTATE</div>
@@ -133,29 +162,57 @@ export function Sidebar() {
         {flows.length === 0 ? (
           <div className="sidebar-empty">No flows found</div>
         ) : (
-          flows.map((flow) => (
-            <div
-              key={flow.id}
-              className="sidebar-item"
-              data-testid={`sidebar-flow-${flow.name}`}
-              data-status={flow.is_valid ? 'valid' : 'error'}
-              onClick={() => navigate(`/?flow=${flow.id}`)}
-              role="button"
-              tabIndex={0}
-              onKeyDown={(e) => {
-                if (e.key === 'Enter' || e.key === ' ') {
-                  e.preventDefault();
-                  navigate(`/?flow=${flow.id}`);
-                }
-              }}
-            >
-              <span
-                className={`validity-dot ${flow.is_valid ? 'valid' : 'invalid'}`}
-                aria-label={flow.is_valid ? 'Valid' : 'Has errors'}
-              />
-              <span className="sidebar-item-name">{flow.name}</span>
-            </div>
-          ))
+          flows.map((flow) => {
+            const tasks = flowTasks.get(flow.name) ?? [];
+            const taskCount = tasks.length;
+            return (
+              <div key={flow.id} className="sidebar-flow-group">
+                <div
+                  className="sidebar-item"
+                  data-testid={`sidebar-flow-${flow.name}`}
+                  data-status={flow.is_valid ? 'valid' : 'error'}
+                  onClick={() => navigate(`/?flow=${flow.id}`)}
+                  role="button"
+                  tabIndex={0}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter' || e.key === ' ') {
+                      e.preventDefault();
+                      navigate(`/?flow=${flow.id}`);
+                    }
+                  }}
+                >
+                  <span
+                    className={`validity-dot ${flow.is_valid ? 'valid' : 'invalid'}`}
+                    aria-label={flow.is_valid ? 'Valid' : 'Has errors'}
+                  />
+                  <span className="sidebar-item-name">{flow.name}</span>
+                  {taskCount > 0 && (
+                    <span className="sidebar-task-badge">{taskCount}</span>
+                  )}
+                </div>
+                {tasks.map((task) => (
+                  <div
+                    key={task.id}
+                    className="sidebar-task-sub-item"
+                    onClick={() => navigate(`/tasks/${task.id}`)}
+                    role="button"
+                    tabIndex={0}
+                    onKeyDown={(e) => {
+                      if (e.key === 'Enter' || e.key === ' ') {
+                        e.preventDefault();
+                        navigate(`/tasks/${task.id}`);
+                      }
+                    }}
+                  >
+                    <span
+                      className={`sidebar-task-dot ${task.status === 'running' ? 'running' : 'queued'}`}
+                    />
+                    <span className="sidebar-task-name">{task.title}</span>
+                  </div>
+                ))}
+              </div>
+            );
+          })
         )}
       </SidebarSection>
 

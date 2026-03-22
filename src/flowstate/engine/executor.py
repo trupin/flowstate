@@ -494,10 +494,13 @@ class FlowExecutor:
             self._complete_flow(flow_run_id, budget)
             return True
 
-        # Evaluate outgoing edges
-        outgoing = _get_outgoing_edges(flow, task_exec.node_name)
+        # Evaluate outgoing edges -- separate cross-flow edges (FILE/AWAIT)
+        all_outgoing = _get_outgoing_edges(flow, task_exec.node_name)
+        outgoing = [e for e in all_outgoing if e.edge_type not in (EdgeType.FILE, EdgeType.AWAIT)]
+        file_edges = [e for e in all_outgoing if e.edge_type == EdgeType.FILE]
+        await_edges = [e for e in all_outgoing if e.edge_type == EdgeType.AWAIT]
 
-        if not outgoing:
+        if not outgoing and not file_edges and not await_edges:
             # Check if this is a fork group member -- fork members have no outgoing edges
             # because the join check handles the continuation
             fork_info = _get_fork_group_for_member(completed_id, flow_run_id, self._db)
@@ -611,6 +614,14 @@ class FlowExecutor:
             await self._check_fork_join_completion(
                 fork_info[0], flow_run_id, flow, expanded_prompts, data_dir, budget, pending
             )
+
+        # Handle FILE edges: async cross-flow task filing (ENGINE-028)
+        for edge in file_edges:
+            await self._handle_file_edge(edge, completed_id, flow_run_id, flow)
+
+        # Handle AWAIT edges: sync cross-flow task filing (ENGINE-028)
+        if await_edges:
+            await self._handle_await_edges(await_edges, completed_id, flow_run_id, flow)
 
         # Update flow run elapsed
         self._db.update_flow_run_elapsed(flow_run_id, budget.elapsed)
@@ -1212,6 +1223,153 @@ class FlowExecutor:
             self._db.update_task_status(task_id, "pending", claude_session_id=claude_session_id)
 
         return task_id
+
+    # ------------------------------------------------------------------ #
+    # Cross-flow task filing (ENGINE-028)
+    # ------------------------------------------------------------------ #
+
+    def _get_task_depth(self, task_id: str) -> int:
+        """Count the parent chain depth to prevent infinite filing."""
+        depth = 0
+        current = self._db.get_task(task_id)
+        while current and current.parent_task_id:
+            depth += 1
+            current = self._db.get_task(current.parent_task_id)
+            if depth > 10:
+                break
+        return depth
+
+    async def _handle_file_edge(
+        self,
+        edge: Edge,
+        source_task_id: str,
+        flow_run_id: str,
+        flow: Flow,
+    ) -> None:
+        """Handle a FILE edge: create a child task in the target flow (async).
+
+        FILE edges fire alongside normal edges as side effects.  The child
+        task is queued for later processing; the current flow continues
+        without waiting.
+        """
+        task_exec = self._db.get_task_execution(source_task_id)
+        if task_exec is None:
+            return
+
+        # Check depth limit (prevent infinite filing chains)
+        if self._task_id:
+            depth = self._get_task_depth(self._task_id)
+            if depth >= 10:
+                logger.warning(
+                    "Task filing depth limit reached (10), skipping file edge to %s",
+                    edge.target,
+                )
+                return
+
+        # Read the source node's SUMMARY.md for the child task description
+        summary = read_summary(task_exec.task_dir) or f"Filed from {task_exec.node_name}"
+
+        # Build child task metadata
+        parent_task = self._db.get_task(self._task_id) if self._task_id else None
+        child_params: dict[str, object] = {}
+        if parent_task and parent_task.params_json:
+            child_params = json.loads(parent_task.params_json)
+        parent_title = parent_task.title if parent_task else "Filed task"
+
+        child_task_id = self._db.create_task(
+            flow_name=edge.target or flow.name,
+            title=f"{task_exec.node_name}: {parent_title}",
+            description=summary,
+            params_json=json.dumps(child_params) if child_params else None,
+            parent_task_id=self._task_id,
+            created_by=f"flow:{flow.name}/node:{task_exec.node_name}",
+        )
+
+        self._emit_activity(
+            flow_run_id,
+            source_task_id,
+            f"Filed task to {edge.target}: {child_task_id[:8]}",
+        )
+
+    async def _handle_await_edges(
+        self,
+        edges: list[Edge],
+        source_task_id: str,
+        flow_run_id: str,
+        flow: Flow,
+    ) -> None:
+        """Handle AWAIT edges: create child tasks and wait for them to complete.
+
+        AWAIT edges block the current flow until every child task reaches a
+        terminal status (completed, failed, or cancelled).
+        """
+        task_exec = self._db.get_task_execution(source_task_id)
+        if task_exec is None:
+            return
+
+        # Check depth limit
+        if self._task_id:
+            depth = self._get_task_depth(self._task_id)
+            if depth >= 10:
+                logger.warning(
+                    "Task filing depth limit reached (10), skipping await edges",
+                )
+                return
+
+        parent_task = self._db.get_task(self._task_id) if self._task_id else None
+        child_params: dict[str, object] = {}
+        if parent_task and parent_task.params_json:
+            child_params = json.loads(parent_task.params_json)
+        parent_title = parent_task.title if parent_task else "Filed task"
+
+        for edge in edges:
+            summary = read_summary(task_exec.task_dir) or f"Awaited from {task_exec.node_name}"
+
+            child_task_id = self._db.create_task(
+                flow_name=edge.target or flow.name,
+                title=f"{task_exec.node_name}: {parent_title}",
+                description=summary,
+                params_json=json.dumps(child_params) if child_params else None,
+                parent_task_id=self._task_id,
+                created_by=f"flow:{flow.name}/node:{task_exec.node_name}",
+            )
+
+            self._emit_activity(
+                flow_run_id,
+                source_task_id,
+                f"Awaiting task in {edge.target}: {child_task_id[:8]}",
+            )
+
+            # Set current task to 'waiting' status
+            if self._task_id:
+                self._db.update_task_queue_status(self._task_id, "waiting")
+
+            # Wait for child task to complete
+            await self._wait_for_child_task(child_task_id, flow_run_id, source_task_id)
+
+    async def _wait_for_child_task(
+        self,
+        child_task_id: str,
+        flow_run_id: str,
+        source_task_id: str,
+    ) -> None:
+        """Poll until a child task reaches a terminal status."""
+        while True:
+            child = self._db.get_task(child_task_id)
+            if child is None:
+                break
+            if child.status in ("completed", "failed", "cancelled"):
+                self._emit_activity(
+                    flow_run_id,
+                    source_task_id,
+                    f"Child task {child_task_id[:8]} finished with status: {child.status}",
+                )
+                break
+            await asyncio.sleep(2)
+
+        # Resume current task
+        if self._task_id:
+            self._db.update_task_queue_status(self._task_id, "running")
 
     # ------------------------------------------------------------------ #
     # Control operations (ENGINE-008)

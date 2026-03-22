@@ -2,6 +2,7 @@ import { BrowserRouter, Routes, Route } from 'react-router-dom';
 import { Sidebar } from './components/Sidebar';
 import { FlowLibrary } from './pages/FlowLibrary';
 import { RunDetail } from './pages/RunDetail';
+import { TaskDetail } from './pages/TaskDetail';
 
 export function App() {
   return (
@@ -18,6 +19,7 @@ export function App() {
           <Routes>
             <Route path="/" element={<FlowLibrary />} />
             <Route path="/runs/:id" element={<RunDetail />} />
+            <Route path="/tasks/:taskId" element={<TaskDetail />} />
           </Routes>
         </main>
       </div>
