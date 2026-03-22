@@ -1,0 +1,43 @@
+flow e2e_cycle {
+    budget = 10m
+    on_error = pause
+    context = handoff
+    workspace = "/tmp/flowstate-e2e-cycle"
+    skip_permissions = true
+
+    entry plan {
+        prompt = """
+        Create a plan.md listing exactly 2 improvements:
+        1. Add type hints to function signatures
+        2. Add docstrings to public functions
+        Mark both as "NOT DONE" in the plan.
+        Also create a sample.py with a bare function: def add(a, b): return a + b
+        """
+    }
+
+    task implement {
+        prompt = """
+        Read plan.md. Pick the first item marked "NOT DONE" and implement it
+        by modifying sample.py. Then mark that item as "DONE" in plan.md.
+        """
+    }
+
+    task verify {
+        prompt = """
+        Read plan.md and sample.py. Check if ALL items in the plan are marked "DONE"
+        and the code reflects the improvements.
+        Write your assessment to verify.txt with a clear verdict.
+        """
+    }
+
+    exit complete {
+        prompt = """
+        All improvements are done. Write SUMMARY.md with what was accomplished.
+        """
+    }
+
+    plan -> implement
+    implement -> verify
+    verify -> complete when "all items in the plan are marked done and verified"
+    verify -> implement when "there are items still not done"
+}

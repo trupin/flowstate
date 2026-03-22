@@ -7,8 +7,8 @@ flow_decl: "flow" NAME "{" flow_body "}"
 flow_body: flow_stmt*
 
 flow_stmt: flow_attr
-         | param_decl
-         | task_type_decl
+         | flow_input_block
+         | flow_output_block
          | node_decl
          | edge_decl
 
@@ -27,17 +27,9 @@ BOOL_LIT.2: "true" | "false"
 ERROR_POLICY.2: "pause" | "abort" | "skip"
 OVERLAP_POLICY.2: "skip" | "queue" | "parallel"
 
-// Parameters
-param_decl: "param" NAME ":" TYPE
-          | "param" NAME ":" TYPE "=" literal
-
-TYPE.2: "string" | "number" | "bool"
-
-// Task type declaration
-task_type_decl: "task" "{" task_type_body "}"
-task_type_body: (task_input_block | task_output_block)*
-task_input_block: "input" "{" task_field_decl* "}"
-task_output_block: "output" "{" task_field_decl* "}"
+// Flow-level input/output blocks
+flow_input_block: "input" "{" task_field_decl* "}"
+flow_output_block: "output" "{" task_field_decl* "}"
 task_field_decl: NAME ":" FIELD_TYPE             -> task_field
               | NAME ":" FIELD_TYPE "=" literal  -> task_field_default
 FIELD_TYPE.2: "string" | "number" | "bool"

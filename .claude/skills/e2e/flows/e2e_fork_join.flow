@@ -1,0 +1,40 @@
+flow e2e_fork_join {
+    budget = 10m
+    on_error = pause
+    context = handoff
+    workspace = "/tmp/flowstate-e2e-forkjoin"
+    skip_permissions = true
+
+    entry analyze {
+        prompt = """
+        Create a plan.md file describing two independent tasks:
+        1. Create a data.json file with sample user data
+        2. Create a schema.json file with a JSON schema
+        """
+    }
+
+    task create_data {
+        prompt = """
+        Create a file called data.json containing an array of 3 sample
+        user objects with fields: name, email, age.
+        """
+    }
+
+    task create_schema {
+        prompt = """
+        Create a file called schema.json containing a JSON Schema that
+        validates user objects with fields: name (string), email (string),
+        age (integer, minimum 0).
+        """
+    }
+
+    exit validate {
+        prompt = """
+        Read data.json and schema.json. Verify the data matches the schema.
+        Write SUMMARY.md with the validation result.
+        """
+    }
+
+    analyze -> [create_data, create_schema]
+    [create_data, create_schema] -> validate
+}

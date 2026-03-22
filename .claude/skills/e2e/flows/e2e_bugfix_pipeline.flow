@@ -1,0 +1,33 @@
+flow e2e_bugfix_pipeline {
+    budget = 5m
+    on_error = pause
+    context = handoff
+    skip_permissions = true
+
+    input {
+        title: string
+        description: string
+    }
+
+    output {
+        fix_status: string
+    }
+
+    entry diagnose {
+        prompt = """
+        Bug to fix: {{title}}
+        Details: {{description}}
+
+        Create FIX.md with a diagnosis and step-by-step fix.
+        """
+    }
+
+    exit resolve {
+        prompt = """
+        Write OUTPUT.json with { "fix_status": "fixed" }.
+        Write SUMMARY.md confirming the fix.
+        """
+    }
+
+    diagnose -> resolve
+}

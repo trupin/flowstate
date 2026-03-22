@@ -1,0 +1,31 @@
+flow e2e_conditional {
+    budget = 10m
+    on_error = pause
+    context = handoff
+    workspace = "/tmp/flowstate-e2e-conditional"
+    skip_permissions = true
+
+    entry implement {
+        prompt = """
+        Create a file called code.py containing a simple Python function
+        that adds two numbers. Include a docstring and type hints.
+        """
+    }
+
+    task review {
+        prompt = """
+        Review code.py. Check for type hints, docstring, and correctness.
+        Write your review to review.txt with a clear verdict: APPROVED or NEEDS_WORK.
+        """
+    }
+
+    exit ship {
+        prompt = """
+        The code passed review. Write SUMMARY.md confirming the code is ready.
+        """
+    }
+
+    implement -> review
+    review -> ship when "the review approves the code and finds no issues"
+    review -> implement when "the review found issues that need fixing"
+}

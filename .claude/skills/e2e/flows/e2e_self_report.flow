@@ -1,0 +1,31 @@
+flow e2e_self_report {
+    budget = 5m
+    on_error = pause
+    context = handoff
+    workspace = "/tmp/flowstate-e2e-self-report"
+    skip_permissions = true
+    judge = false
+
+    entry analyze {
+        prompt = """
+        Create a file called analysis.txt with the text "Analysis complete. Quality: good."
+        """
+    }
+
+    task decide {
+        prompt = """
+        Read analysis.txt and determine the quality level.
+        Based on the content, decide whether to proceed or retry.
+        """
+    }
+
+    exit done {
+        prompt = """
+        Write SUMMARY.md confirming the analysis was accepted.
+        """
+    }
+
+    analyze -> decide
+    decide -> done when "the analysis quality is acceptable"
+    decide -> analyze when "the analysis needs improvement"
+}

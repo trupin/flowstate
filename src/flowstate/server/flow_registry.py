@@ -150,10 +150,10 @@ class FlowRegistry:
                 params = [
                     {
                         "name": p.name,
-                        "type": p.type.value,
+                        "type": p.type,
                         "default_value": p.default,
                     }
-                    for p in flow_ast.params
+                    for p in flow_ast.input_fields
                 ]
         except Exception as e:
             errors = [str(e)]

@@ -16,9 +16,6 @@ from flowstate.dsl.ast import (
     Node,
     NodeType,
     OverlapPolicy,
-    Param,
-    ParamType,
-    TaskType,
     TaskTypeField,
 )
 from flowstate.dsl.exceptions import FlowParseError
@@ -106,15 +103,7 @@ class _FlowTransformer(Transformer[Token, Flow]):
                 return int(text) if "." not in text else float(text)
         return value
 
-    # -- Parameters --
-
-    def param_decl(self, items: list[Token | str | float | bool]) -> Param:
-        name = str(items[0])
-        param_type = ParamType(str(items[1]))
-        default = items[2] if len(items) > 2 else None
-        return Param(name=name, type=param_type, default=default)
-
-    # -- Task type declaration --
+    # -- Flow-level input/output blocks --
 
     def task_field(self, items: list[Token]) -> TaskTypeField:
         name = str(items[0])
@@ -127,26 +116,13 @@ class _FlowTransformer(Transformer[Token, Flow]):
         default = items[2]
         return TaskTypeField(name=name, type=field_type, default=default)
 
-    def task_input_block(self, items: list[TaskTypeField]) -> tuple[str, tuple[TaskTypeField, ...]]:
-        return ("input", tuple(items))
+    def flow_input_block(self, items: list[TaskTypeField]) -> tuple[str, tuple[TaskTypeField, ...]]:
+        return ("input_fields", tuple(items))
 
-    def task_output_block(
+    def flow_output_block(
         self, items: list[TaskTypeField]
     ) -> tuple[str, tuple[TaskTypeField, ...]]:
-        return ("output", tuple(items))
-
-    def task_type_body(self, items: list[tuple[str, tuple[TaskTypeField, ...]]]) -> TaskType:
-        input_fields: tuple[TaskTypeField, ...] = ()
-        output_fields: tuple[TaskTypeField, ...] = ()
-        for key, fields in items:
-            if key == "input":
-                input_fields = fields
-            elif key == "output":
-                output_fields = fields
-        return TaskType(input_fields=input_fields, output_fields=output_fields)
-
-    def task_type_decl(self, items: list[TaskType]) -> tuple[str, TaskType]:
-        return ("task_type", items[0])
+        return ("output_fields", tuple(items))
 
     # -- Node attributes (named alternatives) --
 
@@ -400,20 +376,20 @@ class _FlowTransformer(Transformer[Token, Flow]):
         body_items = items[1] if isinstance(items[1], list) else []
 
         attrs: dict[str, str | int] = {}
-        params: list[Param] = []
-        task_type: TaskType | None = None
+        input_fields: tuple[TaskTypeField, ...] = ()
+        output_fields: tuple[TaskTypeField, ...] = ()
         nodes: dict[str, Node] = {}
         edges: list[Edge] = []
 
         for item in body_items:
             if isinstance(item, tuple):
                 key, value = item
-                if key == "task_type":
-                    task_type = value  # type: ignore[assignment]
+                if key == "input_fields":
+                    input_fields = value  # type: ignore[assignment]
+                elif key == "output_fields":
+                    output_fields = value  # type: ignore[assignment]
                 else:
                     attrs[key] = value  # type: ignore[assignment]
-            elif isinstance(item, Param):
-                params.append(item)
             elif isinstance(item, Node):
                 nodes[item.name] = item
             elif isinstance(item, Edge):
@@ -443,8 +419,8 @@ class _FlowTransformer(Transformer[Token, Flow]):
             skip_permissions=bool(attrs.get("skip_permissions", False)),
             judge=bool(attrs.get("judge", False)),
             worktree=bool(attrs.get("worktree", True)),
-            params=tuple(params),
-            task_type=task_type,
+            input_fields=input_fields,
+            output_fields=output_fields,
             nodes=nodes,
             edges=tuple(edges),
         )

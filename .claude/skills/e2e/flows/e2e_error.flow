@@ -1,0 +1,32 @@
+flow e2e_error {
+    budget = 5m
+    on_error = pause
+    context = handoff
+    workspace = "/tmp/flowstate-e2e-error"
+    skip_permissions = true
+
+    entry start {
+        prompt = """
+        Create a file called setup.txt with the text "Setup complete".
+        """
+    }
+
+    task risky {
+        prompt = """
+        IMPORTANT: This task is designed to fail. Follow these instructions exactly:
+        1. Try to read the file /nonexistent/impossible/path/e2e_test_missing.txt
+        2. Do NOT create this file or work around the missing file
+        3. Report that the file does not exist and you cannot proceed
+        4. Exit with failure status
+        """
+    }
+
+    exit done {
+        prompt = """
+        Summarize the results.
+        """
+    }
+
+    start -> risky
+    risky -> done
+}

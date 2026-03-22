@@ -183,7 +183,9 @@ class TestStringHandling:
             on_error = pause
             context = handoff
 
-            param focus: string = "all"
+            input {
+                focus: string = "all"
+            }
 
             entry s {
                 prompt = """Analyze {{focus}} carefully."""
@@ -553,15 +555,17 @@ class TestFlowAttributes:
         assert tree is not None
 
 
-class TestParameters:
-    def test_param_without_default(self, parser: Lark) -> None:
+class TestFlowInputOutputBlocks:
+    def test_input_without_defaults(self, parser: Lark) -> None:
         source = """
         flow t {
             budget = 1h
             on_error = pause
             context = handoff
 
-            param target: string
+            input {
+                target: string
+            }
 
             entry s { prompt = "Go" }
             exit e { prompt = "Done" }
@@ -571,14 +575,16 @@ class TestParameters:
         tree = parser.parse(source)
         assert tree is not None
 
-    def test_param_with_string_default(self, parser: Lark) -> None:
+    def test_input_with_string_default(self, parser: Lark) -> None:
         source = """
         flow t {
             budget = 1h
             on_error = pause
             context = handoff
 
-            param focus: string = "all"
+            input {
+                focus: string = "all"
+            }
 
             entry s { prompt = "Go" }
             exit e { prompt = "Done" }
@@ -588,14 +594,16 @@ class TestParameters:
         tree = parser.parse(source)
         assert tree is not None
 
-    def test_param_with_number_default(self, parser: Lark) -> None:
+    def test_input_with_number_default(self, parser: Lark) -> None:
         source = """
         flow t {
             budget = 1h
             on_error = pause
             context = handoff
 
-            param count: number = 5
+            input {
+                count: number = 5
+            }
 
             entry s { prompt = "Go" }
             exit e { prompt = "Done" }
@@ -605,14 +613,16 @@ class TestParameters:
         tree = parser.parse(source)
         assert tree is not None
 
-    def test_param_with_bool_default(self, parser: Lark) -> None:
+    def test_input_with_bool_default(self, parser: Lark) -> None:
         source = """
         flow t {
             budget = 1h
             on_error = pause
             context = handoff
 
-            param verbose: bool = true
+            input {
+                verbose: bool = true
+            }
 
             entry s { prompt = "Go" }
             exit e { prompt = "Done" }
@@ -622,14 +632,16 @@ class TestParameters:
         tree = parser.parse(source)
         assert tree is not None
 
-    def test_param_bool_false_default(self, parser: Lark) -> None:
+    def test_input_bool_false_default(self, parser: Lark) -> None:
         source = """
         flow t {
             budget = 1h
             on_error = pause
             context = handoff
 
-            param debug: bool = false
+            input {
+                debug: bool = false
+            }
 
             entry s { prompt = "Go" }
             exit e { prompt = "Done" }
@@ -639,16 +651,18 @@ class TestParameters:
         tree = parser.parse(source)
         assert tree is not None
 
-    def test_multiple_params(self, parser: Lark) -> None:
+    def test_multiple_input_fields(self, parser: Lark) -> None:
         source = """
         flow t {
             budget = 1h
             on_error = pause
             context = handoff
 
-            param target: string
-            param count: number = 3
-            param verbose: bool = false
+            input {
+                target: string
+                count: number = 3
+                verbose: bool = false
+            }
 
             entry s { prompt = "Go" }
             exit e { prompt = "Done" }
@@ -658,12 +672,54 @@ class TestParameters:
         tree = parser.parse(source)
         assert tree is not None
 
-    def test_no_params(self, parser: Lark) -> None:
+    def test_no_input_output(self, parser: Lark) -> None:
         source = """
         flow t {
             budget = 1h
             on_error = pause
             context = handoff
+
+            entry s { prompt = "Go" }
+            exit e { prompt = "Done" }
+            s -> e
+        }
+        """
+        tree = parser.parse(source)
+        assert tree is not None
+
+    def test_output_block(self, parser: Lark) -> None:
+        source = """
+        flow t {
+            budget = 1h
+            on_error = pause
+            context = handoff
+
+            output {
+                result: string
+                score: number
+            }
+
+            entry s { prompt = "Go" }
+            exit e { prompt = "Done" }
+            s -> e
+        }
+        """
+        tree = parser.parse(source)
+        assert tree is not None
+
+    def test_input_and_output_blocks(self, parser: Lark) -> None:
+        source = """
+        flow t {
+            budget = 1h
+            on_error = pause
+            context = handoff
+
+            input {
+                title: string
+            }
+            output {
+                result: string
+            }
 
             entry s { prompt = "Go" }
             exit e { prompt = "Done" }
@@ -864,14 +920,16 @@ class TestSyntaxErrors:
 
 
 class TestDecimalNumbers:
-    def test_decimal_number_param(self, parser: Lark) -> None:
+    def test_decimal_number_input_field(self, parser: Lark) -> None:
         source = """
         flow t {
             budget = 1h
             on_error = pause
             context = handoff
 
-            param threshold: number = 0.95
+            input {
+                threshold: number = 0.95
+            }
 
             entry s { prompt = "Go" }
             exit e { prompt = "Done" }
@@ -881,14 +939,16 @@ class TestDecimalNumbers:
         tree = parser.parse(source)
         assert tree is not None
 
-    def test_integer_number_param(self, parser: Lark) -> None:
+    def test_integer_number_input_field(self, parser: Lark) -> None:
         source = """
         flow t {
             budget = 1h
             on_error = pause
             context = handoff
 
-            param count: number = 10
+            input {
+                count: number = 10
+            }
 
             entry s { prompt = "Go" }
             exit e { prompt = "Done" }

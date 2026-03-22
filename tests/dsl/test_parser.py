@@ -11,7 +11,6 @@ from flowstate.dsl.ast import (
     ErrorPolicy,
     NodeType,
     OverlapPolicy,
-    ParamType,
 )
 from flowstate.dsl.exceptions import FlowParseError
 from flowstate.dsl.parser import parse_flow
@@ -62,8 +61,9 @@ class TestLinearFlow:
         assert flow.edges[1].source == "add_ci"
         assert flow.edges[1].target == "done"
 
-    def test_no_params(self, flow):
-        assert flow.params == ()
+    def test_no_input_fields(self, flow):
+        assert flow.input_fields == ()
+        assert flow.output_fields == ()
 
 
 # ---------------------------------------------------------------------------
@@ -113,12 +113,12 @@ class TestCycleFlow:
     def test_flow_name(self, flow):
         assert flow.name == "iterative_refactor"
 
-    def test_param(self, flow):
-        assert len(flow.params) == 1
-        p = flow.params[0]
-        assert p.name == "target"
-        assert p.type == ParamType.STRING
-        assert p.default is None
+    def test_input_fields(self, flow):
+        assert len(flow.input_fields) == 1
+        f = flow.input_fields[0]
+        assert f.name == "target"
+        assert f.type == "string"
+        assert f.default is None
 
     def test_four_nodes(self, flow):
         assert len(flow.nodes) == 4
@@ -157,10 +157,10 @@ class TestComplexFlow:
         for name, node in flow.nodes.items():
             assert node.cwd is not None, f"node {name} missing cwd"
 
-    def test_param(self, flow):
-        assert len(flow.params) == 1
-        assert flow.params[0].name == "feature"
-        assert flow.params[0].type == ParamType.STRING
+    def test_input_fields(self, flow):
+        assert len(flow.input_fields) == 1
+        assert flow.input_fields[0].name == "feature"
+        assert flow.input_fields[0].type == "string"
 
     def test_fork_and_join_present(self, flow):
         fork_edges = [e for e in flow.edges if e.edge_type == EdgeType.FORK]
@@ -291,65 +291,89 @@ def test_edge_config_empty_block():
 
 
 # ---------------------------------------------------------------------------
-# 11. Parameter with default
+# 11. Input fields with defaults
 # ---------------------------------------------------------------------------
 
 
-def test_param_with_number_default():
-    source = (
-        "flow f { budget = 1h on_error = pause context = handoff "
-        "param retries: number = 3 "
-        'entry a { prompt = "x" } exit b { prompt = "y" } a -> b }'
-    )
+def test_input_field_with_number_default():
+    source = """flow f {
+    budget = 1h
+    on_error = pause
+    context = handoff
+    input {
+        retries: number = 3
+    }
+    entry a { prompt = "x" }
+    exit b { prompt = "y" }
+    a -> b
+}"""
     flow = parse_flow(source)
-    p = flow.params[0]
-    assert p.name == "retries"
-    assert p.type == ParamType.NUMBER
-    assert p.default == 3
+    f = flow.input_fields[0]
+    assert f.name == "retries"
+    assert f.type == "number"
+    assert f.default == 3
 
 
-def test_param_with_bool_default():
-    source = (
-        "flow f { budget = 1h on_error = pause context = handoff "
-        "param verbose: bool = true "
-        'entry a { prompt = "x" } exit b { prompt = "y" } a -> b }'
-    )
+def test_input_field_with_bool_default():
+    source = """flow f {
+    budget = 1h
+    on_error = pause
+    context = handoff
+    input {
+        verbose: bool = true
+    }
+    entry a { prompt = "x" }
+    exit b { prompt = "y" }
+    a -> b
+}"""
     flow = parse_flow(source)
-    p = flow.params[0]
-    assert p.name == "verbose"
-    assert p.type == ParamType.BOOL
-    assert p.default is True
+    f = flow.input_fields[0]
+    assert f.name == "verbose"
+    assert f.type == "bool"
+    assert f.default is True
 
 
-def test_param_with_string_default():
-    source = (
-        "flow f { budget = 1h on_error = pause context = handoff "
-        'param label: string = "hello" '
-        'entry a { prompt = "x" } exit b { prompt = "y" } a -> b }'
-    )
+def test_input_field_with_string_default():
+    source = """flow f {
+    budget = 1h
+    on_error = pause
+    context = handoff
+    input {
+        label: string = "hello"
+    }
+    entry a { prompt = "x" }
+    exit b { prompt = "y" }
+    a -> b
+}"""
     flow = parse_flow(source)
-    p = flow.params[0]
-    assert p.name == "label"
-    assert p.type == ParamType.STRING
-    assert p.default == "hello"
+    f = flow.input_fields[0]
+    assert f.name == "label"
+    assert f.type == "string"
+    assert f.default == "hello"
 
 
 # ---------------------------------------------------------------------------
-# 12. Parameter without default
+# 12. Input field without default
 # ---------------------------------------------------------------------------
 
 
-def test_param_without_default():
-    source = (
-        "flow f { budget = 1h on_error = pause context = handoff "
-        "param name: string "
-        'entry a { prompt = "x" } exit b { prompt = "y" } a -> b }'
-    )
+def test_input_field_without_default():
+    source = """flow f {
+    budget = 1h
+    on_error = pause
+    context = handoff
+    input {
+        name: string
+    }
+    entry a { prompt = "x" }
+    exit b { prompt = "y" }
+    a -> b
+}"""
     flow = parse_flow(source)
-    p = flow.params[0]
-    assert p.name == "name"
-    assert p.type == ParamType.STRING
-    assert p.default is None
+    f = flow.input_fields[0]
+    assert f.name == "name"
+    assert f.type == "string"
+    assert f.default is None
 
 
 # ---------------------------------------------------------------------------
@@ -393,12 +417,17 @@ class TestDurationConversion:
 
 
 def test_template_variables_preserved():
-    source = (
-        "flow f { budget = 1h on_error = pause context = handoff "
-        "param target: string "
-        'entry a { prompt = "Analyze {{target}} now" } '
-        'exit b { prompt = "done" } a -> b }'
-    )
+    source = """flow f {
+    budget = 1h
+    on_error = pause
+    context = handoff
+    input {
+        target: string
+    }
+    entry a { prompt = "Analyze {{target}} now" }
+    exit b { prompt = "done" }
+    a -> b
+}"""
     flow = parse_flow(source)
     assert "{{target}}" in flow.nodes["a"].prompt
 
@@ -408,7 +437,9 @@ def test_template_variables_in_long_string():
     budget = 1h
     on_error = pause
     context = handoff
-    param target: string
+    input {
+        target: string
+    }
     entry a {
         prompt = """
         Analyze {{target}} and create a plan.
@@ -610,14 +641,20 @@ def test_edge_delay_duration():
     assert flow.edges[0].config.delay_seconds == 30
 
 
-def test_param_with_float_default():
-    source = (
-        "flow f { budget = 1h on_error = pause context = handoff "
-        "param ratio: number = 3.14 "
-        'entry a { prompt = "x" } exit b { prompt = "y" } a -> b }'
-    )
+def test_input_field_with_float_default():
+    source = """flow f {
+    budget = 1h
+    on_error = pause
+    context = handoff
+    input {
+        ratio: number = 3.14
+    }
+    entry a { prompt = "x" }
+    exit b { prompt = "y" }
+    a -> b
+}"""
     flow = parse_flow(source)
-    assert flow.params[0].default == 3.14
+    assert flow.input_fields[0].default == 3.14
 
 
 # ---------------------------------------------------------------------------
@@ -807,59 +844,53 @@ class TestWorktreeParameter:
 
 
 # ---------------------------------------------------------------------------
-# Task type declaration
+# Flow-level input/output blocks
 # ---------------------------------------------------------------------------
 
 
-class TestTaskTypeDeclaration:
-    """Test task type declaration block parsing."""
+class TestFlowInputOutput:
+    """Test flow-level input and output block parsing."""
 
-    def test_task_type_input_output(self):
+    def test_input_output_blocks(self):
         source = """flow f {
     budget = 1h
     on_error = pause
     context = handoff
-    task {
-        input {
-            title: string
-        }
-        output {
-            result: string
-        }
+    input {
+        title: string
+    }
+    output {
+        result: string
     }
     entry a { prompt = "x" }
     exit b { prompt = "y" }
     a -> b
 }"""
         flow = parse_flow(source)
-        assert flow.task_type is not None
-        assert len(flow.task_type.input_fields) == 1
-        assert flow.task_type.input_fields[0].name == "title"
-        assert flow.task_type.input_fields[0].type == "string"
-        assert flow.task_type.input_fields[0].default is None
-        assert len(flow.task_type.output_fields) == 1
-        assert flow.task_type.output_fields[0].name == "result"
-        assert flow.task_type.output_fields[0].type == "string"
+        assert len(flow.input_fields) == 1
+        assert flow.input_fields[0].name == "title"
+        assert flow.input_fields[0].type == "string"
+        assert flow.input_fields[0].default is None
+        assert len(flow.output_fields) == 1
+        assert flow.output_fields[0].name == "result"
+        assert flow.output_fields[0].type == "string"
 
-    def test_task_type_with_defaults(self):
+    def test_input_with_defaults(self):
         source = """flow f {
     budget = 1h
     on_error = pause
     context = handoff
-    task {
-        input {
-            branch: string = "main"
-            retries: number = 3
-            verbose: bool = true
-        }
+    input {
+        branch: string = "main"
+        retries: number = 3
+        verbose: bool = true
     }
     entry a { prompt = "x" }
     exit b { prompt = "y" }
     a -> b
 }"""
         flow = parse_flow(source)
-        assert flow.task_type is not None
-        fields = flow.task_type.input_fields
+        fields = flow.input_fields
         assert len(fields) == 3
         assert fields[0].name == "branch"
         assert fields[0].type == "string"
@@ -871,123 +902,94 @@ class TestTaskTypeDeclaration:
         assert fields[2].type == "bool"
         assert fields[2].default is True
 
-    def test_task_type_multiple_fields(self):
+    def test_multiple_fields(self):
         source = """flow f {
     budget = 1h
     on_error = pause
     context = handoff
-    task {
-        input {
-            title: string
-            priority: number
-        }
-        output {
-            result: string
-            score: number
-            passed: bool
-        }
+    input {
+        title: string
+        priority: number
+    }
+    output {
+        result: string
+        score: number
+        passed: bool
     }
     entry a { prompt = "x" }
     exit b { prompt = "y" }
     a -> b
 }"""
         flow = parse_flow(source)
-        assert flow.task_type is not None
-        assert len(flow.task_type.input_fields) == 2
-        assert len(flow.task_type.output_fields) == 3
-        assert flow.task_type.output_fields[2].name == "passed"
-        assert flow.task_type.output_fields[2].type == "bool"
+        assert len(flow.input_fields) == 2
+        assert len(flow.output_fields) == 3
+        assert flow.output_fields[2].name == "passed"
+        assert flow.output_fields[2].type == "bool"
 
-    def test_task_type_input_only(self):
+    def test_input_only(self):
         source = """flow f {
     budget = 1h
     on_error = pause
     context = handoff
-    task {
-        input {
-            title: string
-        }
+    input {
+        title: string
     }
     entry a { prompt = "x" }
     exit b { prompt = "y" }
     a -> b
 }"""
         flow = parse_flow(source)
-        assert flow.task_type is not None
-        assert len(flow.task_type.input_fields) == 1
-        assert len(flow.task_type.output_fields) == 0
+        assert len(flow.input_fields) == 1
+        assert len(flow.output_fields) == 0
 
-    def test_task_type_output_only(self):
+    def test_output_only(self):
         source = """flow f {
     budget = 1h
     on_error = pause
     context = handoff
-    task {
-        output {
-            result: string
-        }
+    output {
+        result: string
     }
     entry a { prompt = "x" }
     exit b { prompt = "y" }
     a -> b
 }"""
         flow = parse_flow(source)
-        assert flow.task_type is not None
-        assert len(flow.task_type.input_fields) == 0
-        assert len(flow.task_type.output_fields) == 1
+        assert len(flow.input_fields) == 0
+        assert len(flow.output_fields) == 1
 
-    def test_task_type_empty(self):
-        source = """flow f {
-    budget = 1h
-    on_error = pause
-    context = handoff
-    task {
-    }
-    entry a { prompt = "x" }
-    exit b { prompt = "y" }
-    a -> b
-}"""
-        flow = parse_flow(source)
-        assert flow.task_type is not None
-        assert len(flow.task_type.input_fields) == 0
-        assert len(flow.task_type.output_fields) == 0
-
-    def test_no_task_type_is_none(self):
+    def test_no_input_output_defaults_empty(self):
         source = (
             "flow f { budget = 1h on_error = pause context = handoff "
             'entry a { prompt = "x" } exit b { prompt = "y" } a -> b }'
         )
         flow = parse_flow(source)
-        assert flow.task_type is None
+        assert flow.input_fields == ()
+        assert flow.output_fields == ()
 
-    def test_task_type_with_float_default(self):
+    def test_input_with_float_default(self):
         source = """flow f {
     budget = 1h
     on_error = pause
     context = handoff
-    task {
-        input {
-            ratio: number = 3.14
-        }
+    input {
+        ratio: number = 3.14
     }
     entry a { prompt = "x" }
     exit b { prompt = "y" }
     a -> b
 }"""
         flow = parse_flow(source)
-        assert flow.task_type is not None
-        assert flow.task_type.input_fields[0].default == 3.14
+        assert flow.input_fields[0].default == 3.14
 
-    def test_task_type_coexists_with_task_node(self):
-        """Task type declaration and task nodes should both parse correctly."""
+    def test_input_output_coexist_with_task_node(self):
+        """Input/output blocks and task nodes should both parse correctly."""
         source = """flow f {
     budget = 1h
     on_error = pause
     context = handoff
-    task {
-        input {
-            title: string
-        }
+    input {
+        title: string
     }
     entry a { prompt = "start" }
     task b { prompt = "do work" }
@@ -996,8 +998,7 @@ class TestTaskTypeDeclaration:
     b -> c
 }"""
         flow = parse_flow(source)
-        assert flow.task_type is not None
-        assert len(flow.task_type.input_fields) == 1
+        assert len(flow.input_fields) == 1
         assert "b" in flow.nodes
         assert flow.nodes["b"].node_type == NodeType.TASK
 
@@ -1123,23 +1124,21 @@ class TestFileAwaitEdgeMixed:
         assert len(await_edges) == 1
         assert len(regular_edges) == 2
 
-    def test_file_and_task_type_together(self):
-        """Task type and file edges coexist in the same flow."""
+    def test_file_and_input_output_together(self):
+        """Input/output blocks and file edges coexist in the same flow."""
         source = """flow f {
     budget = 1h
     on_error = pause
     context = handoff
-    task {
-        input { title: string }
-        output { result: string }
-    }
+    input { title: string }
+    output { result: string }
     entry a { prompt = "x" }
     exit b { prompt = "y" }
     a files other_flow
     a -> b
 }"""
         flow = parse_flow(source)
-        assert flow.task_type is not None
-        assert len(flow.task_type.input_fields) == 1
+        assert len(flow.input_fields) == 1
+        assert len(flow.output_fields) == 1
         file_edges = [e for e in flow.edges if e.edge_type == EdgeType.FILE]
         assert len(file_edges) == 1

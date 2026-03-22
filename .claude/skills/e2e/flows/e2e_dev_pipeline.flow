@@ -1,0 +1,53 @@
+flow e2e_dev_pipeline {
+    budget = 10m
+    on_error = pause
+    context = handoff
+    skip_permissions = true
+
+    input {
+        title: string
+        description: string
+    }
+
+    output {
+        result: string
+        files_created: string
+    }
+
+    entry plan {
+        prompt = """
+        Feature: {{title}}
+        Description: {{description}}
+
+        Create PLAN.md with:
+        1. A brief technical approach
+        2. Files to create
+        3. Key implementation steps
+        """
+    }
+
+    task implement {
+        prompt = """
+        Read PLAN.md and implement the feature.
+        Create the necessary files with working code.
+        """
+    }
+
+    task verify {
+        prompt = """
+        Review the implementation. Check correctness.
+        Write SUMMARY.md confirming the result.
+        """
+    }
+
+    exit done {
+        prompt = """
+        Write OUTPUT.json with { "result": "<summary>", "files_created": "<list>" }.
+        Write final SUMMARY.md.
+        """
+    }
+
+    plan -> implement
+    implement -> verify
+    verify -> done
+}

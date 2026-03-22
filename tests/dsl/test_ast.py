@@ -12,8 +12,7 @@ from flowstate.dsl.ast import (
     Node,
     NodeType,
     OverlapPolicy,
-    Param,
-    ParamType,
+    TaskTypeField,
 )
 
 
@@ -39,11 +38,6 @@ class TestEnumValues:
         assert ErrorPolicy.ABORT.value == "abort"
         assert ErrorPolicy.SKIP.value == "skip"
 
-    def test_param_type_values(self) -> None:
-        assert ParamType.STRING.value == "string"
-        assert ParamType.NUMBER.value == "number"
-        assert ParamType.BOOL.value == "bool"
-
     def test_overlap_policy_values(self) -> None:
         assert OverlapPolicy.SKIP.value == "skip"
         assert OverlapPolicy.QUEUE.value == "queue"
@@ -65,25 +59,22 @@ class TestEnumStringBehavior:
     def test_error_policy_is_string(self) -> None:
         assert ErrorPolicy.PAUSE == "pause"
 
-    def test_param_type_is_string(self) -> None:
-        assert ParamType.STRING == "string"
-
     def test_overlap_policy_is_string(self) -> None:
         assert OverlapPolicy.SKIP == "skip"
 
 
-class TestParam:
+class TestTaskTypeField:
     def test_creation_with_default(self) -> None:
-        p = Param(name="count", type=ParamType.NUMBER, default=10.0)
-        assert p.name == "count"
-        assert p.type == ParamType.NUMBER
-        assert p.default == 10.0
+        f = TaskTypeField(name="count", type="number", default=10.0)
+        assert f.name == "count"
+        assert f.type == "number"
+        assert f.default == 10.0
 
     def test_creation_without_default(self) -> None:
-        p = Param(name="name", type=ParamType.STRING)
-        assert p.name == "name"
-        assert p.type == ParamType.STRING
-        assert p.default is None
+        f = TaskTypeField(name="name", type="string")
+        assert f.name == "name"
+        assert f.type == "string"
+        assert f.default is None
 
 
 class TestNode:
@@ -161,14 +152,16 @@ class TestFlow:
         assert f.workspace is None
         assert f.schedule is None
         assert f.on_overlap == OverlapPolicy.SKIP
-        assert f.params == ()
+        assert f.input_fields == ()
+        assert f.output_fields == ()
         assert f.nodes == {}
         assert f.edges == ()
 
     def test_full_creation(self) -> None:
         node = Node(name="start", node_type=NodeType.ENTRY, prompt="Go")
         edge = Edge(edge_type=EdgeType.UNCONDITIONAL, source="start", target="end")
-        param = Param(name="x", type=ParamType.STRING)
+        input_field = TaskTypeField(name="x", type="string")
+        output_field = TaskTypeField(name="result", type="string")
         f = Flow(
             name="full",
             budget_seconds=7200,
@@ -177,23 +170,25 @@ class TestFlow:
             workspace="/work",
             schedule="0 * * * *",
             on_overlap=OverlapPolicy.QUEUE,
-            params=(param,),
+            input_fields=(input_field,),
+            output_fields=(output_field,),
             nodes={"start": node},
             edges=(edge,),
         )
         assert f.workspace == "/work"
         assert f.schedule == "0 * * * *"
         assert f.on_overlap == OverlapPolicy.QUEUE
-        assert len(f.params) == 1
+        assert len(f.input_fields) == 1
+        assert len(f.output_fields) == 1
         assert len(f.nodes) == 1
         assert len(f.edges) == 1
 
 
 class TestFrozenDataclasses:
-    def test_param_frozen(self) -> None:
-        p = Param(name="x", type=ParamType.STRING)
+    def test_task_type_field_frozen(self) -> None:
+        f = TaskTypeField(name="x", type="string")
         with pytest.raises(dataclasses.FrozenInstanceError):
-            p.name = "y"  # type: ignore[misc]
+            f.name = "y"  # type: ignore[misc]
 
     def test_node_frozen(self) -> None:
         n = Node(name="a", node_type=NodeType.TASK, prompt="do")
@@ -238,8 +233,7 @@ def test_all_types_importable() -> None:
         Node,
         NodeType,
         OverlapPolicy,
-        Param,
-        ParamType,
+        TaskTypeField,
     )
 
     assert all(
@@ -249,12 +243,11 @@ def test_all_types_importable() -> None:
             Node,
             Edge,
             EdgeConfig,
-            Param,
+            TaskTypeField,
             NodeType,
             EdgeType,
             ContextMode,
             ErrorPolicy,
-            ParamType,
             OverlapPolicy,
         ]
     )

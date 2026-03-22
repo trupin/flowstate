@@ -1,0 +1,43 @@
+flow e2e_review_pipeline {
+    budget = 10m
+    on_error = pause
+    context = handoff
+    skip_permissions = true
+
+    input {
+        title: string
+        description: string
+    }
+
+    output {
+        verdict: string
+    }
+
+    entry analyze {
+        prompt = """
+        Feature to review: {{title}}
+        Context: {{description}}
+
+        Create code.py with a simple Python function that has an
+        intentional off-by-one bug. Create REPORT.md describing the bug.
+        """
+    }
+
+    task review {
+        prompt = """
+        Read code.py and REPORT.md. Assess the bug severity.
+        Write SUMMARY.md with your assessment.
+        """
+    }
+
+    exit report {
+        prompt = """
+        Write OUTPUT.json with { "verdict": "needs_fix" }.
+        Write final SUMMARY.md.
+        """
+    }
+
+    analyze -> review
+    review -> report
+    review files e2e_bugfix_pipeline
+}

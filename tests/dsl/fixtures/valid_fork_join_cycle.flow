@@ -5,7 +5,9 @@ flow feature_development {
     context = handoff
     // No flow-level workspace — per-task cwd for multi-repo
 
-    param feature: string
+    input {
+        feature: string
+    }
 
     entry design {
         cwd = "./backend"

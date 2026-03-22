@@ -5,7 +5,9 @@ flow iterative_refactor {
     context = handoff
     workspace = "./legacy-app"
 
-    param target: string
+    input {
+        target: string
+    }
 
     entry plan {
         prompt = """

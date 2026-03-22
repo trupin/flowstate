@@ -29,23 +29,10 @@ class ErrorPolicy(StrEnum):
     SKIP = "skip"
 
 
-class ParamType(StrEnum):
-    STRING = "string"
-    NUMBER = "number"
-    BOOL = "bool"
-
-
 class OverlapPolicy(StrEnum):
     SKIP = "skip"
     QUEUE = "queue"
     PARALLEL = "parallel"
-
-
-@dataclass(frozen=True)
-class Param:
-    name: str
-    type: ParamType
-    default: str | float | bool | None = None
 
 
 @dataclass(frozen=True)
@@ -55,14 +42,6 @@ class TaskTypeField:
     name: str
     type: str  # "string", "number", "bool"
     default: str | float | bool | None = None
-
-
-@dataclass(frozen=True)
-class TaskType:
-    """Task type declaration: input and output field schemas."""
-
-    input_fields: tuple[TaskTypeField, ...] = ()
-    output_fields: tuple[TaskTypeField, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -108,7 +87,7 @@ class Flow:
     skip_permissions: bool = False
     judge: bool = False
     worktree: bool = True
-    params: tuple[Param, ...] = ()
-    task_type: TaskType | None = None
+    input_fields: tuple[TaskTypeField, ...] = ()
+    output_fields: tuple[TaskTypeField, ...] = ()
     nodes: dict[str, Node] = field(default_factory=dict)
     edges: tuple[Edge, ...] = ()

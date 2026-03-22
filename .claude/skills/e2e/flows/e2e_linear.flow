@@ -1,0 +1,31 @@
+flow e2e_linear {
+    budget = 5m
+    on_error = pause
+    context = handoff
+    workspace = "/tmp/flowstate-e2e-linear"
+    skip_permissions = true
+
+    entry start {
+        prompt = """
+        Create a file called hello.txt with the text "Hello from Flowstate E2E test".
+        That is the only thing you need to do.
+        """
+    }
+
+    task process {
+        prompt = """
+        Read hello.txt and create a file called result.txt containing
+        the contents of hello.txt converted to uppercase.
+        """
+    }
+
+    exit done {
+        prompt = """
+        Read result.txt and verify it contains uppercase text.
+        Write SUMMARY.md confirming the test passed.
+        """
+    }
+
+    start -> process
+    process -> done
+}
