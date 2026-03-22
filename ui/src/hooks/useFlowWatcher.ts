@@ -16,7 +16,7 @@ const RELEVANT_EVENTS = [
 
 export function useFlowWatcher(): UseFlowWatcherReturn {
   const wsUrl = `${window.location.protocol === 'https:' ? 'wss:' : 'ws:'}//${window.location.host}/ws`;
-  const { lastEvent, isConnected } = useWebSocket(wsUrl);
+  const { eventQueue, clearQueue, isConnected } = useWebSocket(wsUrl);
   const [flows, setFlows] = useState<DiscoveredFlow[]>([]);
   const fetchingRef = useRef(false);
   const mountedRef = useRef(true);
@@ -36,12 +36,16 @@ export function useFlowWatcher(): UseFlowWatcherReturn {
 
   // Re-fetch when relevant file watcher events arrive
   useEffect(() => {
-    if (!lastEvent) return;
+    if (eventQueue.length === 0) return;
 
-    if (RELEVANT_EVENTS.includes(lastEvent.type)) {
+    const hasRelevant = eventQueue.some((event) =>
+      RELEVANT_EVENTS.includes(event.type),
+    );
+    if (hasRelevant) {
       fetchFlows();
     }
-  }, [lastEvent]);
+    clearQueue();
+  }, [eventQueue, clearQueue]);
 
   async function fetchFlows() {
     // Debounce: skip if a fetch is already in-flight

@@ -191,7 +191,8 @@ function applyEvent(
 
 export function useFlowRun(runId: string): UseFlowRunReturn {
   const wsUrl = `${window.location.protocol === 'https:' ? 'wss:' : 'ws:'}//${window.location.host}/ws`;
-  const ws = useWebSocket(wsUrl);
+  const { send, subscribe, unsubscribe, eventQueue, clearQueue, isConnected } =
+    useWebSocket(wsUrl);
   const [run, setRun] = useState<FlowRun | null>(null);
   const [tasks, setTasks] = useState<Map<string, TaskExecution>>(new Map());
   const [edges, setEdges] = useState<EdgeTransition[]>([]);
@@ -222,33 +223,29 @@ export function useFlowRun(runId: string): UseFlowRunReturn {
   // Re-fetch when WebSocket reconnects (to catch events missed during disconnect)
   const prevConnected = useRef(false);
   useEffect(() => {
-    if (ws.isConnected && !prevConnected.current) {
+    if (isConnected && !prevConnected.current) {
       // Just reconnected — re-fetch to sync state
       fetchRunDetail();
     }
-    prevConnected.current = ws.isConnected;
-  }, [ws.isConnected, fetchRunDetail]);
+    prevConnected.current = isConnected;
+  }, [isConnected, fetchRunDetail]);
 
   // Subscribe to WebSocket
   useEffect(() => {
-    ws.subscribe(runId);
-    return () => ws.unsubscribe(runId);
+    subscribe(runId);
+    return () => unsubscribe(runId);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [runId]);
 
-  // Process incoming events
+  // Process incoming events from the queue
   useEffect(() => {
-    if (!ws.lastEvent || ws.lastEvent.flow_run_id !== runId) return;
-    applyEvent(
-      ws.lastEvent,
-      setRun,
-      setTasks,
-      setEdges,
-      setLogs,
-      fetchRunDetail,
-    );
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [ws.lastEvent]);
+    if (eventQueue.length === 0) return;
+    for (const event of eventQueue) {
+      if (event.flow_run_id !== runId) continue;
+      applyEvent(event, setRun, setTasks, setEdges, setLogs, fetchRunDetail);
+    }
+    clearQueue();
+  }, [eventQueue, clearQueue, runId, fetchRunDetail]);
 
   // Fetch task logs from the API when a task is selected and we have no logs yet.
   // This handles the case where the run completed before the page loaded, so
@@ -293,7 +290,7 @@ export function useFlowRun(runId: string): UseFlowRunReturn {
     selectedTask,
     selectTask,
     logs,
-    isConnected: ws.isConnected,
-    send: ws.send,
+    isConnected,
+    send,
   };
 }

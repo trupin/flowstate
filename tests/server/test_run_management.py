@@ -83,6 +83,33 @@ VALID_FLOW_WITH_REQUIRED_PARAM = DiscoveredFlow(
     params=[{"name": "focus", "type": "string", "default": None}],
 )
 
+VALID_FLOW_NO_WORKSPACE = DiscoveredFlow(
+    id="no_workspace_flow",
+    name="no_workspace_flow",
+    file_path="/flows/no_workspace_flow.flow",
+    source_dsl=(
+        "flow no_workspace_flow {\n"
+        "    budget = 10m\n"
+        "    on_error = pause\n"
+        "    context = handoff\n"
+        "\n"
+        "    entry start {\n"
+        '        prompt = "go"\n'
+        "    }\n"
+        "\n"
+        "    exit done {\n"
+        '        prompt = "done"\n'
+        "    }\n"
+        "\n"
+        "    start -> done\n"
+        "}\n"
+    ),
+    status="valid",
+    errors=[],
+    ast_json={"name": "no_workspace_flow", "nodes": {}, "edges": []},
+    params=[],
+)
+
 ERROR_FLOW = DiscoveredFlow(
     id="broken",
     name=None,
@@ -671,3 +698,131 @@ class TestAllRoutesAsync:
             assert asyncio.iscoroutinefunction(
                 handler
             ), f"{handler.__name__} is not an async function"
+
+
+# ---------------------------------------------------------------------------
+# Auto-generated workspace when workspace is omitted (ENGINE-026)
+# ---------------------------------------------------------------------------
+
+
+class TestAutoWorkspaceWhenOmitted:
+    def test_start_run_without_workspace_generates_isolated_path(self) -> None:
+        """When a flow omits workspace, the route auto-generates a path under
+        ~/.flowstate/workspaces/<flow-name>/<run-id[:8]>/."""
+        mock_db = MagicMock()
+        run_manager = RunManager()
+
+        with (
+            patch("flowstate.server.routes.parse_flow") as mock_parse,
+            patch("flowstate.server.routes.FlowExecutor") as mock_executor_cls,
+        ):
+            mock_flow_ast = MagicMock()
+            mock_flow_ast.workspace = None  # No workspace declared
+            mock_flow_ast.name = "no_workspace_flow"
+            mock_parse.return_value = mock_flow_ast
+
+            mock_executor = MagicMock()
+            mock_executor.execute = AsyncMock(return_value="run-123")
+            mock_executor_cls.return_value = mock_executor
+
+            client = _make_test_client(
+                flows={"no_workspace_flow": VALID_FLOW_NO_WORKSPACE},
+                db_mock=mock_db,
+                run_manager=run_manager,
+            )
+
+            response = client.post(
+                "/api/flows/no_workspace_flow/runs",
+                json={"params": {}},
+            )
+
+        assert response.status_code == 202
+        body = response.json()
+        run_id = body["flow_run_id"]
+
+        # Verify executor.execute was called with the auto-generated workspace
+        call_args = mock_executor.execute.call_args
+        workspace_arg = call_args[0][2] if len(call_args[0]) > 2 else call_args[1]["workspace"]
+        import os
+
+        expected_prefix = os.path.expanduser("~/.flowstate/workspaces/no_workspace_flow/")
+        assert workspace_arg.startswith(
+            expected_prefix
+        ), f"Expected workspace to start with {expected_prefix}, got {workspace_arg}"
+        # The suffix should be the first 8 chars of the run_id
+        assert workspace_arg.endswith(run_id[:8])
+
+    def test_start_run_with_explicit_workspace_uses_declared_path(self) -> None:
+        """When a flow declares workspace, the route uses the declared path."""
+        mock_db = MagicMock()
+        run_manager = RunManager()
+
+        with (
+            patch("flowstate.server.routes.parse_flow") as mock_parse,
+            patch("flowstate.server.routes.FlowExecutor") as mock_executor_cls,
+        ):
+            mock_flow_ast = MagicMock()
+            mock_flow_ast.workspace = "/my/explicit/workspace"
+            mock_flow_ast.name = "code_review"
+            mock_parse.return_value = mock_flow_ast
+
+            mock_executor = MagicMock()
+            mock_executor.execute = AsyncMock(return_value="run-123")
+            mock_executor_cls.return_value = mock_executor
+
+            client = _make_test_client(
+                flows={"code_review": VALID_FLOW},
+                db_mock=mock_db,
+                run_manager=run_manager,
+            )
+
+            response = client.post(
+                "/api/flows/code_review/runs",
+                json={"params": {"focus": "auth"}},
+            )
+
+        assert response.status_code == 202
+
+        # Verify executor.execute was called with the explicit workspace
+        call_args = mock_executor.execute.call_args
+        workspace_arg = call_args[0][2] if len(call_args[0]) > 2 else call_args[1]["workspace"]
+        assert workspace_arg == "/my/explicit/workspace"
+
+    def test_concurrent_runs_get_different_workspaces(self) -> None:
+        """Two runs of the same flow without workspace get different auto-generated paths."""
+        mock_db = MagicMock()
+        run_manager = RunManager()
+
+        workspaces: list[str] = []
+
+        with (
+            patch("flowstate.server.routes.parse_flow") as mock_parse,
+            patch("flowstate.server.routes.FlowExecutor") as mock_executor_cls,
+        ):
+            mock_flow_ast = MagicMock()
+            mock_flow_ast.workspace = None
+            mock_flow_ast.name = "no_workspace_flow"
+            mock_parse.return_value = mock_flow_ast
+
+            mock_executor = MagicMock()
+            mock_executor.execute = AsyncMock(return_value="run-123")
+            mock_executor_cls.return_value = mock_executor
+
+            client = _make_test_client(
+                flows={"no_workspace_flow": VALID_FLOW_NO_WORKSPACE},
+                db_mock=mock_db,
+                run_manager=run_manager,
+            )
+
+            for _ in range(2):
+                response = client.post(
+                    "/api/flows/no_workspace_flow/runs",
+                    json={"params": {}},
+                )
+                assert response.status_code == 202
+                call_args = mock_executor.execute.call_args
+                ws = call_args[0][2] if len(call_args[0]) > 2 else call_args[1]["workspace"]
+                workspaces.append(ws)
+
+        assert len(workspaces) == 2
+        assert workspaces[0] != workspaces[1], "Concurrent runs should get different workspaces"

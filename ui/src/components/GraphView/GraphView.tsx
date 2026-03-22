@@ -1,8 +1,10 @@
-import { useMemo, useCallback } from 'react';
+import { useMemo, useCallback, useEffect, useRef } from 'react';
 import {
   ReactFlow,
+  ReactFlowProvider,
   Controls,
   Background,
+  useReactFlow,
   type Node,
   type Edge,
 } from '@xyflow/react';
@@ -162,9 +164,9 @@ const nodeTypes = {
   flowNode: NodePill,
 };
 
-// --- Main component ---
+// --- Inner component (must be inside ReactFlowProvider) ---
 
-export function GraphView({
+function GraphViewInner({
   nodes,
   edges,
   taskStatuses,
@@ -179,6 +181,10 @@ export function GraphView({
   onNodeClick,
   waitUntil,
 }: GraphViewProps) {
+  const { fitView } = useReactFlow();
+  const containerRef = useRef<HTMLDivElement>(null);
+  const mountedRef = useRef(false);
+
   const rfNodes = useMemo(
     () =>
       convertToReactFlowNodes(
@@ -224,16 +230,49 @@ export function GraphView({
     [onNodeClick],
   );
 
-  if (nodes.length === 0) {
-    return (
-      <div className="graph-view graph-view-empty">
-        <span>No nodes</span>
-      </div>
-    );
-  }
+  // Re-fit when container size changes (e.g., detail panel opens/closes)
+  useEffect(() => {
+    const el = containerRef.current;
+    if (!el) return;
+
+    let rafId: number | undefined;
+    const observer = new ResizeObserver(() => {
+      // Cancel any pending frame to debounce rapid resize events
+      if (rafId !== undefined) {
+        cancelAnimationFrame(rafId);
+      }
+      rafId = requestAnimationFrame(() => {
+        // Skip animation on initial mount; animate on subsequent resizes
+        const duration = mountedRef.current ? 200 : 0;
+        fitView({ duration, padding: 0.15 });
+      });
+    });
+    observer.observe(el);
+    return () => {
+      if (rafId !== undefined) {
+        cancelAnimationFrame(rafId);
+      }
+      observer.disconnect();
+    };
+  }, [fitView]);
+
+  // Fit view when nodes change count (new nodes added or removed)
+  useEffect(() => {
+    if (!mountedRef.current) {
+      // Mark as mounted after initial render settles
+      const timer = setTimeout(() => {
+        mountedRef.current = true;
+      }, 300);
+      return () => clearTimeout(timer);
+    }
+    const timer = setTimeout(() => {
+      fitView({ padding: 0.15, duration: 200 });
+    }, 100);
+    return () => clearTimeout(timer);
+  }, [nodes.length, fitView]);
 
   return (
-    <div className="graph-view">
+    <div ref={containerRef} className="graph-view">
       <ReactFlow
         nodes={layouted.nodes}
         edges={layouted.edges}
@@ -249,5 +288,23 @@ export function GraphView({
         <Background color="var(--border)" gap={20} />
       </ReactFlow>
     </div>
+  );
+}
+
+// --- Main component (public) ---
+
+export function GraphView(props: GraphViewProps) {
+  if (props.nodes.length === 0) {
+    return (
+      <div className="graph-view graph-view-empty">
+        <span>No nodes</span>
+      </div>
+    );
+  }
+
+  return (
+    <ReactFlowProvider>
+      <GraphViewInner {...props} />
+    </ReactFlowProvider>
   );
 }

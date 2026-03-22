@@ -5,14 +5,15 @@ interface UseWebSocketReturn {
   send: (data: unknown) => void;
   subscribe: (flowRunId: string, lastEventTimestamp?: string) => void;
   unsubscribe: (flowRunId: string) => void;
-  lastEvent: FlowEvent | null;
+  eventQueue: FlowEvent[];
+  clearQueue: () => void;
   isConnected: boolean;
 }
 
 export function useWebSocket(url: string): UseWebSocketReturn {
   const wsRef = useRef<WebSocket | null>(null);
   const [isConnected, setIsConnected] = useState(false);
-  const [lastEvent, setLastEvent] = useState<FlowEvent | null>(null);
+  const [eventQueue, setEventQueue] = useState<FlowEvent[]>([]);
   const lastTimestampRef = useRef<string | null>(null);
   const retryDelayRef = useRef(1000);
   const mountedRef = useRef(true);
@@ -47,7 +48,7 @@ export function useWebSocket(url: string): UseWebSocketReturn {
       try {
         const data = JSON.parse(String(event.data)) as FlowEvent;
         lastTimestampRef.current = data.timestamp;
-        setLastEvent(data);
+        setEventQueue((prev) => [...prev, data]);
       } catch {
         // ignore malformed messages
       }
@@ -98,6 +99,8 @@ export function useWebSocket(url: string): UseWebSocketReturn {
     [send],
   );
 
+  const clearQueue = useCallback(() => setEventQueue([]), []);
+
   const unsubscribe = useCallback(
     (flowRunId: string) => {
       subscribedRunsRef.current.delete(flowRunId);
@@ -110,5 +113,5 @@ export function useWebSocket(url: string): UseWebSocketReturn {
     [send],
   );
 
-  return { send, subscribe, unsubscribe, lastEvent, isConnected };
+  return { send, subscribe, unsubscribe, eventQueue, clearQueue, isConnected };
 }

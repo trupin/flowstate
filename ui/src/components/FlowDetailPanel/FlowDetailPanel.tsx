@@ -18,8 +18,10 @@ function formatBudget(seconds: number): string {
   return `${hours}h`;
 }
 
-function formatRelativeTime(iso: string): string {
+function formatRelativeTime(iso: string | undefined | null): string {
+  if (!iso) return '\u2014';
   const d = new Date(iso);
+  if (isNaN(d.getTime())) return '\u2014';
   const now = new Date();
   const diffMs = now.getTime() - d.getTime();
   if (diffMs < 0) return 'just now';
@@ -34,7 +36,8 @@ function formatRelativeTime(iso: string): string {
   return `${diffDays}d ago`;
 }
 
-function formatElapsed(seconds: number): string {
+function formatElapsed(seconds: number | undefined | null): string {
+  if (seconds == null || isNaN(seconds)) return '\u2014';
   if (seconds < 60) return `${Math.round(seconds)}s`;
   const mins = Math.floor(seconds / 60);
   if (mins < 60) return `${mins}m`;
@@ -257,7 +260,7 @@ export function FlowDetailPanel({ flow }: FlowDetailPanelProps) {
                 </span>
                 <span className="flow-run-status-label">{run.status}</span>
                 <span className="flow-run-time">
-                  {formatRelativeTime(run.created_at)}
+                  {formatRelativeTime(run.created_at ?? run.started_at)}
                 </span>
                 <span className="flow-run-elapsed">
                   ({formatElapsed(run.elapsed_seconds)})

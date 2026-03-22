@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import uuid
 from typing import TYPE_CHECKING, Any
 
@@ -212,12 +213,15 @@ async def start_run(
         worktree_cleanup=config.worktree_cleanup,
     )
 
-    # Determine workspace from flow AST
-    workspace = flow_ast.workspace or "."
-
     # Register and start as background task with a single shared run_id
     run_manager = _get_run_manager(request)
     run_id = str(uuid.uuid4())
+
+    # Determine workspace from flow AST, auto-generating an isolated workspace if omitted
+    if flow_ast.workspace:
+        workspace = flow_ast.workspace
+    else:
+        workspace = os.path.expanduser(f"~/.flowstate/workspaces/{flow_ast.name}/{run_id[:8]}")
 
     # Pass run_id to execute so DB uses the same key as RunManager
     execute_coro = executor.execute(flow_ast, body.params, workspace, flow_run_id=run_id)
@@ -638,9 +642,14 @@ async def trigger_schedule(request: Request, schedule_id: str) -> dict[str, str]
         worktree_cleanup=config.worktree_cleanup,
     )
 
-    workspace = flow_ast.workspace or "."
     run_manager = _get_run_manager(request)
     run_id = str(uuid.uuid4())
+
+    # Determine workspace from flow AST, auto-generating an isolated workspace if omitted
+    if flow_ast.workspace:
+        workspace = flow_ast.workspace
+    else:
+        workspace = os.path.expanduser(f"~/.flowstate/workspaces/{flow_ast.name}/{run_id[:8]}")
     execute_coro = executor.execute(flow_ast, {}, workspace, flow_run_id=run_id)
     await run_manager.start_run(run_id, executor, execute_coro)
 

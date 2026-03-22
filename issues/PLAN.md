@@ -115,6 +115,11 @@
 | UI-021 | Graph UI stuck on completion — requires manual re-select | ui     | P0       | UI-008, UI-011                         | done   |
 | UI-022 | Show cwd, task_dir, worktree in node details             | ui     | P1       | UI-005, ENGINE-025                     | done   |
 | UI-023 | Replace Flows list with selected flow detail view        | ui     | P1       | UI-010                                 | done   |
+| UI-024 | WebSocket events dropped during rapid state transitions  | ui     | P0       | —                                      | done   |
+| UI-025 | Graph canvas does not resize/recenter on panel open      | ui     | P1       | —                                      | done   |
+| UI-026 | Flow library: side panel layout + centered graph         | ui     | P1       | UI-023, UI-025                         | todo   |
+| UI-027 | "NaNd ago" in recent runs — guard time formatters        | ui     | P0       | —                                      | done   |
+| UI-028 | Clickable paths open in IDE + settings panel             | ui     | P1       | UI-022                                 | todo   |
 
 
 ### Phase 5 — Integration
@@ -148,6 +153,7 @@
 | ENGINE-023 | Implement self-report routing (DECISION.json)             | engine | P1       | DSL-007    | done        |
 | ENGINE-024 | Emit executor activity logs visible in UI console        | engine | P1       | ENGINE-021 | done        |
 | ENGINE-025 | Workspace/data-dir separation + git worktree isolation   | engine | P0       | —          | done        |
+| ENGINE-026 | Auto-generate isolated workspace per flow run            | engine | P1       | ENGINE-025 | done        |
 | SERVER-010 | Update routes — remove orchestrator references            | server | P0       | ENGINE-021 | done        |
 
 
@@ -170,6 +176,14 @@
 | E2E-012 | Test: Budget Warnings          | e2e    | P1       | E2E-005, ENGINE-002          | done   |
 | E2E-013 | Test: WebSocket Reconnection   | e2e    | P1       | E2E-005, SERVER-005          | done   |
 | E2E-014 | Test: Sidebar Navigation       | e2e    | P1       | E2E-003, UI-003              | done   |
+
+
+### Phase 9 — Task Queue Model
+
+
+| Issue      | Title                                                     | Domain | Priority | Depends On | Status |
+| ---------- | --------------------------------------------------------- | ------ | -------- | ---------- | ------ |
+| SHARED-003 | Task queue model — flows as processors, tasks as work items | shared | P0     | ENGINE-026 | todo   |
 
 
 ---
