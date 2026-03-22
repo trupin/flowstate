@@ -315,17 +315,27 @@ class FlowExecutor:
         # Store task_id for task-aware execution
         self._task_id = task_id
         if task_id:
-            # Link flow_run -> task
-            self._db._execute(  # type: ignore[attr-defined]
-                "UPDATE flow_runs SET task_id = ? WHERE id = ?",
-                (task_id, flow_run_id),
-            )
-            self._db._commit()  # type: ignore[attr-defined]
-            # Link task -> flow_run (now that flow_runs row exists)
-            self._db.update_task_queue_status(task_id, "running", flow_run_id=flow_run_id)
+            # Link flow_run -> task (only if the task exists in the DB)
+            task_row = self._db.get_task(task_id)
+            if task_row:
+                self._db._execute(  # type: ignore[attr-defined]
+                    "UPDATE flow_runs SET task_id = ? WHERE id = ?",
+                    (task_id, flow_run_id),
+                )
+                self._db._commit()  # type: ignore[attr-defined]
+                # Link task -> flow_run (now that flow_runs row exists)
+                self._db.update_task_queue_status(task_id, "running", flow_run_id=flow_run_id)
+            else:
+                logger.warning("Task %s not found in DB, skipping task linkage", task_id)
 
         # Resolve workspace to absolute path
         workspace = str(Path(workspace).resolve())
+
+        # If the flow has no workspace, inject the resolved one so resolve_cwd() works
+        if flow.workspace is None:
+            from dataclasses import replace
+
+            flow = replace(flow, workspace=workspace)
 
         # Git worktree isolation
         self._worktree_info = await setup_worktree_if_needed(workspace, flow_run_id, flow.worktree)
