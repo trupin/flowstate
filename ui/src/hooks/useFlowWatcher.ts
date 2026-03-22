@@ -37,6 +37,7 @@ export function useFlowWatcher(): UseFlowWatcherReturn {
   // Re-fetch when relevant file watcher events arrive
   useEffect(() => {
     if (eventQueue.length === 0) return;
+    const count = eventQueue.length;
 
     const hasRelevant = eventQueue.some((event) =>
       RELEVANT_EVENTS.includes(event.type),
@@ -44,7 +45,7 @@ export function useFlowWatcher(): UseFlowWatcherReturn {
     if (hasRelevant) {
       fetchFlows();
     }
-    clearQueue();
+    clearQueue(count);
   }, [eventQueue, clearQueue]);
 
   async function fetchFlows() {

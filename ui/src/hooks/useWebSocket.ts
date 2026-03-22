@@ -6,7 +6,7 @@ interface UseWebSocketReturn {
   subscribe: (flowRunId: string, lastEventTimestamp?: string) => void;
   unsubscribe: (flowRunId: string) => void;
   eventQueue: FlowEvent[];
-  clearQueue: () => void;
+  clearQueue: (processedCount: number) => void;
   isConnected: boolean;
 }
 
@@ -99,7 +99,11 @@ export function useWebSocket(url: string): UseWebSocketReturn {
     [send],
   );
 
-  const clearQueue = useCallback(() => setEventQueue([]), []);
+  const clearQueue = useCallback(
+    (processedCount: number) =>
+      setEventQueue((prev) => prev.slice(processedCount)),
+    [],
+  );
 
   const unsubscribe = useCallback(
     (flowRunId: string) => {

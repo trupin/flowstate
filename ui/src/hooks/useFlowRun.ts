@@ -240,11 +240,12 @@ export function useFlowRun(runId: string): UseFlowRunReturn {
   // Process incoming events from the queue
   useEffect(() => {
     if (eventQueue.length === 0) return;
+    const count = eventQueue.length;
     for (const event of eventQueue) {
       if (event.flow_run_id !== runId) continue;
       applyEvent(event, setRun, setTasks, setEdges, setLogs, fetchRunDetail);
     }
-    clearQueue();
+    clearQueue(count);
   }, [eventQueue, clearQueue, runId, fetchRunDetail]);
 
   // Fetch task logs from the API when a task is selected and we have no logs yet.

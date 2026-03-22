@@ -35,13 +35,30 @@ router = APIRouter(prefix="/api")
 # ---------------------------------------------------------------------------
 
 
+_ALLOWED_IDE_COMMANDS = frozenset({"code", "cursor", "zed", "subl", "open", "xdg-open"})
+
+
+def _resolve_workspace(flow_name: str, workspace: str | None, run_id: str) -> str:
+    """Determine workspace: use the flow's explicit workspace or auto-generate an isolated one."""
+    if workspace:
+        return workspace
+    return os.path.expanduser(f"~/.flowstate/workspaces/{flow_name}/{run_id[:8]}")
+
+
 @router.post("/open")
 async def open_in_ide(body: OpenRequest) -> dict[str, str]:
     """Open a path in the user's IDE."""
     import subprocess as sp
     from pathlib import Path
 
-    path = Path(body.path).expanduser()
+    if body.command not in _ALLOWED_IDE_COMMANDS:
+        raise FlowstateError(
+            f"Command not allowed: {body.command}. "
+            f"Allowed: {', '.join(sorted(_ALLOWED_IDE_COMMANDS))}",
+            status_code=400,
+        )
+
+    path = Path(body.path).expanduser().resolve()
     if not path.exists():
         raise FlowstateError(f"Path not found: {body.path}", status_code=404)
 
@@ -241,11 +258,7 @@ async def start_run(
     run_manager = _get_run_manager(request)
     run_id = str(uuid.uuid4())
 
-    # Determine workspace from flow AST, auto-generating an isolated workspace if omitted
-    if flow_ast.workspace:
-        workspace = flow_ast.workspace
-    else:
-        workspace = os.path.expanduser(f"~/.flowstate/workspaces/{flow_ast.name}/{run_id[:8]}")
+    workspace = _resolve_workspace(flow_ast.name, flow_ast.workspace, run_id)
 
     # Pass run_id to execute so DB uses the same key as RunManager
     execute_coro = executor.execute(flow_ast, body.params, workspace, flow_run_id=run_id)
@@ -669,11 +682,7 @@ async def trigger_schedule(request: Request, schedule_id: str) -> dict[str, str]
     run_manager = _get_run_manager(request)
     run_id = str(uuid.uuid4())
 
-    # Determine workspace from flow AST, auto-generating an isolated workspace if omitted
-    if flow_ast.workspace:
-        workspace = flow_ast.workspace
-    else:
-        workspace = os.path.expanduser(f"~/.flowstate/workspaces/{flow_ast.name}/{run_id[:8]}")
+    workspace = _resolve_workspace(flow_ast.name, flow_ast.workspace, run_id)
     execute_coro = executor.execute(flow_ast, {}, workspace, flow_run_id=run_id)
     await run_manager.start_run(run_id, executor, execute_coro)
 
