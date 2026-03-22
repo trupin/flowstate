@@ -238,6 +238,8 @@ class FlowExecutor:
         # Worktree isolation
         self._worktree_cleanup = worktree_cleanup
         self._worktree_info: WorktreeInfo | None = None
+        # Queue task tracking (set by execute() when processing a queue task)
+        self._task_id: str | None = None
 
     def _emit(self, event: FlowEvent) -> None:
         """Emit an event via the callback, catching any callback exceptions."""
@@ -274,6 +276,7 @@ class FlowExecutor:
         params: dict[str, str | float | bool],
         workspace: str,
         flow_run_id: str | None = None,
+        task_id: str | None = None,
     ) -> str:
         """Execute a flow and return the flow_run_id.
 
@@ -308,6 +311,18 @@ class FlowExecutor:
             run_id=desired_id,
         )
         data_dir = os.path.expanduser(f"~/.flowstate/runs/{flow_run_id}")
+
+        # Store task_id for task-aware execution
+        self._task_id = task_id
+        if task_id:
+            # Link flow_run -> task
+            self._db._execute(  # type: ignore[attr-defined]
+                "UPDATE flow_runs SET task_id = ? WHERE id = ?",
+                (task_id, flow_run_id),
+            )
+            self._db._commit()  # type: ignore[attr-defined]
+            # Link task -> flow_run (now that flow_runs row exists)
+            self._db.update_task_queue_status(task_id, "running", flow_run_id=flow_run_id)
 
         # Resolve workspace to absolute path
         workspace = str(Path(workspace).resolve())
@@ -1178,6 +1193,9 @@ class FlowExecutor:
 
         prompt = _maybe_append_routing(prompt, flow, target_node, task_dir)
 
+        # Inject task queue context if executing on behalf of a task
+        prompt = self._inject_task_context(prompt)
+
         task_id = self._db.create_task_execution(
             flow_run_id=flow_run_id,
             node_name=target_node.name,
@@ -1290,6 +1308,11 @@ class FlowExecutor:
 
         # Cleanup worktree
         await self._cleanup_worktree()
+
+        # Mark the queue task as cancelled
+        queue_task_id = self._task_id
+        if queue_task_id:
+            self._db.update_task_queue_status(queue_task_id, "cancelled")
 
         self._db.update_flow_run_status(flow_run_id, "cancelled")
         self._emit(
@@ -1407,6 +1430,13 @@ class FlowExecutor:
         # Update status to running
         self._db.update_task_status(task_execution_id, "running", started_at=_now_iso())
         start_time = time.monotonic()
+
+        # Track task node history when executing on behalf of a queue task
+        queue_task_id = self._task_id
+        if queue_task_id:
+            self._db.update_task_queue_status(queue_task_id, "running", current_node=node.name)
+            self._db.add_task_node_history(queue_task_id, node.name, flow_run_id)
+
         self._emit(
             FlowEvent(
                 type=EventType.TASK_STARTED,
@@ -1490,6 +1520,9 @@ class FlowExecutor:
                     claude_session_id=session_id,
                     completed_at=_now_iso(),
                 )
+                # Complete task node history when executing on behalf of a queue task
+                if queue_task_id:
+                    self._db.complete_task_node_history(queue_task_id, node.name)
                 # Budget tracking
                 warnings = budget.add_elapsed(elapsed)
                 for w in warnings:
@@ -1632,6 +1665,9 @@ class FlowExecutor:
 
         prompt = _maybe_append_routing(prompt, flow, node, task_dir)
 
+        # Inject task queue context if executing on behalf of a task
+        prompt = self._inject_task_context(prompt)
+
         task_id = self._db.create_task_execution(
             flow_run_id=flow_run_id,
             node_name=node.name,
@@ -1716,6 +1752,11 @@ class FlowExecutor:
         old_status = run.status if run else "unknown"
         self._db.update_flow_run_status(flow_run_id, "paused", error_message=reason)
 
+        # Mark the queue task as paused
+        queue_task_id = self._task_id
+        if queue_task_id:
+            self._db.update_task_queue_status(queue_task_id, "paused", error_message=reason)
+
         # Emit activity log on the most recent task execution for this run
         latest_task = self._db.get_latest_task_execution(flow_run_id)
         if latest_task:
@@ -1742,6 +1783,11 @@ class FlowExecutor:
         """Mark the flow as completed: update DB and emit event."""
         self._db.update_flow_run_elapsed(flow_run_id, budget.elapsed)
         self._db.update_flow_run_status(flow_run_id, "completed")
+
+        # Mark the queue task as completed
+        task_id = self._task_id
+        if task_id:
+            self._db.update_task_queue_status(task_id, "completed")
 
         self._emit(
             FlowEvent(
@@ -1777,6 +1823,24 @@ class FlowExecutor:
                 cwd, self._worktree_info.original_workspace, self._worktree_info.worktree_path
             )
         return cwd
+
+    def _inject_task_context(self, prompt: str) -> str:
+        """Prepend task queue context to a prompt when executing on behalf of a task.
+
+        If ``self._task_id`` is set, loads the task from the database and
+        prepends its title and description to the prompt so the subprocess
+        has full context about the work item it is processing.
+        """
+        task_id = self._task_id
+        if not task_id:
+            return prompt
+        task = self._db.get_task(task_id)
+        if task is None:
+            return prompt
+        task_context = f"## Task Context\nTitle: {task.title}\n"
+        if task.description:
+            task_context += f"Description: {task.description}\n"
+        return task_context + "\n" + prompt
 
     async def _cleanup_worktree(self) -> None:
         """Clean up the git worktree if one was created and cleanup is enabled.

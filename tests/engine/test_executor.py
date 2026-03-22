@@ -3175,3 +3175,252 @@ class TestActivityLogsBudgetWarning:
         # If we got any budget warnings, they should contain % used info.
         for msg in budget_logs:
             assert "Budget warning" in msg
+
+
+# ===========================================================================
+# Task-aware executor tests (ENGINE-027)
+# ===========================================================================
+
+
+class TestTaskAwareExecution:
+    """Tests for the task queue integration in FlowExecutor."""
+
+    async def test_task_context_injected_into_prompts(self) -> None:
+        """When task_id is set, task context should be prepended to prompts."""
+        flow = _make_linear_flow()
+        db = FlowstateDB(":memory:")
+        subprocess_mgr = MockSubprocessManager()
+        events: list[FlowEvent] = []
+
+        executor = FlowExecutor(
+            db=db,
+            event_callback=events.append,
+            subprocess_mgr=subprocess_mgr,
+        )
+
+        # Create a task in the DB
+        task_id = db.create_task(
+            "test-flow",
+            "Build the feature",
+            description="Implement user authentication",
+        )
+
+        await executor.execute(flow, {}, "/workspace", task_id=task_id)
+
+        # Check that prompts contain the task context
+        for prompt, _workspace, _session_id in subprocess_mgr.calls:
+            assert "## Task Context" in prompt
+            assert "Title: Build the feature" in prompt
+            assert "Description: Implement user authentication" in prompt
+
+    async def test_task_context_without_description(self) -> None:
+        """Task context injection should work when description is None."""
+        flow = _make_linear_flow()
+        db = FlowstateDB(":memory:")
+        subprocess_mgr = MockSubprocessManager()
+        events: list[FlowEvent] = []
+
+        executor = FlowExecutor(
+            db=db,
+            event_callback=events.append,
+            subprocess_mgr=subprocess_mgr,
+        )
+
+        task_id = db.create_task("test-flow", "No description task")
+
+        await executor.execute(flow, {}, "/workspace", task_id=task_id)
+
+        for prompt, _, _ in subprocess_mgr.calls:
+            assert "## Task Context" in prompt
+            assert "Title: No description task" in prompt
+            assert "Description:" not in prompt
+
+    async def test_no_task_context_without_task_id(self) -> None:
+        """When task_id is None, no task context should be added."""
+        flow = _make_linear_flow()
+        db = FlowstateDB(":memory:")
+        subprocess_mgr = MockSubprocessManager()
+        events: list[FlowEvent] = []
+
+        executor = FlowExecutor(
+            db=db,
+            event_callback=events.append,
+            subprocess_mgr=subprocess_mgr,
+        )
+
+        await executor.execute(flow, {}, "/workspace")
+
+        for prompt, _, _ in subprocess_mgr.calls:
+            assert "## Task Context" not in prompt
+
+    async def test_task_node_history_tracked(self) -> None:
+        """Node history should be recorded for each node during execution."""
+        flow = _make_linear_flow()
+        db = FlowstateDB(":memory:")
+        subprocess_mgr = MockSubprocessManager()
+        events: list[FlowEvent] = []
+
+        executor = FlowExecutor(
+            db=db,
+            event_callback=events.append,
+            subprocess_mgr=subprocess_mgr,
+        )
+
+        task_id = db.create_task("test-flow", "History test")
+
+        await executor.execute(flow, {}, "/workspace", task_id=task_id)
+
+        history = db.get_task_history(task_id)
+        node_names = [h.node_name for h in history]
+        assert "start" in node_names
+        assert "work" in node_names
+        assert "finish" in node_names
+        # All should have completed_at set (successful run)
+        for h in history:
+            assert h.started_at is not None
+            assert h.completed_at is not None
+
+    async def test_task_current_node_updated(self) -> None:
+        """current_node on the task should be updated as nodes execute."""
+        flow = _make_linear_flow()
+        db = FlowstateDB(":memory:")
+        subprocess_mgr = MockSubprocessManager()
+        events: list[FlowEvent] = []
+
+        executor = FlowExecutor(
+            db=db,
+            event_callback=events.append,
+            subprocess_mgr=subprocess_mgr,
+        )
+
+        task_id = db.create_task("test-flow", "Track current node")
+
+        await executor.execute(flow, {}, "/workspace", task_id=task_id)
+
+        # After successful completion, the last node processed was "finish"
+        task = db.get_task(task_id)
+        assert task is not None
+        assert task.current_node == "finish"
+
+    async def test_task_marked_completed_on_flow_complete(self) -> None:
+        """Task should be marked completed when the flow completes."""
+        flow = _make_linear_flow()
+        db = FlowstateDB(":memory:")
+        subprocess_mgr = MockSubprocessManager()
+        events: list[FlowEvent] = []
+
+        executor = FlowExecutor(
+            db=db,
+            event_callback=events.append,
+            subprocess_mgr=subprocess_mgr,
+        )
+
+        task_id = db.create_task("test-flow", "Complete me")
+
+        await executor.execute(flow, {}, "/workspace", task_id=task_id)
+
+        task = db.get_task(task_id)
+        assert task is not None
+        assert task.status == "completed"
+        assert task.completed_at is not None
+
+    async def test_task_marked_cancelled_on_cancel(self) -> None:
+        """Task should be marked cancelled when the flow is cancelled."""
+        flow = _make_linear_flow()
+        db = FlowstateDB(":memory:")
+        subprocess_mgr = MockSubprocessManager()
+        subprocess_mgr.task_delays["work"] = 1.0  # slow task to allow cancellation
+        events: list[FlowEvent] = []
+
+        executor = FlowExecutor(
+            db=db,
+            event_callback=events.append,
+            subprocess_mgr=subprocess_mgr,
+        )
+
+        task_id = db.create_task("test-flow", "Cancel me")
+
+        async def run_and_cancel() -> str:
+            execute_task = asyncio.create_task(
+                executor.execute(flow, {}, "/workspace", task_id=task_id)
+            )
+            # Wait a moment for execution to start
+            await asyncio.sleep(0.1)
+            # Get the flow run id from DB
+            runs = db.list_flow_runs()
+            if runs:
+                await executor.cancel(runs[0].id)
+            return await execute_task
+
+        await run_and_cancel()
+
+        task = db.get_task(task_id)
+        assert task is not None
+        assert task.status == "cancelled"
+
+    async def test_task_marked_paused_on_error(self) -> None:
+        """Task should be marked paused when on_error=pause triggers."""
+        flow = _make_linear_flow(on_error=ErrorPolicy.PAUSE)
+        db = FlowstateDB(":memory:")
+        subprocess_mgr = MockSubprocessManager()
+        # Make the 'work' node fail
+        subprocess_mgr.task_responses["work"] = (1, [])
+        events: list[FlowEvent] = []
+
+        executor = FlowExecutor(
+            db=db,
+            event_callback=events.append,
+            subprocess_mgr=subprocess_mgr,
+        )
+
+        task_id = db.create_task("test-flow", "Pause me")
+
+        # Start execution in background with task_id
+        execute_task = asyncio.create_task(
+            executor.execute(flow, {}, "/workspace", task_id=task_id)
+        )
+        # Poll until the flow pauses
+        flow_run_id: str | None = None
+        for _ in range(200):
+            await asyncio.sleep(0.01)
+            if execute_task.done():
+                break
+            runs = db.list_flow_runs()
+            if runs:
+                run = db.get_flow_run(runs[0].id)
+                if run and run.status == "paused":
+                    flow_run_id = run.id
+                    break
+
+        assert flow_run_id is not None, "Flow did not reach paused state"
+
+        task = db.get_task(task_id)
+        assert task is not None
+        assert task.status == "paused"
+        assert task.error_message is not None
+
+        # Cancel to let execute() return
+        await executor.cancel(flow_run_id)
+        with contextlib.suppress(asyncio.CancelledError):
+            await execute_task
+
+    async def test_task_id_stored_in_flow_run(self) -> None:
+        """The flow run record should have the task_id set."""
+        flow = _make_linear_flow()
+        db = FlowstateDB(":memory:")
+        subprocess_mgr = MockSubprocessManager()
+        events: list[FlowEvent] = []
+
+        executor = FlowExecutor(
+            db=db,
+            event_callback=events.append,
+            subprocess_mgr=subprocess_mgr,
+        )
+
+        task_id = db.create_task("test-flow", "Link to run")
+
+        flow_run_id = await executor.execute(flow, {}, "/workspace", task_id=task_id)
+
+        run = db.get_flow_run(flow_run_id)
+        assert run is not None
+        assert run.task_id == task_id

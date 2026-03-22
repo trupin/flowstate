@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import os
 import uuid
 from typing import TYPE_CHECKING, Any
@@ -13,18 +14,22 @@ from flowstate.engine.executor import FlowExecutor
 from flowstate.server.app import FlowstateError
 from flowstate.server.models import (
     OpenRequest,
+    ReorderTasksRequest,
     RunSummary,
     ScheduleResponse,
     StartRunRequest,
     StartRunResponse,
+    SubmitTaskRequest,
     TaskLogEntry,
     TaskLogsResponse,
+    UpdateTaskRequest,
 )
 from flowstate.server.run_manager import InvalidStateError
 
 if TYPE_CHECKING:
     from flowstate.server.flow_registry import DiscoveredFlow, FlowRegistry
     from flowstate.server.run_manager import RunManager
+    from flowstate.state.models import TaskNodeHistoryRow, TaskRow
     from flowstate.state.repository import FlowstateDB
 
 router = APIRouter(prefix="/api")
@@ -687,3 +692,165 @@ async def trigger_schedule(request: Request, schedule_id: str) -> dict[str, str]
     await run_manager.start_run(run_id, executor, execute_coro)
 
     return {"flow_run_id": run_id}
+
+
+# ---------------------------------------------------------------------------
+# Task Queue endpoints (SERVER-011)
+# ---------------------------------------------------------------------------
+
+
+def _task_to_response(task: TaskRow) -> dict[str, Any]:
+    """Convert a TaskRow to a JSON-serialisable dict for API responses."""
+    return {
+        "id": task.id,
+        "flow_name": task.flow_name,
+        "title": task.title,
+        "description": task.description,
+        "status": task.status,
+        "current_node": task.current_node,
+        "params_json": task.params_json,
+        "output_json": task.output_json,
+        "parent_task_id": task.parent_task_id,
+        "created_by": task.created_by,
+        "flow_run_id": task.flow_run_id,
+        "priority": task.priority,
+        "created_at": task.created_at,
+        "started_at": task.started_at,
+        "completed_at": task.completed_at,
+        "error_message": task.error_message,
+    }
+
+
+def _history_to_response(h: TaskNodeHistoryRow) -> dict[str, Any]:
+    """Convert a TaskNodeHistoryRow to a JSON-serialisable dict."""
+    return {
+        "id": h.id,
+        "task_id": h.task_id,
+        "node_name": h.node_name,
+        "flow_run_id": h.flow_run_id,
+        "started_at": h.started_at,
+        "completed_at": h.completed_at,
+    }
+
+
+@router.post("/flows/{flow_name}/tasks", status_code=201)
+async def submit_task(request: Request, flow_name: str, body: SubmitTaskRequest) -> dict[str, Any]:
+    """Submit a task to a flow's queue."""
+    registry: FlowRegistry = request.app.state.flow_registry
+    flow = registry.get_flow(flow_name)
+    if flow is None:
+        raise FlowstateError(f"Flow '{flow_name}' not found", status_code=404)
+
+    db = _get_db(request)
+    task_id = db.create_task(
+        flow_name=flow_name,
+        title=body.title,
+        description=body.description,
+        params_json=json.dumps(body.params) if body.params else None,
+        created_by="user",
+        priority=body.priority,
+    )
+    task = db.get_task(task_id)
+    assert task is not None  # just created — must exist
+    return _task_to_response(task)
+
+
+@router.get("/flows/{flow_name}/tasks")
+async def list_flow_tasks(
+    request: Request, flow_name: str, status: str | None = None
+) -> list[dict[str, Any]]:
+    """List tasks for a specific flow, optionally filtered by status."""
+    db = _get_db(request)
+    tasks = db.list_tasks(flow_name=flow_name, status=status)
+    return [_task_to_response(t) for t in tasks]
+
+
+@router.get("/tasks")
+async def list_all_tasks(
+    request: Request, status: str | None = None, limit: int = 100
+) -> list[dict[str, Any]]:
+    """List all tasks, optionally filtered by status."""
+    db = _get_db(request)
+    tasks = db.list_tasks(status=status, limit=limit)
+    return [_task_to_response(t) for t in tasks]
+
+
+@router.get("/tasks/{task_id}")
+async def get_task(request: Request, task_id: str) -> dict[str, Any]:
+    """Get full task detail including history and children."""
+    db = _get_db(request)
+    task = db.get_task(task_id)
+    if task is None:
+        raise FlowstateError(f"Task '{task_id}' not found", status_code=404)
+    history = db.get_task_history(task_id)
+    children = db.get_child_tasks(task_id)
+    resp = _task_to_response(task)
+    resp["history"] = [_history_to_response(h) for h in history]
+    resp["children"] = [_task_to_response(c) for c in children]
+    return resp
+
+
+@router.post("/tasks/{task_id}/cancel")
+async def cancel_task(request: Request, task_id: str) -> dict[str, str]:
+    """Cancel a queued or running task."""
+    db = _get_db(request)
+    task = db.get_task(task_id)
+    if task is None:
+        raise FlowstateError(f"Task '{task_id}' not found", status_code=404)
+    if task.status not in ("queued", "running"):
+        raise FlowstateError(f"Cannot cancel task in status '{task.status}'", status_code=409)
+
+    if task.status == "running" and task.flow_run_id:
+        # Cancel the associated flow run
+        run_manager = _get_run_manager(request)
+        executor = run_manager.get_executor(task.flow_run_id)
+        if executor:
+            await executor.cancel(task.flow_run_id)
+
+    db.update_task_queue_status(task_id, "cancelled")
+    return {"status": "cancelled"}
+
+
+@router.patch("/tasks/{task_id}")
+async def update_task(request: Request, task_id: str, body: UpdateTaskRequest) -> dict[str, Any]:
+    """Update a queued task's mutable fields."""
+    db = _get_db(request)
+    task = db.get_task(task_id)
+    if task is None:
+        raise FlowstateError(f"Task '{task_id}' not found", status_code=404)
+    if task.status != "queued":
+        raise FlowstateError("Can only edit queued tasks", status_code=409)
+
+    db.update_task(
+        task_id,
+        title=body.title,
+        description=body.description,
+        params_json=json.dumps(body.params) if body.params is not None else None,
+        priority=body.priority,
+    )
+    updated = db.get_task(task_id)
+    assert updated is not None
+    return _task_to_response(updated)
+
+
+@router.delete("/tasks/{task_id}")
+async def delete_task(request: Request, task_id: str) -> dict[str, str]:
+    """Delete a queued task from the queue."""
+    db = _get_db(request)
+    task = db.get_task(task_id)
+    if task is None:
+        raise FlowstateError(f"Task '{task_id}' not found", status_code=404)
+    if task.status != "queued":
+        raise FlowstateError("Can only delete queued tasks", status_code=409)
+    db.delete_task(task_id)
+    return {"status": "deleted"}
+
+
+@router.post("/flows/{flow_name}/tasks/reorder")
+async def reorder_tasks(
+    request: Request, flow_name: str, body: ReorderTasksRequest
+) -> dict[str, str]:
+    """Reorder queued tasks by specifying the desired task ID order."""
+    db = _get_db(request)
+    db.reorder_tasks(flow_name, body.task_ids)
+    return {"status": "reordered"}

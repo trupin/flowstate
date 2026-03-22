@@ -110,3 +110,32 @@ class ScheduleResponse(BaseModel):
     next_run_at: str | None  # ISO 8601, None if paused
     last_run_at: str | None  # ISO 8601, None if never run
     overlap_policy: str  # "skip", "queue", "parallel"
+
+
+# ---------------------------------------------------------------------------
+# Task Queue (SERVER-011)
+# ---------------------------------------------------------------------------
+
+
+class SubmitTaskRequest(BaseModel):
+    """Request body for POST /api/flows/:flow_name/tasks."""
+
+    title: str
+    description: str = ""
+    params: dict[str, str | float | bool] = {}
+    priority: int = 0
+
+
+class UpdateTaskRequest(BaseModel):
+    """Request body for PATCH /api/tasks/:task_id."""
+
+    title: str | None = None
+    description: str | None = None
+    params: dict[str, str | float | bool] | None = None
+    priority: int | None = None
+
+
+class ReorderTasksRequest(BaseModel):
+    """Request body for POST /api/flows/:flow_name/tasks/reorder."""
+
+    task_ids: list[str]
