@@ -1,0 +1,14 @@
+.clickable-path {
+  font-family: var(--font-mono);
+  font-size: 0.85em;
+  cursor: pointer;
+  text-decoration: underline;
+  text-decoration-style: dotted;
+  text-underline-offset: 2px;
+  color: var(--accent);
+}
+
+.clickable-path:hover {
+  text-decoration-style: solid;
+  opacity: 0.9;
+}

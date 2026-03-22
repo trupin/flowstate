@@ -117,9 +117,9 @@
 | UI-023 | Replace Flows list with selected flow detail view        | ui     | P1       | UI-010                                 | done   |
 | UI-024 | WebSocket events dropped during rapid state transitions  | ui     | P0       | —                                      | done   |
 | UI-025 | Graph canvas does not resize/recenter on panel open      | ui     | P1       | —                                      | done   |
-| UI-026 | Flow library: side panel layout + centered graph         | ui     | P1       | UI-023, UI-025                         | todo   |
+| UI-026 | Flow library: side panel layout + centered graph         | ui     | P1       | UI-023, UI-025                         | done   |
 | UI-027 | "NaNd ago" in recent runs — guard time formatters        | ui     | P0       | —                                      | done   |
-| UI-028 | Clickable paths open in IDE + settings panel             | ui     | P1       | UI-022                                 | todo   |
+| UI-028 | Clickable paths open in IDE + settings panel             | ui     | P1       | UI-022                                 | done   |
 
 
 ### Phase 5 — Integration

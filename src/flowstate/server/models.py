@@ -5,6 +5,13 @@ from __future__ import annotations
 from pydantic import BaseModel
 
 
+class OpenRequest(BaseModel):
+    """Request body for POST /api/open — opens a path in the user's IDE."""
+
+    path: str
+    command: str = "code"
+
+
 class StartRunRequest(BaseModel):
     """Request body for POST /api/flows/:id/runs."""
 

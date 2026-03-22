@@ -1,6 +1,7 @@
 import { useState, useEffect } from 'react';
 import { Handle, Position, type NodeProps, type Node } from '@xyflow/react';
 import type { TaskStatus } from '../api/types';
+import { ClickablePath } from './ClickablePath';
 import './NodePill.css';
 
 // --- Public data interface ---
@@ -26,11 +27,6 @@ function formatElapsed(seconds: number): string {
   const mins = Math.floor(seconds / 60);
   const secs = Math.round(seconds % 60);
   return `${mins}m ${secs}s`;
-}
-
-function truncatePath(path: string, maxLen = 20): string {
-  if (path.length <= maxLen) return path;
-  return '...' + path.slice(-maxLen + 3);
 }
 
 function truncateName(name: string, maxLen = 24): string {
@@ -114,27 +110,21 @@ export function NodePill({ data }: NodeProps<Node<NodePillData>>) {
           {data.hasExecution ? (
             <div className="node-pill-dirs">
               {data.cwd && (
-                <span className="node-pill-dir" title={data.cwd}>
+                <span className="node-pill-dir">
                   <span className="node-pill-dir-label">cwd</span>
-                  <span className="node-pill-dir-value">
-                    {truncatePath(data.cwd, 28)}
-                  </span>
+                  <ClickablePath path={data.cwd} truncate={28} />
                 </span>
               )}
               {data.taskDir && (
-                <span className="node-pill-dir" title={data.taskDir}>
+                <span className="node-pill-dir">
                   <span className="node-pill-dir-label">task</span>
-                  <span className="node-pill-dir-value">
-                    {truncatePath(data.taskDir, 28)}
-                  </span>
+                  <ClickablePath path={data.taskDir} truncate={28} />
                 </span>
               )}
               {data.worktreeDir && (
-                <span className="node-pill-dir" title={data.worktreeDir}>
+                <span className="node-pill-dir">
                   <span className="node-pill-dir-label">worktree</span>
-                  <span className="node-pill-dir-value">
-                    {truncatePath(data.worktreeDir, 28)}
-                  </span>
+                  <ClickablePath path={data.worktreeDir} truncate={28} />
                 </span>
               )}
             </div>

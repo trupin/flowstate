@@ -147,3 +147,28 @@
 .status-dot.status-budget_exceeded {
   background-color: var(--warning);
 }
+
+/* Sidebar footer with settings button */
+.sidebar-footer {
+  margin-top: auto;
+  padding: 8px 12px;
+  border-top: 1px solid var(--border);
+  display: flex;
+  justify-content: flex-end;
+}
+
+.sidebar-settings-btn {
+  background: none;
+  border: none;
+  color: var(--text-secondary);
+  font-size: 16px;
+  cursor: pointer;
+  padding: 4px 6px;
+  border-radius: 4px;
+  line-height: 1;
+}
+
+.sidebar-settings-btn:hover {
+  color: var(--text-primary);
+  background: var(--bg-tertiary);
+}

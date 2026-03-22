@@ -108,4 +108,9 @@ export const api = {
     resume: (id: string) => post<void>(`/api/schedules/${id}/resume`),
     trigger: (id: string) => post<void>(`/api/schedules/${id}/trigger`),
   },
+  open: (path: string, command?: string) =>
+    post<{ status: string; path: string; command: string }>('/api/open', {
+      path,
+      command: command ?? localStorage.getItem('flowstate-ide') ?? 'code',
+    }),
 };

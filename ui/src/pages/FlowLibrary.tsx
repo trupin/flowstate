@@ -57,42 +57,43 @@ export function FlowLibrary() {
 
   return (
     <div className="flow-library">
-      <div className="flow-library-content">
-        {fetchError && <div className="flow-library-error">{fetchError}</div>}
+      {fetchError && <div className="flow-library-error">{fetchError}</div>}
 
-        {selectedFlow ? (
-          <>
-            <div className="flow-library-header">
-              <h2>{selectedFlow.name}</h2>
-              {selectedFlow.is_valid && (
-                <button
-                  className="start-run-btn"
-                  data-testid="start-run-btn"
-                  onClick={() => setShowStartModal(true)}
-                >
-                  Start Run
-                </button>
-              )}
-            </div>
-
-            {!selectedFlow.is_valid && (
-              <ErrorBanner errors={selectedFlow.errors} />
+      {selectedFlow ? (
+        <>
+          <div className="flow-library-header">
+            <h2>{selectedFlow.name}</h2>
+            {selectedFlow.is_valid && (
+              <button
+                className="start-run-btn"
+                data-testid="start-run-btn"
+                onClick={() => setShowStartModal(true)}
+              >
+                Start Run
+              </button>
             )}
+          </div>
 
-            <FlowDetailPanel flow={selectedFlow} />
+          {!selectedFlow.is_valid && (
+            <ErrorBanner errors={selectedFlow.errors} />
+          )}
 
+          <div className="flow-library-body">
             <div className="flow-library-graph">
               <GraphView nodes={graphNodes} edges={graphEdges} readOnly />
             </div>
-          </>
-        ) : (
-          !fetchError && (
-            <div className="flow-library-no-selection">
-              Select a flow from the sidebar
+            <div className="flow-library-detail-sidebar">
+              <FlowDetailPanel flow={selectedFlow} />
             </div>
-          )
-        )}
-      </div>
+          </div>
+        </>
+      ) : (
+        !fetchError && (
+          <div className="flow-library-no-selection">
+            Select a flow from the sidebar
+          </div>
+        )
+      )}
 
       {showStartModal && selectedFlow && (
         <StartRunModal

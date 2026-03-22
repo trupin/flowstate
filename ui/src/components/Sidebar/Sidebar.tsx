@@ -2,6 +2,7 @@ import { useState, useEffect, type ReactNode } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { api } from '../../api/client';
 import { useFlowWatcher } from '../../hooks/useFlowWatcher';
+import { SettingsPanel } from '../SettingsPanel';
 import type { FlowRun, FlowSchedule } from '../../api/types';
 import './Sidebar.css';
 
@@ -80,6 +81,7 @@ export function Sidebar() {
   const [activeRuns, setActiveRuns] = useState<FlowRun[]>([]);
   const [recentRuns, setRecentRuns] = useState<FlowRun[]>([]);
   const [schedules, setSchedules] = useState<FlowSchedule[]>([]);
+  const [showSettings, setShowSettings] = useState(false);
   const [collapsed, setCollapsed] = useState({
     flows: false,
     runs: false,
@@ -253,6 +255,18 @@ export function Sidebar() {
           ))
         )}
       </SidebarSection>
+
+      <div className="sidebar-footer">
+        <button
+          className="sidebar-settings-btn"
+          onClick={() => setShowSettings(true)}
+          title="Settings"
+          aria-label="Open settings"
+        >
+          &#9881;
+        </button>
+      </div>
+      {showSettings && <SettingsPanel onClose={() => setShowSettings(false)} />}
     </aside>
   );
 }

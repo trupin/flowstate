@@ -12,6 +12,7 @@ from flowstate.dsl.parser import parse_flow
 from flowstate.engine.executor import FlowExecutor
 from flowstate.server.app import FlowstateError
 from flowstate.server.models import (
+    OpenRequest,
     RunSummary,
     ScheduleResponse,
     StartRunRequest,
@@ -27,6 +28,29 @@ if TYPE_CHECKING:
     from flowstate.state.repository import FlowstateDB
 
 router = APIRouter(prefix="/api")
+
+
+# ---------------------------------------------------------------------------
+# IDE / open-path endpoint (UI-028)
+# ---------------------------------------------------------------------------
+
+
+@router.post("/open")
+async def open_in_ide(body: OpenRequest) -> dict[str, str]:
+    """Open a path in the user's IDE."""
+    import subprocess as sp
+    from pathlib import Path
+
+    path = Path(body.path).expanduser()
+    if not path.exists():
+        raise FlowstateError(f"Path not found: {body.path}", status_code=404)
+
+    try:
+        sp.Popen([body.command, str(path)])
+    except FileNotFoundError as e:
+        raise FlowstateError(f"Command not found: {body.command}", status_code=400) from e
+
+    return {"status": "opened", "path": str(path), "command": body.command}
 
 
 # ---------------------------------------------------------------------------

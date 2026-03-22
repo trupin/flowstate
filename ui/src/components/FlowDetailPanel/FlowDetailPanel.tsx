@@ -1,6 +1,7 @@
 import { useState, useEffect, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { api } from '../../api/client';
+import { ClickablePath } from '../ClickablePath';
 import type { DiscoveredFlow, FlowRun, EdgeType } from '../../api/types';
 import './FlowDetailPanel.css';
 
@@ -140,11 +141,12 @@ export function FlowDetailPanel({ flow }: FlowDetailPanelProps) {
             <span className="flow-settings-value">{ast.on_error}</span>
 
             <span className="flow-settings-key">Workspace</span>
-            <span
-              className="flow-settings-value"
-              title={ast.workspace ?? undefined}
-            >
-              {ast.workspace ?? 'not set'}
+            <span className="flow-settings-value">
+              {ast.workspace ? (
+                <ClickablePath path={ast.workspace} truncate={30} />
+              ) : (
+                'not set'
+              )}
             </span>
 
             <span className="flow-settings-key">Judge</span>
