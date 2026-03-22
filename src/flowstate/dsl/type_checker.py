@@ -242,16 +242,8 @@ def _check_structural(flow: Flow) -> list[FlowTypeError]:
                 )
             )
 
-    # S8: Every node has a resolvable cwd (own cwd or flow-level workspace)
-    for node in flow.nodes.values():
-        if node.cwd is None and flow.workspace is None:
-            errors.append(
-                FlowTypeError(
-                    "S8",
-                    f"Node '{node.name}' has no cwd and flow has no workspace",
-                    node.name,
-                )
-            )
+    # S8: Removed — workspace is now optional. When omitted, the server
+    # auto-generates an isolated workspace per run (ENGINE-026).
 
     return errors
 

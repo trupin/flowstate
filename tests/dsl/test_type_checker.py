@@ -272,7 +272,10 @@ class TestS7ExitNoOutgoing:
 
 
 class TestS8ResolvableCwd:
-    def test_no_cwd_no_workspace(self) -> None:
+    """S8 was removed — workspace is now optional (ENGINE-026 auto-generates one).
+    These tests verify S8 no longer fires."""
+
+    def test_no_cwd_no_workspace_is_allowed(self) -> None:
         nodes = {
             "start": Node(name="start", node_type=NodeType.ENTRY, prompt="begin"),
             "end": Node(name="end", node_type=NodeType.EXIT, prompt="done"),
@@ -281,8 +284,7 @@ class TestS8ResolvableCwd:
         flow = _minimal_flow(nodes=nodes, edges=edges, workspace=None)
         errors = check_flow(flow)
         s8 = _errors_with_rule(errors, "S8")
-        # Both start and end have no cwd and flow has no workspace
-        assert len(s8) == 2
+        assert len(s8) == 0  # S8 removed — no error
 
     def test_node_cwd_overrides_no_workspace(self) -> None:
         nodes = {
@@ -305,8 +307,8 @@ class TestS8ResolvableCwd:
 class TestMultipleStructuralErrors:
     """Verify checker collects multiple errors (does not short-circuit)."""
 
-    def test_s2_and_s8_together(self) -> None:
-        # No exit + no workspace = S2 + S8 errors
+    def test_s2_without_s8(self) -> None:
+        # No exit = S2 error, but no S8 (workspace is now optional)
         nodes = {
             "start": Node(name="start", node_type=NodeType.ENTRY, prompt="begin"),
             "mid": Node(name="mid", node_type=NodeType.TASK, prompt="work"),
@@ -316,7 +318,7 @@ class TestMultipleStructuralErrors:
         errors = check_flow(flow)
         rules = {e.rule for e in errors}
         assert "S2" in rules
-        assert "S8" in rules
+        assert "S8" not in rules  # S8 removed
 
 
 # ===========================================================================
