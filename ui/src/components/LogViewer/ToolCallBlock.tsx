@@ -22,38 +22,59 @@ function truncateStr(s: string, maxLen: number): string {
   return s.slice(0, maxLen - 3) + '...';
 }
 
-function getPrimarySummary(input: Record<string, unknown>): string {
-  // Try priority keys first
+function getInlineSummary(
+  toolName: string,
+  input: Record<string, unknown>,
+): string {
+  // Create a compact inline summary like Read(src/main.py), Edit(src/utils.py:42)
   for (const key of PRIMARY_ARG_PRIORITY) {
     if (key in input && typeof input[key] === 'string') {
-      return `${key}="${truncateStr(input[key] as string, 80)}"`;
+      const value = input[key] as string;
+      if (key === 'file_path') {
+        // For file paths, just show the path
+        return `${toolName}(${truncateStr(value, 60)})`;
+      }
+      if (key === 'command') {
+        return `${toolName}(${truncateStr(value, 80)})`;
+      }
+      return `${toolName}(${key}="${truncateStr(value, 60)}")`;
     }
   }
   // Fall back to first string-valued arg
   for (const [key, value] of Object.entries(input)) {
     if (typeof value === 'string') {
-      return `${key}="${truncateStr(value, 80)}"`;
+      return `${toolName}(${key}="${truncateStr(value, 60)}")`;
     }
   }
-  return '';
+  return toolName;
 }
 
 function formatParamValue(value: unknown): string {
   if (typeof value === 'string') {
-    return truncateStr(value, 500);
+    return value;
   }
   if (value === null || value === undefined) {
     return String(value);
   }
-  const serialized = JSON.stringify(value, null, 2);
-  return truncateStr(serialized, 500);
+  return JSON.stringify(value, null, 2);
+}
+
+function isCodeContent(text: string): boolean {
+  // Heuristic: if text contains line numbers or looks like code output
+  return (
+    text.includes('\n') &&
+    (text.match(/^\s*\d+[\t|]/m) !== null || text.length > 300)
+  );
 }
 
 export function ToolCallBlock(props: ToolCallBlockProps) {
   const { toolName, input, result } = props;
   const [expanded, setExpanded] = useState(false);
 
-  const summary = useMemo(() => getPrimarySummary(input), [input]);
+  const inlineSummary = useMemo(
+    () => getInlineSummary(toolName, input),
+    [toolName, input],
+  );
   const paramEntries = useMemo(() => Object.entries(input), [input]);
 
   const handleToggle = () => {
@@ -81,33 +102,57 @@ export function ToolCallBlock(props: ToolCallBlockProps) {
         <span className="tool-call-chevron">
           {expanded ? '\u25BE' : '\u25B8'}
         </span>
-        <span className="tool-call-name">{toolName}</span>
-        {!expanded && summary && (
-          <span className="tool-call-summary">{summary}</span>
+        <span className="tool-call-badge">{toolName}</span>
+        {!expanded && (
+          <span className="tool-call-summary">{inlineSummary}</span>
+        )}
+        {result === null && (
+          <span className="tool-call-running-indicator">Running...</span>
         )}
       </div>
       {expanded && (
         <div className="tool-call-details">
-          {paramEntries.map(([key, value]) => (
-            <div className="tool-call-param" key={key}>
-              <span className="tool-call-param-key">{key}:</span>
-              <span className="tool-call-param-value">
-                {formatParamValue(value)}
-              </span>
+          <div className="tool-call-section">
+            <div className="tool-call-section-label">Input</div>
+            <div className="tool-call-input-content">
+              {paramEntries.map(([key, value]) => (
+                <div className="tool-call-param" key={key}>
+                  <span className="tool-call-param-key">{key}:</span>
+                  <span className="tool-call-param-value">
+                    {typeof value === 'string' ? (
+                      value.includes('\n') ? (
+                        <pre>
+                          <code>{value}</code>
+                        </pre>
+                      ) : (
+                        formatParamValue(value)
+                      )
+                    ) : (
+                      <pre>
+                        <code>{formatParamValue(value)}</code>
+                      </pre>
+                    )}
+                  </span>
+                </div>
+              ))}
             </div>
-          ))}
-          {result !== null ? (
-            <>
-              <hr className="tool-call-divider" />
-              <div className="tool-call-divider-label">Result</div>
-              <div className="tool-call-result">{result}</div>
-            </>
-          ) : (
-            <>
-              <hr className="tool-call-divider" />
+          </div>
+          <div className="tool-call-section">
+            <div className="tool-call-section-label">Result</div>
+            {result !== null ? (
+              <div className="tool-call-result">
+                {isCodeContent(result) ? (
+                  <pre>
+                    <code>{result}</code>
+                  </pre>
+                ) : (
+                  result
+                )}
+              </div>
+            ) : (
               <div className="tool-call-running">Running...</div>
-            </>
-          )}
+            )}
+          </div>
         </div>
       )}
     </div>

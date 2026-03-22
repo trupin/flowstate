@@ -121,6 +121,9 @@
 | UI-027 | "NaNd ago" in recent runs — guard time formatters        | ui     | P0       | —                                      | done   |
 | UI-028 | Clickable paths open in IDE + settings panel             | ui     | P1       | UI-022                                 | done   |
 | UI-029 | Graph doesn't refit when nodes expand or log panel opens | ui     | P0       | UI-025                                 | done   |
+| UI-031 | DSL source opens in popup modal instead of inline        | ui     | P2       | UI-023                                 | done   |
+| UI-032 | Clickable path links don't open IDE — add error feedback | ui     | P1       | UI-028                                 | done   |
+| UI-033 | Re-run dagre layout when node dimensions change          | ui     | P0       | UI-029                                 | done   |
 
 
 ### Phase 5 — Integration

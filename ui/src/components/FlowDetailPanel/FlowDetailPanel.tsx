@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef } from 'react';
+import { useState, useEffect, useRef, useCallback } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { api } from '../../api/client';
 import { ClickablePath } from '../ClickablePath';
@@ -63,7 +63,7 @@ const STATUS_SYMBOLS: Record<string, string> = {
 export function FlowDetailPanel({ flow, isEnabled }: FlowDetailPanelProps) {
   const navigate = useNavigate();
   const [recentRuns, setRecentRuns] = useState<FlowRun[]>([]);
-  const [sourceExpanded, setSourceExpanded] = useState(false);
+  const [showSource, setShowSource] = useState(false);
   const fetchingRef = useRef(false);
 
   // Fetch recent runs for this flow
@@ -91,6 +91,16 @@ export function FlowDetailPanel({ flow, isEnabled }: FlowDetailPanelProps) {
         fetchingRef.current = false;
       });
   }, [flow.name]);
+
+  const handleEscape = useCallback((e: KeyboardEvent) => {
+    if (e.key === 'Escape') setShowSource(false);
+  }, []);
+
+  useEffect(() => {
+    if (!showSource) return;
+    window.addEventListener('keydown', handleEscape);
+    return () => window.removeEventListener('keydown', handleEscape);
+  }, [showSource, handleEscape]);
 
   const ast = flow.ast_json;
 
@@ -292,30 +302,35 @@ export function FlowDetailPanel({ flow, isEnabled }: FlowDetailPanelProps) {
       {/* DSL Source */}
       {flow.source_dsl && (
         <section className="flow-detail-section">
-          <div
-            className="flow-source-toggle"
-            onClick={() => setSourceExpanded((prev) => !prev)}
-            role="button"
-            tabIndex={0}
-            onKeyDown={(e) => {
-              if (e.key === 'Enter' || e.key === ' ') {
-                e.preventDefault();
-                setSourceExpanded((prev) => !prev);
-              }
-            }}
-            aria-expanded={sourceExpanded}
+          <button
+            className="view-source-btn"
+            onClick={() => setShowSource(true)}
           >
-            <span className="flow-source-chevron">
-              {sourceExpanded ? '\u25BE' : '\u25B8'}
-            </span>
-            <span>Source DSL</span>
-          </div>
-          {sourceExpanded && (
-            <pre className="flow-source-code">
+            View Source
+          </button>
+        </section>
+      )}
+
+      {showSource && flow.source_dsl && (
+        <div
+          className="source-modal-overlay"
+          onClick={() => setShowSource(false)}
+        >
+          <div className="source-modal" onClick={(e) => e.stopPropagation()}>
+            <div className="source-modal-header">
+              <h3>{flow.name}.flow</h3>
+              <button
+                className="source-modal-close"
+                onClick={() => setShowSource(false)}
+              >
+                {'\u00D7'}
+              </button>
+            </div>
+            <pre className="source-modal-code">
               <code>{flow.source_dsl}</code>
             </pre>
-          )}
-        </section>
+          </div>
+        </div>
       )}
     </div>
   );

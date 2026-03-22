@@ -36,7 +36,11 @@ export interface GraphViewProps {
 
 // --- Layout ---
 
-function getLayoutedElements(
+const DEFAULT_NODE_WIDTH = 150;
+const DEFAULT_NODE_HEIGHT = 40;
+
+/** Run dagre layout on nodes/edges, optionally using measured dimensions. */
+function runDagreLayout(
   nodes: Node<NodePillData>[],
   edges: Edge[],
 ): { nodes: Node<NodePillData>[]; edges: Edge[] } {
@@ -45,7 +49,9 @@ function getLayoutedElements(
   g.setGraph({ rankdir: 'TB', nodesep: 80, ranksep: 100 });
 
   nodes.forEach((node) => {
-    g.setNode(node.id, { width: 150, height: 40 });
+    const width = node.measured?.width ?? DEFAULT_NODE_WIDTH;
+    const height = node.measured?.height ?? DEFAULT_NODE_HEIGHT;
+    g.setNode(node.id, { width, height });
   });
 
   edges.forEach((edge) => {
@@ -56,9 +62,11 @@ function getLayoutedElements(
 
   const layoutedNodes = nodes.map((node) => {
     const pos = g.node(node.id);
+    const width = node.measured?.width ?? DEFAULT_NODE_WIDTH;
+    const height = node.measured?.height ?? DEFAULT_NODE_HEIGHT;
     return {
       ...node,
-      position: { x: (pos?.x ?? 0) - 75, y: (pos?.y ?? 0) - 20 },
+      position: { x: (pos?.x ?? 0) - width / 2, y: (pos?.y ?? 0) - height / 2 },
     };
   });
 
@@ -182,7 +190,7 @@ function GraphViewInner({
   onNodeClick,
   waitUntil,
 }: GraphViewProps) {
-  const { fitView } = useReactFlow();
+  const { fitView, getNodes, getEdges, setNodes } = useReactFlow();
   const containerRef = useRef<HTMLDivElement>(null);
   const mountedRef = useRef(false);
 
@@ -220,7 +228,7 @@ function GraphViewInner({
     [edges, nodeOrder, activeEdges, traversedEdges],
   );
   const layouted = useMemo(
-    () => getLayoutedElements(rfNodes, rfEdges),
+    () => runDagreLayout(rfNodes, rfEdges),
     [rfNodes, rfEdges],
   );
 
@@ -244,6 +252,28 @@ function GraphViewInner({
     [fitView],
   );
 
+  // Debounced dagre relayout — re-runs layout with actual measured dimensions
+  const relayoutTimerRef = useRef<ReturnType<typeof setTimeout>>();
+  const scheduleDagreRelayout = useCallback(() => {
+    if (relayoutTimerRef.current) clearTimeout(relayoutTimerRef.current);
+    relayoutTimerRef.current = setTimeout(() => {
+      const currentNodes = getNodes() as Node<NodePillData>[];
+      const currentEdges = getEdges();
+
+      const { nodes: repositioned } = runDagreLayout(
+        currentNodes,
+        currentEdges,
+      );
+
+      setNodes(repositioned);
+
+      // Fit view after layout settles
+      setTimeout(() => {
+        fitView({ duration: 300, padding: 0.15 });
+      }, 50);
+    }, 100);
+  }, [getNodes, getEdges, setNodes, fitView]);
+
   // Re-fit when container size changes (e.g., detail panel opens/closes)
   useEffect(() => {
     const el = containerRef.current;
@@ -257,14 +287,15 @@ function GraphViewInner({
     return () => observer.disconnect();
   }, [scheduleFitView]);
 
-  // Re-fit when node dimensions change (e.g., node expanded/collapsed on click)
+  // Re-layout when node dimensions change (e.g., node expanded/collapsed on click)
   const handleNodesChange = useCallback(
     (changes: NodeChange<Node<NodePillData>>[]) => {
-      if (changes.some((c) => c.type === 'dimensions')) {
-        scheduleFitView(100);
+      const hasDimensionChange = changes.some((c) => c.type === 'dimensions');
+      if (hasDimensionChange && mountedRef.current) {
+        scheduleDagreRelayout();
       }
     },
-    [scheduleFitView],
+    [scheduleDagreRelayout],
   );
 
   // Fit view when nodes count changes (new nodes added or removed)
@@ -278,10 +309,11 @@ function GraphViewInner({
     scheduleFitView(100);
   }, [nodes.length, scheduleFitView]);
 
-  // Cleanup timer on unmount
+  // Cleanup timers on unmount
   useEffect(() => {
     return () => {
       if (fitTimerRef.current) clearTimeout(fitTimerRef.current);
+      if (relayoutTimerRef.current) clearTimeout(relayoutTimerRef.current);
     };
   }, []);
 
