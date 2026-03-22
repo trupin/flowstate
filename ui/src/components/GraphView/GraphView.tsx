@@ -60,13 +60,30 @@ function runDagreLayout(
 
   dagre.layout(g);
 
+  // Find the widest node and use its dagre center X as the alignment axis.
+  // This ensures all nodes share the same visual center in vertical layouts,
+  // regardless of individual widths.
+  let alignX = 0;
+  let maxWidth = 0;
+  nodes.forEach((node) => {
+    const width = node.measured?.width ?? DEFAULT_NODE_WIDTH;
+    if (width > maxWidth) {
+      maxWidth = width;
+      const pos = g.node(node.id);
+      alignX = pos?.x ?? 0;
+    }
+  });
+
   const layoutedNodes = nodes.map((node) => {
     const pos = g.node(node.id);
     const width = node.measured?.width ?? DEFAULT_NODE_WIDTH;
     const height = node.measured?.height ?? DEFAULT_NODE_HEIGHT;
     return {
       ...node,
-      position: { x: (pos?.x ?? 0) - width / 2, y: (pos?.y ?? 0) - height / 2 },
+      position: {
+        x: alignX - width / 2,
+        y: (pos?.y ?? 0) - height / 2,
+      },
     };
   });
 
