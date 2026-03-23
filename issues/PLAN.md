@@ -188,8 +188,8 @@
 | Issue      | Title                                                     | Domain | Priority | Depends On | Status |
 | ---------- | --------------------------------------------------------- | ------ | -------- | ---------- | ------ |
 | SHARED-003 | Task queue model — flows as processors, tasks as work items | shared | P0     | ENGINE-026 | done   |
-| SHARED-004 | Make input/output mandatory, remove hardcoded title/desc  | shared | P0     | —          | todo   |
-| ENGINE-029 | Cross-flow filing maps to target flow's declared inputs   | engine | P1     | SHARED-004 | todo   |
+| SHARED-004 | Make input/output mandatory, remove hardcoded title/desc  | shared | P0     | —          | done   |
+| ENGINE-029 | Cross-flow filing maps to target flow's declared inputs   | engine | P1     | SHARED-004 | done   |
 
 
 ### Phase 10 — Task Scheduling + Flow Parallelism
@@ -198,7 +198,7 @@
 | Issue      | Title                                                     | Domain | Priority | Depends On        | Status |
 | ---------- | --------------------------------------------------------- | ------ | -------- | ----------------- | ------ |
 | DSL-009    | Add wait, fence, atomic node types + max_parallel         | dsl    | P0       | —                 | done   |
-| DSL-010    | Add files edge timing variants (after/at)                 | dsl    | P1       | DSL-009           | todo   |
+| DSL-010    | Add files edge timing variants (after/at)                 | dsl    | P1       | DSL-009           | done   |
 | STATE-008  | Add scheduling columns to tasks table                     | state  | P0       | —                 | done   |
 | ENGINE-030 | Wait node execution + per-flow max_parallel               | engine | P0       | DSL-009, STATE-008 | done   |
 | ENGINE-031 | Fence node — synchronization barrier                      | engine | P1       | DSL-009           | done   |

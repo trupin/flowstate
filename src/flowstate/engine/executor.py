@@ -31,6 +31,7 @@ from typing import TYPE_CHECKING
 from flowstate.dsl.ast import ContextMode, EdgeType, ErrorPolicy, NodeType
 from flowstate.engine.budget import BudgetGuard
 from flowstate.engine.context import (
+    build_cross_flow_instructions,
     build_prompt_handoff,
     build_prompt_join,
     build_prompt_none,
@@ -39,6 +40,7 @@ from flowstate.engine.context import (
     create_task_dir,
     expand_templates,
     get_context_mode,
+    read_output_json,
     read_summary,
     resolve_cwd,
 )
@@ -1243,6 +1245,25 @@ class FlowExecutor:
         task = self._db.get_task(task_id)
         return task.depth if task else 0
 
+    def _build_child_params(self, source_task_dir: str) -> dict[str, str | float | bool]:
+        """Build child task params by mapping source node output to child input.
+
+        Reads the source node's OUTPUT.json for structured key-value output.
+        Falls back to SUMMARY.md content as a ``description`` field.
+        Returns an empty dict if neither source is available.
+        """
+        # Try structured output first
+        output_data = read_output_json(source_task_dir)
+        if output_data:
+            return output_data
+
+        # Fall back to summary as a general description
+        summary = read_summary(source_task_dir)
+        if summary:
+            return {"description": summary}
+
+        return {}
+
     async def _handle_file_edge(
         self,
         edge: Edge,
@@ -1273,11 +1294,9 @@ class FlowExecutor:
         # Read the source node's SUMMARY.md for the child task description
         summary = read_summary(task_exec.task_dir) or f"Filed from {task_exec.node_name}"
 
-        # Build child task metadata
+        # Build child task params from source node output (ENGINE-029)
         parent_task = self._db.get_task(self._task_id) if self._task_id else None
-        child_params: dict[str, object] = {}
-        if parent_task and parent_task.params_json:
-            child_params = json.loads(parent_task.params_json)
+        child_params = self._build_child_params(task_exec.task_dir)
         parent_title = parent_task.title if parent_task else "Filed task"
 
         child_task_id = self._db.create_task(
@@ -1320,10 +1339,9 @@ class FlowExecutor:
                 )
                 return
 
+        # Build child task params from source node output (ENGINE-029)
         parent_task = self._db.get_task(self._task_id) if self._task_id else None
-        child_params: dict[str, object] = {}
-        if parent_task and parent_task.params_json:
-            child_params = json.loads(parent_task.params_json)
+        child_params = self._build_child_params(task_exec.task_dir)
         parent_title = parent_task.title if parent_task else "Filed task"
 
         for edge in edges:
@@ -2124,6 +2142,15 @@ class FlowExecutor:
             prompt = prompt.replace(node.prompt, expanded_prompt)
 
         prompt = _maybe_append_routing(prompt, flow, node, task_dir)
+
+        # Append cross-flow output instructions if this node has FILE/AWAIT edges (ENGINE-029)
+        cross_flow_targets = [
+            e.target
+            for e in flow.edges
+            if e.source == node.name and e.edge_type in (EdgeType.FILE, EdgeType.AWAIT) and e.target
+        ]
+        if cross_flow_targets:
+            prompt += build_cross_flow_instructions(cross_flow_targets)
 
         # Inject task queue context if executing on behalf of a task
         prompt = self._inject_task_context(prompt)

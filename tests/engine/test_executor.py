@@ -3575,8 +3575,8 @@ class TestFileEdgeChildTaskMetadata:
         assert child.description is not None
         assert len(child.description) > 0
 
-    async def test_child_task_inherits_params(self) -> None:
-        """Child task should inherit parent task params."""
+    async def test_child_task_params_from_output_json(self) -> None:
+        """Child task params should come from source node OUTPUT.json, not parent params."""
         flow = _make_file_edge_flow(target_flow="deploy-flow")
         db = FlowstateDB(":memory:")
         subprocess_mgr = MockSubprocessManager()
@@ -3594,14 +3594,198 @@ class TestFileEdgeChildTaskMetadata:
             subprocess_mgr=subprocess_mgr,
         )
 
-        await executor.execute(flow, {}, "/workspace", task_id=task_id)
+        # Patch read_output_json to simulate the work node writing OUTPUT.json
+        output_data = {"target_env": "staging", "version": "1.2.3"}
+        with patch(
+            "flowstate.engine.executor.read_output_json",
+            return_value=output_data,
+        ):
+            await executor.execute(flow, {}, "/workspace", task_id=task_id)
 
         child_tasks = db.list_tasks(flow_name="deploy-flow")
         assert len(child_tasks) == 1
         child = child_tasks[0]
         assert child.params_json is not None
         params = json.loads(child.params_json)
-        assert params["env"] == "production"
+        # Child params come from OUTPUT.json, not parent params
+        assert params["target_env"] == "staging"
+        assert params["version"] == "1.2.3"
+        assert "env" not in params  # Parent params are NOT inherited
+
+
+class TestCrossFlowInputMapping:
+    """ENGINE-029: Cross-flow task filing maps source output to child params."""
+
+    async def test_file_edge_with_output_json(self) -> None:
+        """FILE edge with OUTPUT.json -> child params come from OUTPUT.json fields."""
+        flow = _make_file_edge_flow(target_flow="deploy-flow")
+        db = FlowstateDB(":memory:")
+        subprocess_mgr = MockSubprocessManager()
+        events: list[FlowEvent] = []
+
+        task_id = db.create_task("file-edge-flow", "Parent task")
+
+        executor = FlowExecutor(
+            db=db,
+            event_callback=events.append,
+            subprocess_mgr=subprocess_mgr,
+        )
+
+        output_data = {"repo": "my-app", "branch": "main", "deploy": True}
+        with patch(
+            "flowstate.engine.executor.read_output_json",
+            return_value=output_data,
+        ):
+            await executor.execute(flow, {}, "/workspace", task_id=task_id)
+
+        child_tasks = db.list_tasks(flow_name="deploy-flow")
+        assert len(child_tasks) == 1
+        child = child_tasks[0]
+        assert child.params_json is not None
+        params = json.loads(child.params_json)
+        assert params == {"repo": "my-app", "branch": "main", "deploy": True}
+
+    async def test_file_edge_without_output_json_uses_summary(self) -> None:
+        """FILE edge without OUTPUT.json -> child params use SUMMARY.md as description."""
+        flow = _make_file_edge_flow(target_flow="deploy-flow")
+        db = FlowstateDB(":memory:")
+        subprocess_mgr = MockSubprocessManager()
+        events: list[FlowEvent] = []
+
+        task_id = db.create_task("file-edge-flow", "Parent task")
+
+        executor = FlowExecutor(
+            db=db,
+            event_callback=events.append,
+            subprocess_mgr=subprocess_mgr,
+        )
+
+        # No OUTPUT.json, but SUMMARY.md exists
+        with (
+            patch("flowstate.engine.executor.read_output_json", return_value=None),
+            patch(
+                "flowstate.engine.executor.read_summary",
+                return_value="Completed the work step successfully",
+            ),
+        ):
+            await executor.execute(flow, {}, "/workspace", task_id=task_id)
+
+        child_tasks = db.list_tasks(flow_name="deploy-flow")
+        assert len(child_tasks) == 1
+        child = child_tasks[0]
+        assert child.params_json is not None
+        params = json.loads(child.params_json)
+        assert params == {"description": "Completed the work step successfully"}
+
+    async def test_file_edge_with_empty_output(self) -> None:
+        """FILE edge with no output at all -> child params are empty dict (None params_json)."""
+        flow = _make_file_edge_flow(target_flow="deploy-flow")
+        db = FlowstateDB(":memory:")
+        subprocess_mgr = MockSubprocessManager()
+        events: list[FlowEvent] = []
+
+        task_id = db.create_task("file-edge-flow", "Parent task")
+
+        executor = FlowExecutor(
+            db=db,
+            event_callback=events.append,
+            subprocess_mgr=subprocess_mgr,
+        )
+
+        # No OUTPUT.json, no SUMMARY.md
+        with (
+            patch("flowstate.engine.executor.read_output_json", return_value=None),
+            patch("flowstate.engine.executor.read_summary", return_value=None),
+        ):
+            await executor.execute(flow, {}, "/workspace", task_id=task_id)
+
+        child_tasks = db.list_tasks(flow_name="deploy-flow")
+        assert len(child_tasks) == 1
+        child = child_tasks[0]
+        # Empty params -> params_json should be None
+        assert child.params_json is None
+
+    async def test_await_edge_with_output_json(self) -> None:
+        """AWAIT edge should also map output to child params."""
+        flow = _make_await_edge_flow(target_flow="blocking-flow")
+        db = FlowstateDB(":memory:")
+        subprocess_mgr = MockSubprocessManager()
+        events: list[FlowEvent] = []
+
+        task_id = db.create_task("await-edge-flow", "Parent task")
+
+        executor = FlowExecutor(
+            db=db,
+            event_callback=events.append,
+            subprocess_mgr=subprocess_mgr,
+        )
+
+        output_data = {"issue_id": "BUG-42", "severity": "high"}
+
+        async def complete_child_after_delay() -> None:
+            for _ in range(100):
+                await asyncio.sleep(0.05)
+                child_tasks = db.list_tasks(flow_name="blocking-flow")
+                if child_tasks:
+                    child = child_tasks[0]
+                    if child.status == "queued":
+                        db.update_task_queue_status(child.id, "completed")
+                        return
+
+        with patch(
+            "flowstate.engine.executor.read_output_json",
+            return_value=output_data,
+        ):
+            execute_task = asyncio.create_task(
+                executor.execute(flow, {}, "/workspace", task_id=task_id)
+            )
+            helper_task = asyncio.create_task(complete_child_after_delay())
+
+            await asyncio.wait_for(execute_task, timeout=10)
+            await helper_task
+
+        child_tasks = db.list_tasks(flow_name="blocking-flow")
+        assert len(child_tasks) == 1
+        child = child_tasks[0]
+        assert child.params_json is not None
+        params = json.loads(child.params_json)
+        assert params == {"issue_id": "BUG-42", "severity": "high"}
+
+    async def test_cross_flow_prompt_instructions(self) -> None:
+        """Nodes with FILE/AWAIT edges should have cross-flow output instructions in prompt."""
+        flow = _make_file_edge_flow(target_flow="deploy-flow")
+        db = FlowstateDB(":memory:")
+        subprocess_mgr = MockSubprocessManager()
+        events: list[FlowEvent] = []
+
+        task_id = db.create_task("file-edge-flow", "Check prompt")
+
+        executor = FlowExecutor(
+            db=db,
+            event_callback=events.append,
+            subprocess_mgr=subprocess_mgr,
+        )
+
+        await executor.execute(flow, {}, "/workspace", task_id=task_id)
+
+        # Find the prompt for the "work" node (which has the FILE edge)
+        work_prompt = None
+        for call in subprocess_mgr.calls:
+            prompt_text = call[0]
+            if "Do the work step" in prompt_text:
+                work_prompt = prompt_text
+                break
+
+        assert work_prompt is not None
+        assert "Cross-flow output" in work_prompt
+        assert "deploy-flow" in work_prompt
+        assert "OUTPUT.json" in work_prompt
+
+        # The "start" and "finish" nodes should NOT have cross-flow instructions
+        for call in subprocess_mgr.calls:
+            prompt_text = call[0]
+            if "Do the start step" in prompt_text or "Do the finish step" in prompt_text:
+                assert "Cross-flow output" not in prompt_text
 
 
 class TestFileEdgeDoesNotBlockFlow:

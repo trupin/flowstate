@@ -10,6 +10,7 @@ Prepares everything needed before launching a Claude Code subprocess:
 
 from __future__ import annotations
 
+import json
 import re
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -197,6 +198,50 @@ def read_summary(task_dir: str) -> str | None:
     if summary_path.exists():
         return summary_path.read_text()
     return None
+
+
+def read_output_json(task_dir: str) -> dict[str, str | float | bool] | None:
+    """Read OUTPUT.json from a task directory and return scalar fields.
+
+    Returns a dict of scalar (str, int, float, bool) key-value pairs from the
+    JSON file, or None if the file does not exist or is unparseable.  Non-scalar
+    values (lists, dicts, null) are silently skipped.
+    """
+    output_path = Path(task_dir) / "OUTPUT.json"
+    if not output_path.exists():
+        return None
+    try:
+        raw = json.loads(output_path.read_text())
+    except (json.JSONDecodeError, OSError):
+        return None
+    if not isinstance(raw, dict):
+        return None
+    result: dict[str, str | float | bool] = {}
+    for key, value in raw.items():
+        if isinstance(value, str | int | float | bool):
+            result[key] = value
+    return result or None
+
+
+def build_cross_flow_instructions(target_flow_names: list[str]) -> str:
+    """Build prompt section instructing the agent to produce cross-flow output.
+
+    When a node has outgoing FILE or AWAIT edges, the agent should be told to
+    write an OUTPUT.json so its output can be forwarded to the target flows.
+
+    Args:
+        target_flow_names: Names of the target flows referenced by FILE/AWAIT edges.
+    """
+    targets = ", ".join(target_flow_names)
+    bullets = "\n".join(f"- {name}" for name in target_flow_names)
+    return (
+        "\n\n## Cross-flow output\n"
+        f"This task will file tasks to other flows: {targets}.\n"
+        f"{bullets}\n"
+        "Write an OUTPUT.json file in your task coordination directory with "
+        "key-value pairs representing structured output from this task.\n"
+        "These values will be passed as input parameters to the target flow(s)."
+    )
 
 
 def write_task_input(task_dir: str, prompt: str) -> str:
