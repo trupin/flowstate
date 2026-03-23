@@ -187,7 +187,24 @@
 
 | Issue      | Title                                                     | Domain | Priority | Depends On | Status |
 | ---------- | --------------------------------------------------------- | ------ | -------- | ---------- | ------ |
-| SHARED-003 | Task queue model — flows as processors, tasks as work items | shared | P0     | ENGINE-026 | todo   |
+| SHARED-003 | Task queue model — flows as processors, tasks as work items | shared | P0     | ENGINE-026 | done   |
+| SHARED-004 | Make input/output mandatory, remove hardcoded title/desc  | shared | P0     | —          | todo   |
+| ENGINE-029 | Cross-flow filing maps to target flow's declared inputs   | engine | P1     | SHARED-004 | todo   |
+
+
+### Phase 10 — Task Scheduling + Flow Parallelism
+
+
+| Issue      | Title                                                     | Domain | Priority | Depends On        | Status |
+| ---------- | --------------------------------------------------------- | ------ | -------- | ----------------- | ------ |
+| DSL-009    | Add wait, fence, atomic node types + max_parallel         | dsl    | P0       | —                 | todo   |
+| DSL-010    | Add files edge timing variants (after/at)                 | dsl    | P1       | DSL-009           | todo   |
+| STATE-008  | Add scheduling columns to tasks table                     | state  | P0       | —                 | todo   |
+| ENGINE-030 | Wait node execution + per-flow max_parallel               | engine | P0       | DSL-009, STATE-008 | todo   |
+| ENGINE-031 | Fence node — synchronization barrier                      | engine | P1       | DSL-009           | todo   |
+| ENGINE-032 | Atomic node — exclusive execution mutex                    | engine | P1       | DSL-009           | todo   |
+| SERVER-012 | Task scheduling API + recurring task management           | server | P1       | STATE-008         | todo   |
+| UI-034     | Task scheduling UI — datetime picker + cron input         | ui     | P1       | SERVER-012        | todo   |
 
 
 ---

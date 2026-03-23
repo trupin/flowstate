@@ -6,6 +6,9 @@ class NodeType(StrEnum):
     ENTRY = "entry"
     TASK = "task"
     EXIT = "exit"
+    WAIT = "wait"
+    FENCE = "fence"
+    ATOMIC = "atomic"
 
 
 class EdgeType(StrEnum):
@@ -48,9 +51,11 @@ class TaskTypeField:
 class Node:
     name: str
     node_type: NodeType
-    prompt: str
+    prompt: str = ""
     cwd: str | None = None
     judge: bool | None = None
+    wait_delay_seconds: int | None = None
+    wait_until_cron: str | None = None
     line: int = 0
     column: int = 0
 
@@ -89,5 +94,6 @@ class Flow:
     worktree: bool = True
     input_fields: tuple[TaskTypeField, ...] = ()
     output_fields: tuple[TaskTypeField, ...] = ()
+    max_parallel: int = 1
     nodes: dict[str, Node] = field(default_factory=dict)
     edges: tuple[Edge, ...] = ()

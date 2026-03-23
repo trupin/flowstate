@@ -1430,3 +1430,295 @@ class TestFileAwaitEdgesTypeChecker:
         flow = _minimal_flow(nodes=nodes, edges=edges)
         errors = check_flow(flow)
         assert len(errors) == 0, f"Expected no errors, got: {errors}"
+
+
+# ===========================================================================
+# DSL-009: Scheduling and parallelism rules P1-P4
+# ===========================================================================
+
+
+class TestP1MaxParallel:
+    """P1: max_parallel must be >= 1."""
+
+    def test_max_parallel_zero_is_error(self) -> None:
+        flow = _minimal_flow(max_parallel=0)
+        errors = check_flow(flow)
+        p1 = _errors_with_rule(errors, "P1")
+        assert len(p1) == 1
+        assert "max_parallel" in p1[0].message
+
+    def test_max_parallel_negative_is_error(self) -> None:
+        flow = _minimal_flow(max_parallel=-5)
+        errors = check_flow(flow)
+        p1 = _errors_with_rule(errors, "P1")
+        assert len(p1) == 1
+
+    def test_max_parallel_one_is_valid(self) -> None:
+        flow = _minimal_flow(max_parallel=1)
+        errors = check_flow(flow)
+        p1 = _errors_with_rule(errors, "P1")
+        assert len(p1) == 0
+
+    def test_max_parallel_greater_than_one_is_valid(self) -> None:
+        flow = _minimal_flow(max_parallel=5)
+        errors = check_flow(flow)
+        p1 = _errors_with_rule(errors, "P1")
+        assert len(p1) == 0
+
+
+class TestP2WaitNodeValidation:
+    """P2: Wait nodes must have exactly one of delay or until."""
+
+    def test_wait_with_both_delay_and_until_is_error(self) -> None:
+        nodes = {
+            "start": Node(name="start", node_type=NodeType.ENTRY, prompt="begin"),
+            "w": Node(
+                name="w",
+                node_type=NodeType.WAIT,
+                wait_delay_seconds=60,
+                wait_until_cron="0 9 * * *",
+            ),
+            "end": Node(name="end", node_type=NodeType.EXIT, prompt="done"),
+        }
+        edges = (
+            Edge(edge_type=EdgeType.UNCONDITIONAL, source="start", target="w"),
+            Edge(edge_type=EdgeType.UNCONDITIONAL, source="w", target="end"),
+        )
+        flow = _minimal_flow(nodes=nodes, edges=edges)
+        errors = check_flow(flow)
+        p2 = _errors_with_rule(errors, "P2")
+        assert len(p2) == 1
+        assert "both" in p2[0].message.lower()
+
+    def test_wait_with_neither_delay_nor_until_is_error(self) -> None:
+        nodes = {
+            "start": Node(name="start", node_type=NodeType.ENTRY, prompt="begin"),
+            "w": Node(name="w", node_type=NodeType.WAIT),
+            "end": Node(name="end", node_type=NodeType.EXIT, prompt="done"),
+        }
+        edges = (
+            Edge(edge_type=EdgeType.UNCONDITIONAL, source="start", target="w"),
+            Edge(edge_type=EdgeType.UNCONDITIONAL, source="w", target="end"),
+        )
+        flow = _minimal_flow(nodes=nodes, edges=edges)
+        errors = check_flow(flow)
+        p2 = _errors_with_rule(errors, "P2")
+        assert len(p2) == 1
+        assert "neither" in p2[0].message.lower()
+
+    def test_wait_with_only_delay_is_valid(self) -> None:
+        nodes = {
+            "start": Node(name="start", node_type=NodeType.ENTRY, prompt="begin"),
+            "w": Node(name="w", node_type=NodeType.WAIT, wait_delay_seconds=300),
+            "end": Node(name="end", node_type=NodeType.EXIT, prompt="done"),
+        }
+        edges = (
+            Edge(edge_type=EdgeType.UNCONDITIONAL, source="start", target="w"),
+            Edge(edge_type=EdgeType.UNCONDITIONAL, source="w", target="end"),
+        )
+        flow = _minimal_flow(nodes=nodes, edges=edges)
+        errors = check_flow(flow)
+        p2 = _errors_with_rule(errors, "P2")
+        assert len(p2) == 0
+
+    def test_wait_with_only_until_is_valid(self) -> None:
+        nodes = {
+            "start": Node(name="start", node_type=NodeType.ENTRY, prompt="begin"),
+            "w": Node(name="w", node_type=NodeType.WAIT, wait_until_cron="0 9 * * *"),
+            "end": Node(name="end", node_type=NodeType.EXIT, prompt="done"),
+        }
+        edges = (
+            Edge(edge_type=EdgeType.UNCONDITIONAL, source="start", target="w"),
+            Edge(edge_type=EdgeType.UNCONDITIONAL, source="w", target="end"),
+        )
+        flow = _minimal_flow(nodes=nodes, edges=edges)
+        errors = check_flow(flow)
+        p2 = _errors_with_rule(errors, "P2")
+        assert len(p2) == 0
+
+    def test_wait_with_invalid_cron_is_error(self) -> None:
+        nodes = {
+            "start": Node(name="start", node_type=NodeType.ENTRY, prompt="begin"),
+            "w": Node(name="w", node_type=NodeType.WAIT, wait_until_cron="not a cron"),
+            "end": Node(name="end", node_type=NodeType.EXIT, prompt="done"),
+        }
+        edges = (
+            Edge(edge_type=EdgeType.UNCONDITIONAL, source="start", target="w"),
+            Edge(edge_type=EdgeType.UNCONDITIONAL, source="w", target="end"),
+        )
+        flow = _minimal_flow(nodes=nodes, edges=edges)
+        errors = check_flow(flow)
+        p2 = _errors_with_rule(errors, "P2")
+        assert len(p2) == 1
+        assert "invalid cron" in p2[0].message.lower()
+
+
+class TestP3FenceNodeValidation:
+    """P3: Fence nodes must not have a prompt."""
+
+    def test_fence_with_prompt_is_error(self) -> None:
+        nodes = {
+            "start": Node(name="start", node_type=NodeType.ENTRY, prompt="begin"),
+            "f": Node(name="f", node_type=NodeType.FENCE, prompt="should not have this"),
+            "end": Node(name="end", node_type=NodeType.EXIT, prompt="done"),
+        }
+        edges = (
+            Edge(edge_type=EdgeType.UNCONDITIONAL, source="start", target="f"),
+            Edge(edge_type=EdgeType.UNCONDITIONAL, source="f", target="end"),
+        )
+        flow = _minimal_flow(nodes=nodes, edges=edges)
+        errors = check_flow(flow)
+        p3 = _errors_with_rule(errors, "P3")
+        assert len(p3) == 1
+
+    def test_fence_without_prompt_is_valid(self) -> None:
+        nodes = {
+            "start": Node(name="start", node_type=NodeType.ENTRY, prompt="begin"),
+            "f": Node(name="f", node_type=NodeType.FENCE, prompt=""),
+            "end": Node(name="end", node_type=NodeType.EXIT, prompt="done"),
+        }
+        edges = (
+            Edge(edge_type=EdgeType.UNCONDITIONAL, source="start", target="f"),
+            Edge(edge_type=EdgeType.UNCONDITIONAL, source="f", target="end"),
+        )
+        flow = _minimal_flow(nodes=nodes, edges=edges)
+        errors = check_flow(flow)
+        p3 = _errors_with_rule(errors, "P3")
+        assert len(p3) == 0
+
+
+class TestP4AtomicNodeValidation:
+    """P4: Atomic nodes must have a prompt."""
+
+    def test_atomic_without_prompt_is_error(self) -> None:
+        nodes = {
+            "start": Node(name="start", node_type=NodeType.ENTRY, prompt="begin"),
+            "a": Node(name="a", node_type=NodeType.ATOMIC, prompt=""),
+            "end": Node(name="end", node_type=NodeType.EXIT, prompt="done"),
+        }
+        edges = (
+            Edge(edge_type=EdgeType.UNCONDITIONAL, source="start", target="a"),
+            Edge(edge_type=EdgeType.UNCONDITIONAL, source="a", target="end"),
+        )
+        flow = _minimal_flow(nodes=nodes, edges=edges)
+        errors = check_flow(flow)
+        p4 = _errors_with_rule(errors, "P4")
+        assert len(p4) == 1
+
+    def test_atomic_with_prompt_is_valid(self) -> None:
+        nodes = {
+            "start": Node(name="start", node_type=NodeType.ENTRY, prompt="begin"),
+            "a": Node(name="a", node_type=NodeType.ATOMIC, prompt="Do the thing"),
+            "end": Node(name="end", node_type=NodeType.EXIT, prompt="done"),
+        }
+        edges = (
+            Edge(edge_type=EdgeType.UNCONDITIONAL, source="start", target="a"),
+            Edge(edge_type=EdgeType.UNCONDITIONAL, source="a", target="end"),
+        )
+        flow = _minimal_flow(nodes=nodes, edges=edges)
+        errors = check_flow(flow)
+        p4 = _errors_with_rule(errors, "P4")
+        assert len(p4) == 0
+
+
+class TestSchedulingParserRoundTrip:
+    """Integration: parse DSL with new node types and verify type checker accepts them."""
+
+    def test_valid_wait_delay_passes_type_check(self) -> None:
+        source = """flow f {
+    budget = 1h
+    on_error = pause
+    context = handoff
+    entry a { prompt = "start" }
+    wait cooldown { delay = 30s }
+    exit b { prompt = "done" }
+    a -> cooldown
+    cooldown -> b
+}"""
+        flow = parse_flow(source)
+        errors = check_flow(flow)
+        assert len(errors) == 0, f"Expected no errors, got: {errors}"
+
+    def test_valid_wait_until_passes_type_check(self) -> None:
+        source = """flow f {
+    budget = 1h
+    on_error = pause
+    context = handoff
+    entry a { prompt = "start" }
+    wait morning { until = "0 9 * * 1-5" }
+    exit b { prompt = "done" }
+    a -> morning
+    morning -> b
+}"""
+        flow = parse_flow(source)
+        errors = check_flow(flow)
+        assert len(errors) == 0, f"Expected no errors, got: {errors}"
+
+    def test_valid_fence_passes_type_check(self) -> None:
+        source = """flow f {
+    budget = 1h
+    on_error = pause
+    context = handoff
+    entry a { prompt = "start" }
+    fence barrier { }
+    exit b { prompt = "done" }
+    a -> barrier
+    barrier -> b
+}"""
+        flow = parse_flow(source)
+        errors = check_flow(flow)
+        assert len(errors) == 0, f"Expected no errors, got: {errors}"
+
+    def test_valid_atomic_passes_type_check(self) -> None:
+        source = """flow f {
+    budget = 1h
+    on_error = pause
+    context = handoff
+    entry a { prompt = "start" }
+    atomic deploy { prompt = "Deploy to production" }
+    exit b { prompt = "done" }
+    a -> deploy
+    deploy -> b
+}"""
+        flow = parse_flow(source)
+        errors = check_flow(flow)
+        assert len(errors) == 0, f"Expected no errors, got: {errors}"
+
+    def test_valid_max_parallel_passes_type_check(self) -> None:
+        source = """flow f {
+    budget = 1h
+    on_error = pause
+    context = handoff
+    max_parallel = 5
+    entry a { prompt = "start" }
+    exit b { prompt = "done" }
+    a -> b
+}"""
+        flow = parse_flow(source)
+        errors = check_flow(flow)
+        assert len(errors) == 0, f"Expected no errors, got: {errors}"
+        assert flow.max_parallel == 5
+
+    def test_full_pipeline_with_all_new_types(self) -> None:
+        source = """flow pipeline {
+    budget = 2h
+    on_error = pause
+    context = handoff
+    max_parallel = 3
+    entry start { prompt = "begin" }
+    wait cooldown { delay = 5m }
+    fence barrier { }
+    atomic deploy { prompt = "Deploy" }
+    exit done { prompt = "finished" }
+    start -> cooldown
+    cooldown -> barrier
+    barrier -> deploy
+    deploy -> done
+}"""
+        flow = parse_flow(source)
+        errors = check_flow(flow)
+        assert len(errors) == 0, f"Expected no errors, got: {errors}"
+        assert flow.max_parallel == 3
+        assert flow.nodes["cooldown"].node_type == NodeType.WAIT
+        assert flow.nodes["barrier"].node_type == NodeType.FENCE
+        assert flow.nodes["deploy"].node_type == NodeType.ATOMIC

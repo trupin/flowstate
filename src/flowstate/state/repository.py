@@ -698,8 +698,13 @@ class FlowstateDB:
         parent_task_id: str | None = None,
         created_by: str | None = None,
         priority: int = 0,
+        scheduled_at: str | None = None,
+        cron_expression: str | None = None,
     ) -> str:
-        """Create a new queued task and return its UUID.
+        """Create a new task and return its UUID.
+
+        When ``scheduled_at`` is provided the task starts in ``'scheduled'``
+        status; otherwise it starts as ``'queued'`` for immediate processing.
 
         Args:
             flow_name: The flow this task should be processed by.
@@ -709,12 +714,16 @@ class FlowstateDB:
             parent_task_id: Optional parent task ID for cross-flow lineage.
             created_by: Who created this task (e.g. "user" or "flow:X/node:Y").
             priority: Priority level (higher = processed first). Defaults to 0.
+            scheduled_at: ISO-8601 timestamp for deferred execution (optional).
+                When set the task status is ``'scheduled'`` instead of ``'queued'``.
+            cron_expression: Cron expression for recurring tasks (optional).
 
         Returns:
             The UUID of the newly created task.
         """
         task_id = str(uuid.uuid4())
         now = datetime.now(UTC).isoformat()
+        status = "scheduled" if scheduled_at else "queued"
 
         # Compute depth from parent chain (0 for root tasks)
         depth = 0
@@ -726,18 +735,22 @@ class FlowstateDB:
         self._execute(
             """INSERT INTO tasks
                (id, flow_name, title, description, status, params_json,
-                parent_task_id, created_by, priority, depth, created_at)
-               VALUES (?, ?, ?, ?, 'queued', ?, ?, ?, ?, ?, ?)""",
+                parent_task_id, created_by, priority, depth,
+                scheduled_at, cron_expression, created_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (
                 task_id,
                 flow_name,
                 title,
                 description,
+                status,
                 params_json,
                 parent_task_id,
                 created_by,
                 priority,
                 depth,
+                scheduled_at,
+                cron_expression,
                 now,
             ),
         )
@@ -874,12 +887,12 @@ class FlowstateDB:
         self._commit()
 
     def delete_task(self, task_id: str) -> None:
-        """Delete a task, but only if it is still queued.
+        """Delete a task, but only if it is still queued or scheduled.
 
-        No-op if the task does not exist or is not in 'queued' status.
+        No-op if the task does not exist or is not in 'queued'/'scheduled' status.
         """
         self._execute(
-            "DELETE FROM tasks WHERE id = ? AND status = 'queued'",
+            "DELETE FROM tasks WHERE id = ? AND status IN ('queued', 'scheduled')",
             (task_id,),
         )
         self._commit()
@@ -889,22 +902,36 @@ class FlowstateDB:
     # ------------------------------------------------------------------ #
 
     def list_queued_flow_names(self) -> list[str]:
-        """Return distinct flow names that have at least one queued task."""
-        rows = self._fetchall("SELECT DISTINCT flow_name FROM tasks WHERE status = 'queued'")
+        """Return distinct flow names that have at least one processable task.
+
+        A task is processable if it is ``'queued'`` or if it is ``'scheduled'``
+        with ``scheduled_at <= now`` (i.e. its deferred time has arrived).
+        """
+        now = datetime.now(UTC).isoformat()
+        rows = self._fetchall(
+            """SELECT DISTINCT flow_name FROM tasks
+               WHERE status = 'queued'
+                  OR (status = 'scheduled' AND scheduled_at <= ?)""",
+            (now,),
+        )
         return [row["flow_name"] for row in rows]
 
     def get_next_queued_task(self, flow_name: str) -> TaskRow | None:
-        """Get the highest-priority oldest queued task for a flow.
+        """Get the highest-priority oldest processable task for a flow.
 
-        Returns the next task that should be processed, ordered by
-        priority DESC (higher first) then created_at ASC (oldest first).
+        A task is processable if it is ``'queued'`` or ``'scheduled'`` with
+        ``scheduled_at <= now``.  Returns the next task ordered by priority
+        DESC (higher first) then created_at ASC (oldest first).
         """
+        now = datetime.now(UTC).isoformat()
         row = self._fetchone(
             """SELECT * FROM tasks
-               WHERE flow_name = ? AND status = 'queued'
+               WHERE flow_name = ?
+                 AND (status = 'queued'
+                      OR (status = 'scheduled' AND scheduled_at <= ?))
                ORDER BY priority DESC, created_at ASC
                LIMIT 1""",
-            (flow_name,),
+            (flow_name, now),
         )
         return TaskRow(**dict(row)) if row else None
 
@@ -938,6 +965,58 @@ class FlowstateDB:
                     " AND status = 'queued'",
                     (priority, tid, flow_name),
                 )
+
+    # ------------------------------------------------------------------ #
+    # Scheduled Tasks
+    # ------------------------------------------------------------------ #
+
+    def get_due_scheduled_tasks(self) -> list[TaskRow]:
+        """Return tasks with status ``'scheduled'`` whose ``scheduled_at <= now``.
+
+        Results are ordered by ``scheduled_at ASC`` so the oldest-due tasks
+        are processed first.
+        """
+        now = datetime.now(UTC).isoformat()
+        rows = self._fetchall(
+            "SELECT * FROM tasks WHERE status = 'scheduled' AND scheduled_at <= ?"
+            " ORDER BY scheduled_at ASC",
+            (now,),
+        )
+        return [TaskRow(**dict(r)) for r in rows]
+
+    def create_next_recurring_task(self, task: TaskRow) -> str | None:
+        """Create the next occurrence of a recurring task.
+
+        Uses the task's ``cron_expression`` to compute the next ``scheduled_at``
+        time relative to *now*.
+
+        Args:
+            task: The recurring task whose next occurrence should be created.
+
+        Returns:
+            The UUID of the newly created task, or ``None`` if the task has no
+            ``cron_expression``.
+        """
+        if not task.cron_expression:
+            return None
+
+        from croniter import croniter
+
+        now = datetime.now(UTC)
+        cron = croniter(task.cron_expression, now)
+        next_time: datetime = cron.get_next(datetime)
+
+        return self.create_task(
+            flow_name=task.flow_name,
+            title=task.title,
+            description=task.description,
+            params_json=task.params_json,
+            parent_task_id=task.parent_task_id,
+            created_by=task.created_by or "recurring",
+            priority=task.priority,
+            scheduled_at=next_time.isoformat(),
+            cron_expression=task.cron_expression,
+        )
 
     # ------------------------------------------------------------------ #
     # Task Node History

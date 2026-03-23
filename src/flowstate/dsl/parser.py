@@ -200,6 +200,70 @@ class _FlowTransformer(Transformer[Token, Flow]):
             column=_meta_column(meta),
         )
 
+    # -- Wait node attributes --
+
+    def wait_delay(self, items: list[Token]) -> tuple[str, int]:
+        return ("wait_delay_seconds", _parse_duration(str(items[0])))
+
+    def wait_until(self, items: list[Token]) -> tuple[str, str]:
+        return ("wait_until_cron", _strip_string(items[0]))
+
+    def wait_body(self, items: list[tuple[str, str | int]]) -> dict[str, str | int]:
+        result: dict[str, str | int] = {}
+        for key, value in items:
+            result[key] = value
+        return result
+
+    # -- Wait, Fence, Atomic nodes (with meta for line/column) --
+
+    @v_args(meta=True)
+    def wait_node(self, meta: Any, items: list[Token | dict[str, str | int]]) -> Node:
+        name = str(items[0])
+        body: dict[str, str | int] = (
+            items[1] if len(items) > 1 and isinstance(items[1], dict) else {}
+        )
+        return Node(
+            name=name,
+            node_type=NodeType.WAIT,
+            prompt="",
+            wait_delay_seconds=(
+                int(body["wait_delay_seconds"]) if "wait_delay_seconds" in body else None
+            ),
+            wait_until_cron=(str(body["wait_until_cron"]) if "wait_until_cron" in body else None),
+            line=_meta_line(meta),
+            column=_meta_column(meta),
+        )
+
+    @v_args(meta=True)
+    def fence_node(self, meta: Any, items: list[Token]) -> Node:
+        name = str(items[0])
+        return Node(
+            name=name,
+            node_type=NodeType.FENCE,
+            prompt="",
+            line=_meta_line(meta),
+            column=_meta_column(meta),
+        )
+
+    @v_args(meta=True)
+    def atomic_node(self, meta: Any, items: list[Token | dict[str, str | bool]]) -> Node:
+        name = str(items[0])
+        body: dict[str, str | bool] = (
+            items[1] if len(items) > 1 and isinstance(items[1], dict) else {}
+        )
+        prompt = body.get("prompt", "")
+        cwd = body.get("cwd")
+        judge = body.get("judge")
+        return Node(
+            name=name,
+            node_type=NodeType.ATOMIC,
+            prompt=str(prompt),
+            cwd=str(cwd) if cwd is not None else None,
+            judge=bool(judge) if judge is not None else None,
+            line=_meta_line(meta),
+            column=_meta_column(meta),
+        )
+
     def node_decl(self, items: list[Node]) -> Node:
         return items[0]
 
@@ -363,6 +427,10 @@ class _FlowTransformer(Transformer[Token, Flow]):
     def flow_worktree(self, items: list[Token]) -> tuple[str, bool]:
         return ("worktree", str(items[0]) == "true")
 
+    def flow_max_parallel(self, items: list[Token]) -> tuple[str, int]:
+        text = str(items[0])
+        return ("max_parallel", int(text) if "." not in text else int(float(text)))
+
     # -- Flow body and declaration --
 
     def flow_stmt(self, items: list[object]) -> object:
@@ -419,6 +487,7 @@ class _FlowTransformer(Transformer[Token, Flow]):
             skip_permissions=bool(attrs.get("skip_permissions", False)),
             judge=bool(attrs.get("judge", False)),
             worktree=bool(attrs.get("worktree", True)),
+            max_parallel=int(attrs.get("max_parallel", 1)),
             input_fields=input_fields,
             output_fields=output_fields,
             nodes=nodes,

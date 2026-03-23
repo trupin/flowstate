@@ -35,6 +35,7 @@ def check_flow(flow: Flow) -> list[FlowTypeError]:
     errors.extend(_check_edges(flow))
     errors.extend(_check_cycles(flow))
     errors.extend(_check_fork_join(flow))
+    errors.extend(_check_scheduling(flow))
     return errors
 
 
@@ -761,5 +762,84 @@ def _check_fork_join(flow: Flow) -> list[FlowTypeError]:
                         member,
                     )
                 )
+
+    return errors
+
+
+# ---------------------------------------------------------------------------
+# P1-P4: Scheduling and parallelism rules
+# ---------------------------------------------------------------------------
+
+
+def _check_scheduling(flow: Flow) -> list[FlowTypeError]:
+    errors: list[FlowTypeError] = []
+
+    # P1: max_parallel must be >= 1
+    if flow.max_parallel < 1:
+        errors.append(
+            FlowTypeError(
+                "P1",
+                f"max_parallel must be >= 1, got {flow.max_parallel}",
+                "",
+            )
+        )
+
+    for node in flow.nodes.values():
+        # P2: Wait nodes must have exactly one of delay or until (not both, not neither)
+        if node.node_type == NodeType.WAIT:
+            has_delay = node.wait_delay_seconds is not None
+            has_until = node.wait_until_cron is not None
+            if has_delay and has_until:
+                errors.append(
+                    FlowTypeError(
+                        "P2",
+                        f"Wait node '{node.name}' has both delay and until; "
+                        "exactly one is required",
+                        node.name,
+                    )
+                )
+            elif not has_delay and not has_until:
+                errors.append(
+                    FlowTypeError(
+                        "P2",
+                        f"Wait node '{node.name}' has neither delay nor until; "
+                        "exactly one is required",
+                        node.name,
+                    )
+                )
+            # Validate cron expression if until is specified
+            if (
+                has_until
+                and node.wait_until_cron is not None
+                and not croniter.is_valid(node.wait_until_cron)
+            ):
+                errors.append(
+                    FlowTypeError(
+                        "P2",
+                        f"Wait node '{node.name}' has invalid cron expression: "
+                        f"'{node.wait_until_cron}'",
+                        node.name,
+                    )
+                )
+
+        # P3: Fence nodes must not have a prompt
+        if node.node_type == NodeType.FENCE and node.prompt:
+            errors.append(
+                FlowTypeError(
+                    "P3",
+                    f"Fence node '{node.name}' must not have a prompt",
+                    node.name,
+                )
+            )
+
+        # P4: Atomic nodes must have a prompt
+        if node.node_type == NodeType.ATOMIC and not node.prompt:
+            errors.append(
+                FlowTypeError(
+                    "P4",
+                    f"Atomic node '{node.name}' must have a prompt",
+                    node.name,
+                )
+            )
 
     return errors

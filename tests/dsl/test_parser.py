@@ -1142,3 +1142,244 @@ class TestFileAwaitEdgeMixed:
         assert len(flow.output_fields) == 1
         file_edges = [e for e in flow.edges if e.edge_type == EdgeType.FILE]
         assert len(file_edges) == 1
+
+
+# ---------------------------------------------------------------------------
+# DSL-009: Wait, Fence, Atomic node types + max_parallel
+# ---------------------------------------------------------------------------
+
+
+class TestWaitNode:
+    """Test parsing of wait nodes."""
+
+    def test_wait_node_with_delay(self):
+        source = """flow f {
+    budget = 1h
+    on_error = pause
+    context = handoff
+    entry a { prompt = "start" }
+    wait cooldown { delay = 1h }
+    exit b { prompt = "done" }
+    a -> cooldown
+    cooldown -> b
+}"""
+        flow = parse_flow(source)
+        assert "cooldown" in flow.nodes
+        node = flow.nodes["cooldown"]
+        assert node.node_type == NodeType.WAIT
+        assert node.prompt == ""
+        assert node.wait_delay_seconds == 3600
+        assert node.wait_until_cron is None
+
+    def test_wait_node_with_delay_minutes(self):
+        source = """flow f {
+    budget = 1h
+    on_error = pause
+    context = handoff
+    entry a { prompt = "start" }
+    wait pause { delay = 30m }
+    exit b { prompt = "done" }
+    a -> pause
+    pause -> b
+}"""
+        flow = parse_flow(source)
+        node = flow.nodes["pause"]
+        assert node.wait_delay_seconds == 1800
+
+    def test_wait_node_with_until(self):
+        source = """flow f {
+    budget = 1h
+    on_error = pause
+    context = handoff
+    entry a { prompt = "start" }
+    wait market_open { until = "0 9 * * 1-5" }
+    exit b { prompt = "done" }
+    a -> market_open
+    market_open -> b
+}"""
+        flow = parse_flow(source)
+        node = flow.nodes["market_open"]
+        assert node.node_type == NodeType.WAIT
+        assert node.prompt == ""
+        assert node.wait_delay_seconds is None
+        assert node.wait_until_cron == "0 9 * * 1-5"
+
+    def test_wait_node_has_line_info(self):
+        source = """flow f {
+    budget = 1h
+    on_error = pause
+    context = handoff
+    entry a { prompt = "start" }
+    wait w { delay = 30s }
+    exit b { prompt = "done" }
+    a -> w
+    w -> b
+}"""
+        flow = parse_flow(source)
+        assert flow.nodes["w"].line > 0
+
+
+class TestFenceNode:
+    """Test parsing of fence nodes."""
+
+    def test_fence_node(self):
+        source = """flow f {
+    budget = 1h
+    on_error = pause
+    context = handoff
+    entry a { prompt = "start" }
+    fence sync_point { }
+    exit b { prompt = "done" }
+    a -> sync_point
+    sync_point -> b
+}"""
+        flow = parse_flow(source)
+        assert "sync_point" in flow.nodes
+        node = flow.nodes["sync_point"]
+        assert node.node_type == NodeType.FENCE
+        assert node.prompt == ""
+
+    def test_fence_node_has_line_info(self):
+        source = """flow f {
+    budget = 1h
+    on_error = pause
+    context = handoff
+    entry a { prompt = "start" }
+    fence barrier { }
+    exit b { prompt = "done" }
+    a -> barrier
+    barrier -> b
+}"""
+        flow = parse_flow(source)
+        assert flow.nodes["barrier"].line > 0
+
+
+class TestAtomicNode:
+    """Test parsing of atomic nodes."""
+
+    def test_atomic_node(self):
+        source = """flow f {
+    budget = 1h
+    on_error = pause
+    context = handoff
+    entry a { prompt = "start" }
+    atomic deploy { prompt = "Deploy to production" }
+    exit b { prompt = "done" }
+    a -> deploy
+    deploy -> b
+}"""
+        flow = parse_flow(source)
+        assert "deploy" in flow.nodes
+        node = flow.nodes["deploy"]
+        assert node.node_type == NodeType.ATOMIC
+        assert node.prompt == "Deploy to production"
+
+    def test_atomic_node_with_cwd(self):
+        source = """flow f {
+    budget = 1h
+    on_error = pause
+    context = handoff
+    entry a { prompt = "start" }
+    atomic deploy { prompt = "Deploy" cwd = "./deploy" }
+    exit b { prompt = "done" }
+    a -> deploy
+    deploy -> b
+}"""
+        flow = parse_flow(source)
+        node = flow.nodes["deploy"]
+        assert node.cwd == "./deploy"
+
+    def test_atomic_node_with_judge(self):
+        source = """flow f {
+    budget = 1h
+    on_error = pause
+    context = handoff
+    entry a { prompt = "start" }
+    atomic deploy { prompt = "Deploy" judge = true }
+    exit b { prompt = "done" }
+    a -> deploy
+    deploy -> b
+}"""
+        flow = parse_flow(source)
+        node = flow.nodes["deploy"]
+        assert node.judge is True
+
+    def test_atomic_node_has_line_info(self):
+        source = """flow f {
+    budget = 1h
+    on_error = pause
+    context = handoff
+    entry a { prompt = "start" }
+    atomic x { prompt = "work" }
+    exit b { prompt = "done" }
+    a -> x
+    x -> b
+}"""
+        flow = parse_flow(source)
+        assert flow.nodes["x"].line > 0
+
+
+class TestMaxParallel:
+    """Test parsing of max_parallel flow attribute."""
+
+    def test_max_parallel_parsed(self):
+        source = """flow f {
+    budget = 1h
+    on_error = pause
+    context = handoff
+    max_parallel = 3
+    entry a { prompt = "x" }
+    exit b { prompt = "y" }
+    a -> b
+}"""
+        flow = parse_flow(source)
+        assert flow.max_parallel == 3
+
+    def test_max_parallel_default_is_1(self):
+        source = (
+            "flow f { budget = 1h on_error = pause context = handoff "
+            'entry a { prompt = "x" } exit b { prompt = "y" } a -> b }'
+        )
+        flow = parse_flow(source)
+        assert flow.max_parallel == 1
+
+    def test_max_parallel_large_value(self):
+        source = """flow f {
+    budget = 1h
+    on_error = pause
+    context = handoff
+    max_parallel = 100
+    entry a { prompt = "x" }
+    exit b { prompt = "y" }
+    a -> b
+}"""
+        flow = parse_flow(source)
+        assert flow.max_parallel == 100
+
+
+class TestMixedNewNodeTypes:
+    """Test flows that combine new node types together."""
+
+    def test_all_new_node_types_in_one_flow(self):
+        source = """flow pipeline {
+    budget = 2h
+    on_error = pause
+    context = handoff
+    max_parallel = 2
+    entry start { prompt = "begin" }
+    wait cooldown { delay = 5m }
+    fence barrier { }
+    atomic deploy { prompt = "Deploy safely" }
+    exit done { prompt = "finished" }
+    start -> cooldown
+    cooldown -> barrier
+    barrier -> deploy
+    deploy -> done
+}"""
+        flow = parse_flow(source)
+        assert flow.max_parallel == 2
+        assert len(flow.nodes) == 5
+        assert flow.nodes["cooldown"].node_type == NodeType.WAIT
+        assert flow.nodes["barrier"].node_type == NodeType.FENCE
+        assert flow.nodes["deploy"].node_type == NodeType.ATOMIC
+        assert flow.nodes["cooldown"].wait_delay_seconds == 300

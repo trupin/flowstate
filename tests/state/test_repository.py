@@ -1703,6 +1703,239 @@ class TestTaskOperations:
 
 
 # ================================================================== #
+# Task Scheduling Tests
+# ================================================================== #
+
+
+class TestTaskScheduling:
+    """Tests for scheduled and recurring task functionality."""
+
+    def test_create_task_with_scheduled_at_has_scheduled_status(self, db: FlowstateDB) -> None:
+        """A task created with scheduled_at should have status 'scheduled'."""
+        future = "2099-01-01T00:00:00+00:00"
+        task_id = db.create_task(
+            flow_name="my-flow",
+            title="Deferred work",
+            scheduled_at=future,
+        )
+
+        result = db.get_task(task_id)
+        assert result is not None
+        assert result.status == "scheduled"
+        assert result.scheduled_at == future
+        assert result.cron_expression is None
+
+    def test_create_task_without_scheduled_at_has_queued_status(self, db: FlowstateDB) -> None:
+        """A task created without scheduled_at should have status 'queued' (existing behaviour)."""
+        task_id = db.create_task(flow_name="my-flow", title="Immediate work")
+
+        result = db.get_task(task_id)
+        assert result is not None
+        assert result.status == "queued"
+        assert result.scheduled_at is None
+
+    def test_create_task_with_cron_expression(self, db: FlowstateDB) -> None:
+        """A recurring task stores its cron_expression."""
+        future = "2099-06-15T12:00:00+00:00"
+        task_id = db.create_task(
+            flow_name="my-flow",
+            title="Recurring report",
+            scheduled_at=future,
+            cron_expression="0 12 * * *",
+        )
+
+        result = db.get_task(task_id)
+        assert result is not None
+        assert result.status == "scheduled"
+        assert result.cron_expression == "0 12 * * *"
+        assert result.scheduled_at == future
+
+    def test_get_due_scheduled_tasks_returns_past_tasks(self, db: FlowstateDB) -> None:
+        """get_due_scheduled_tasks returns tasks whose scheduled_at is in the past."""
+        past = "2000-01-01T00:00:00+00:00"
+        task_id = db.create_task(
+            flow_name="my-flow",
+            title="Overdue task",
+            scheduled_at=past,
+        )
+
+        due = db.get_due_scheduled_tasks()
+        assert len(due) >= 1
+        ids = [t.id for t in due]
+        assert task_id in ids
+
+    def test_get_due_scheduled_tasks_excludes_future_tasks(self, db: FlowstateDB) -> None:
+        """get_due_scheduled_tasks does NOT return tasks scheduled far in the future."""
+        future = "2099-12-31T23:59:59+00:00"
+        task_id = db.create_task(
+            flow_name="my-flow",
+            title="Far future task",
+            scheduled_at=future,
+        )
+
+        due = db.get_due_scheduled_tasks()
+        ids = [t.id for t in due]
+        assert task_id not in ids
+
+    def test_get_due_scheduled_tasks_excludes_non_scheduled(self, db: FlowstateDB) -> None:
+        """get_due_scheduled_tasks ignores tasks with status other than 'scheduled'."""
+        # Create a queued task (no scheduled_at)
+        task_id = db.create_task(flow_name="my-flow", title="Immediate task")
+
+        due = db.get_due_scheduled_tasks()
+        ids = [t.id for t in due]
+        assert task_id not in ids
+
+    def test_get_due_scheduled_tasks_ordered_by_scheduled_at(self, db: FlowstateDB) -> None:
+        """Due tasks are ordered by scheduled_at ascending (oldest first)."""
+        t1 = db.create_task(
+            flow_name="my-flow",
+            title="First",
+            scheduled_at="2000-01-01T00:00:00+00:00",
+        )
+        t2 = db.create_task(
+            flow_name="my-flow",
+            title="Second",
+            scheduled_at="2000-06-01T00:00:00+00:00",
+        )
+
+        due = db.get_due_scheduled_tasks()
+        ids = [t.id for t in due]
+        assert ids.index(t1) < ids.index(t2)
+
+    def test_get_due_scheduled_tasks_empty(self, db: FlowstateDB) -> None:
+        """get_due_scheduled_tasks returns an empty list when there are no scheduled tasks."""
+        assert db.get_due_scheduled_tasks() == []
+
+    def test_create_next_recurring_task_computes_next_time(self, db: FlowstateDB) -> None:
+        """create_next_recurring_task creates a new scheduled task with the correct next time."""
+        past = "2000-01-01T00:00:00+00:00"
+        task_id = db.create_task(
+            flow_name="report-flow",
+            title="Daily report",
+            description="Runs every day at noon",
+            params_json='{"format": "pdf"}',
+            created_by="scheduler",
+            priority=3,
+            scheduled_at=past,
+            cron_expression="0 12 * * *",
+        )
+
+        original = db.get_task(task_id)
+        assert original is not None
+
+        new_id = db.create_next_recurring_task(original)
+        assert new_id is not None
+
+        new_task = db.get_task(new_id)
+        assert new_task is not None
+        assert new_task.status == "scheduled"
+        assert new_task.scheduled_at is not None
+        assert new_task.cron_expression == "0 12 * * *"
+        assert new_task.flow_name == "report-flow"
+        assert new_task.title == "Daily report"
+        assert new_task.description == "Runs every day at noon"
+        assert new_task.params_json == '{"format": "pdf"}'
+        assert new_task.created_by == "scheduler"
+        assert new_task.priority == 3
+
+        # The next scheduled_at should be in the future (after now)
+        now = datetime.now(UTC).isoformat()
+        assert new_task.scheduled_at > now
+
+    def test_create_next_recurring_task_returns_none_without_cron(self, db: FlowstateDB) -> None:
+        """create_next_recurring_task returns None if the task has no cron_expression."""
+        task_id = db.create_task(
+            flow_name="my-flow",
+            title="One-time task",
+            scheduled_at="2000-01-01T00:00:00+00:00",
+        )
+
+        original = db.get_task(task_id)
+        assert original is not None
+        assert db.create_next_recurring_task(original) is None
+
+    def test_create_next_recurring_task_defaults_created_by(self, db: FlowstateDB) -> None:
+        """create_next_recurring_task sets created_by to 'recurring' when original is None."""
+        task_id = db.create_task(
+            flow_name="my-flow",
+            title="Recurring no author",
+            scheduled_at="2000-01-01T00:00:00+00:00",
+            cron_expression="*/5 * * * *",
+        )
+
+        original = db.get_task(task_id)
+        assert original is not None
+        assert original.created_by is None
+
+        new_id = db.create_next_recurring_task(original)
+        assert new_id is not None
+
+        new_task = db.get_task(new_id)
+        assert new_task is not None
+        assert new_task.created_by == "recurring"
+
+    def test_list_queued_flow_names_includes_due_scheduled(self, db: FlowstateDB) -> None:
+        """list_queued_flow_names includes flows with due scheduled tasks."""
+        past = "2000-01-01T00:00:00+00:00"
+        db.create_task(
+            flow_name="scheduled-flow",
+            title="Due scheduled",
+            scheduled_at=past,
+        )
+
+        names = db.list_queued_flow_names()
+        assert "scheduled-flow" in names
+
+    def test_list_queued_flow_names_excludes_future_scheduled(self, db: FlowstateDB) -> None:
+        """list_queued_flow_names excludes flows with only future scheduled tasks."""
+        future = "2099-12-31T23:59:59+00:00"
+        db.create_task(
+            flow_name="future-only-flow",
+            title="Not yet due",
+            scheduled_at=future,
+        )
+
+        names = db.list_queued_flow_names()
+        assert "future-only-flow" not in names
+
+    def test_get_next_queued_task_returns_due_scheduled(self, db: FlowstateDB) -> None:
+        """get_next_queued_task picks up scheduled tasks that are due."""
+        past = "2000-01-01T00:00:00+00:00"
+        task_id = db.create_task(
+            flow_name="my-flow",
+            title="Due scheduled task",
+            scheduled_at=past,
+        )
+
+        result = db.get_next_queued_task("my-flow")
+        assert result is not None
+        assert result.id == task_id
+
+    def test_get_next_queued_task_ignores_future_scheduled(self, db: FlowstateDB) -> None:
+        """get_next_queued_task does not return future scheduled tasks."""
+        future = "2099-12-31T23:59:59+00:00"
+        db.create_task(
+            flow_name="my-flow",
+            title="Future task",
+            scheduled_at=future,
+        )
+
+        result = db.get_next_queued_task("my-flow")
+        assert result is None
+
+    def test_delete_task_scheduled(self, db: FlowstateDB) -> None:
+        """delete_task removes a task in 'scheduled' status."""
+        task_id = db.create_task(
+            flow_name="my-flow",
+            title="Delete me",
+            scheduled_at="2099-01-01T00:00:00+00:00",
+        )
+        db.delete_task(task_id)
+        assert db.get_task(task_id) is None
+
+
+# ================================================================== #
 # Flow Enable/Disable Tests
 # ================================================================== #
 

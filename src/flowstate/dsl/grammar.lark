@@ -22,6 +22,7 @@ flow_attr: "budget" "=" DURATION       -> flow_budget
          | "skip_permissions" "=" BOOL_LIT -> flow_skip_permissions
          | "judge" "=" BOOL_LIT -> flow_judge
          | "worktree" "=" BOOL_LIT -> flow_worktree
+         | "max_parallel" "=" NUMBER -> flow_max_parallel
 
 BOOL_LIT.2: "true" | "false"
 ERROR_POLICY.2: "pause" | "abort" | "skip"
@@ -40,11 +41,20 @@ literal: STRING
        | "false" -> false_lit
 
 // Nodes
-node_decl: entry_node | task_node | exit_node
+node_decl: entry_node | task_node | exit_node | wait_node | fence_node | atomic_node
 
 entry_node: "entry" NAME "{" node_body "}"
 task_node:  "task"  NAME "{" node_body "}"
 exit_node:  "exit"  NAME "{" node_body "}"
+
+wait_node: "wait" NAME "{" wait_body "}"
+wait_body: wait_attr+
+wait_attr: "delay" "=" DURATION  -> wait_delay
+         | "until" "=" STRING    -> wait_until
+
+fence_node: "fence" NAME "{" "}"
+
+atomic_node: "atomic" NAME "{" node_body "}"
 
 node_body: node_attr+
 node_attr: "prompt" "=" string  -> node_prompt

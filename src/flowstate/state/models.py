@@ -137,6 +137,8 @@ class TaskRow(BaseModel):
     flow_run_id: str | None = None
     priority: int = 0
     depth: int = 0
+    scheduled_at: str | None = None
+    cron_expression: str | None = None
     created_at: str
     started_at: str | None = None
     completed_at: str | None = None

@@ -120,7 +120,7 @@ CREATE TABLE IF NOT EXISTS tasks (
     title TEXT NOT NULL,
     description TEXT,
     status TEXT NOT NULL CHECK(status IN (
-        'queued', 'running', 'waiting', 'completed', 'failed', 'cancelled', 'paused'
+        'scheduled', 'queued', 'running', 'waiting', 'completed', 'failed', 'cancelled', 'paused'
     )),
     current_node TEXT,
     params_json TEXT,
@@ -130,6 +130,8 @@ CREATE TABLE IF NOT EXISTS tasks (
     flow_run_id TEXT REFERENCES flow_runs(id),
     priority INTEGER DEFAULT 0,
     depth INTEGER DEFAULT 0,
+    scheduled_at TIMESTAMP,
+    cron_expression TEXT,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     started_at TIMESTAMP,
     completed_at TIMESTAMP,
@@ -169,4 +171,6 @@ CREATE INDEX IF NOT EXISTS idx_tasks_status ON tasks(flow_name, status);
 CREATE INDEX IF NOT EXISTS idx_tasks_queue ON tasks(flow_name, status, priority DESC, created_at ASC)
     WHERE status = 'queued';
 CREATE INDEX IF NOT EXISTS idx_tasks_parent ON tasks(parent_task_id);
+CREATE INDEX IF NOT EXISTS idx_tasks_scheduled ON tasks(status, scheduled_at)
+    WHERE status = 'scheduled';
 CREATE INDEX IF NOT EXISTS idx_task_node_history_task ON task_node_history(task_id);
