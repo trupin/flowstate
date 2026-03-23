@@ -137,6 +137,33 @@
   font-family: var(--font-mono);
 }
 
+.task-modal-schedule-options {
+  display: flex;
+  gap: 16px;
+  margin-bottom: 8px;
+}
+
+.task-modal-schedule-options label {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 13px;
+  cursor: pointer;
+}
+
+.task-modal-help {
+  font-size: 11px;
+  color: var(--text-secondary);
+  margin-top: 4px;
+}
+
+.task-modal-help code {
+  background: var(--bg-tertiary);
+  padding: 1px 4px;
+  border-radius: 2px;
+  font-family: var(--font-mono);
+}
+
 .task-modal-error {
   background: rgba(239, 68, 68, 0.1);
   border: 1px solid var(--error);

@@ -21,6 +21,11 @@ export function TaskModal({
   const [title, setTitle] = useState(task?.title ?? '');
   const [description, setDescription] = useState(task?.description ?? '');
   const [params, setParams] = useState<Record<string, string>>({});
+  const [scheduleType, setScheduleType] = useState<
+    'immediate' | 'scheduled' | 'recurring'
+  >('immediate');
+  const [scheduledAt, setScheduledAt] = useState('');
+  const [cronExpression, setCronExpression] = useState('');
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -96,12 +101,25 @@ export function TaskModal({
             Object.keys(parsedParams).length > 0 ? parsedParams : undefined,
         });
       } else {
-        await api.tasks.submit(flowName, {
+        const submitData: {
+          title: string;
+          description?: string;
+          params?: Record<string, unknown>;
+          scheduled_at?: string;
+          cron?: string;
+        } = {
           title: title.trim(),
           description: description.trim() || undefined,
           params:
             Object.keys(parsedParams).length > 0 ? parsedParams : undefined,
-        });
+        };
+        if (scheduleType === 'scheduled' && scheduledAt) {
+          submitData.scheduled_at = new Date(scheduledAt).toISOString();
+        }
+        if (scheduleType === 'recurring' && cronExpression) {
+          submitData.cron = cronExpression;
+        }
+        await api.tasks.submit(flowName, submitData);
       }
       onSubmit();
     } catch (err) {
@@ -181,6 +199,69 @@ export function TaskModal({
                     />
                   </div>
                 ))}
+              </div>
+            )}
+
+            {!task && (
+              <div className="task-modal-field">
+                <label className="task-modal-label">When</label>
+                <div className="task-modal-schedule-options">
+                  <label>
+                    <input
+                      type="radio"
+                      name="schedule"
+                      value="immediate"
+                      checked={scheduleType === 'immediate'}
+                      onChange={() => setScheduleType('immediate')}
+                    />
+                    Immediate
+                  </label>
+                  <label>
+                    <input
+                      type="radio"
+                      name="schedule"
+                      value="scheduled"
+                      checked={scheduleType === 'scheduled'}
+                      onChange={() => setScheduleType('scheduled')}
+                    />
+                    Schedule for
+                  </label>
+                  <label>
+                    <input
+                      type="radio"
+                      name="schedule"
+                      value="recurring"
+                      checked={scheduleType === 'recurring'}
+                      onChange={() => setScheduleType('recurring')}
+                    />
+                    Recurring
+                  </label>
+                </div>
+
+                {scheduleType === 'scheduled' && (
+                  <input
+                    type="datetime-local"
+                    className="task-modal-input"
+                    value={scheduledAt}
+                    onChange={(e) => setScheduledAt(e.target.value)}
+                  />
+                )}
+
+                {scheduleType === 'recurring' && (
+                  <div>
+                    <input
+                      type="text"
+                      className="task-modal-input"
+                      placeholder="0 9 * * 1-5 (weekdays at 9am)"
+                      value={cronExpression}
+                      onChange={(e) => setCronExpression(e.target.value)}
+                    />
+                    <div className="task-modal-help">
+                      Examples: <code>0 9 * * *</code> (daily 9am),{' '}
+                      <code>*/30 * * * *</code> (every 30min)
+                    </div>
+                  </div>
+                )}
               </div>
             )}
           </div>

@@ -145,6 +145,22 @@
   color: var(--accent);
 }
 
+.task-status-indicator.scheduled {
+  border: 1.5px solid var(--accent);
+  background: transparent;
+}
+
+.task-scheduled-at,
+.task-cron {
+  font-size: 11px;
+  color: var(--text-secondary);
+  flex-shrink: 0;
+}
+
+.task-cron {
+  font-family: var(--font-mono);
+}
+
 /* Empty state */
 .task-queue-empty {
   padding: 12px 10px;

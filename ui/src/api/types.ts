@@ -177,6 +177,7 @@ export interface OrchestratorInfo {
 
 export type QueuedTaskStatus =
   | 'queued'
+  | 'scheduled'
   | 'running'
   | 'waiting'
   | 'completed'
@@ -210,6 +211,8 @@ export interface QueuedTask {
   started_at?: string;
   completed_at?: string;
   error_message?: string;
+  scheduled_at?: string;
+  cron_expression?: string;
   history?: QueuedTaskNodeHistory[];
   children?: QueuedTask[];
 }

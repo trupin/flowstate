@@ -33,6 +33,7 @@ export function TaskQueuePanel({ flowName, flowParams }: TaskQueuePanelProps) {
   }, [fetchTasks]);
 
   const running = tasks.filter((t) => t.status === 'running');
+  const scheduled = tasks.filter((t) => t.status === 'scheduled');
   const queued = tasks.filter((t) => t.status === 'queued');
   const completed = tasks
     .filter((t) => TERMINAL_STATUSES.has(t.status))
@@ -108,6 +109,33 @@ export function TaskQueuePanel({ flowName, flowParams }: TaskQueuePanelProps) {
         </div>
       )}
 
+      {scheduled.length > 0 && (
+        <div className="task-queue-group">
+          <div className="task-queue-group-label">Scheduled</div>
+          {scheduled.map((t) => (
+            <div key={t.id} className="task-item task-scheduled">
+              <span className="task-status-indicator scheduled" />
+              <span className="task-item-title">{t.title}</span>
+              {t.scheduled_at && (
+                <span className="task-scheduled-at">
+                  {new Date(t.scheduled_at).toLocaleString()}
+                </span>
+              )}
+              <button
+                className="task-action-btn task-remove-btn"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  handleRemove(t.id);
+                }}
+                title="Remove task"
+              >
+                &times;
+              </button>
+            </div>
+          ))}
+        </div>
+      )}
+
       {queued.length > 0 && (
         <div className="task-queue-group">
           <div className="task-queue-group-label">Queued</div>
@@ -115,6 +143,9 @@ export function TaskQueuePanel({ flowName, flowParams }: TaskQueuePanelProps) {
             <div key={t.id} className="task-item task-queued">
               <span className="task-status-indicator queued" />
               <span className="task-item-title">{t.title}</span>
+              {t.cron_expression && (
+                <span className="task-cron">{t.cron_expression}</span>
+              )}
               <button
                 className="task-action-btn task-edit-btn"
                 onClick={(e) => {

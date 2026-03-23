@@ -118,6 +118,8 @@ export const api = {
         description?: string;
         params?: Record<string, unknown>;
         priority?: number;
+        scheduled_at?: string;
+        cron?: string;
       },
     ) => post<QueuedTask>(`/api/flows/${flowName}/tasks`, data),
     list: (flowName?: string, status?: string) => {
