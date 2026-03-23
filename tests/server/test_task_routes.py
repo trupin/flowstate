@@ -493,6 +493,149 @@ class TestReorderTasks:
 # ---------------------------------------------------------------------------
 
 
+# ---------------------------------------------------------------------------
+# POST /api/flows/:flow_name/tasks -- Scheduling fields (SERVER-012)
+# ---------------------------------------------------------------------------
+
+
+class TestSubmitTaskScheduling:
+    def test_submit_task_with_scheduled_at(self) -> None:
+        """Submitting a task with scheduled_at passes it to db.create_task and returns it."""
+        task = _make_task_row(status="scheduled")
+        task = task.model_copy(update={"scheduled_at": "2025-06-01T12:00:00+00:00"})
+        mock_db = MagicMock()
+        mock_db.create_task.return_value = "task-1"
+        mock_db.get_task.return_value = task
+
+        client = _make_test_client(
+            flows={"code_review": VALID_FLOW},
+            db_mock=mock_db,
+        )
+        response = client.post(
+            "/api/flows/code_review/tasks",
+            json={
+                "title": "Scheduled review",
+                "scheduled_at": "2025-06-01T12:00:00+00:00",
+            },
+        )
+
+        assert response.status_code == 201
+        body = response.json()
+        assert body["status"] == "scheduled"
+        assert body["scheduled_at"] == "2025-06-01T12:00:00+00:00"
+
+        # Verify DB was called with scheduled_at
+        call_kwargs = mock_db.create_task.call_args[1]
+        assert call_kwargs["scheduled_at"] == "2025-06-01T12:00:00+00:00"
+
+    def test_submit_task_with_cron(self) -> None:
+        """Submitting a task with a cron expression stores it."""
+        task = _make_task_row()
+        task = task.model_copy(update={"cron_expression": "0 9 * * MON"})
+        mock_db = MagicMock()
+        mock_db.create_task.return_value = "task-1"
+        mock_db.get_task.return_value = task
+
+        client = _make_test_client(
+            flows={"code_review": VALID_FLOW},
+            db_mock=mock_db,
+        )
+        response = client.post(
+            "/api/flows/code_review/tasks",
+            json={
+                "title": "Weekly review",
+                "cron": "0 9 * * MON",
+            },
+        )
+
+        assert response.status_code == 201
+        body = response.json()
+        assert body["cron_expression"] == "0 9 * * MON"
+
+        # Verify DB was called with cron_expression
+        call_kwargs = mock_db.create_task.call_args[1]
+        assert call_kwargs["cron_expression"] == "0 9 * * MON"
+
+    def test_submit_task_with_invalid_cron_returns_400(self) -> None:
+        """Submitting a task with an invalid cron expression returns 400."""
+        client = _make_test_client(
+            flows={"code_review": VALID_FLOW},
+        )
+        response = client.post(
+            "/api/flows/code_review/tasks",
+            json={
+                "title": "Bad cron",
+                "cron": "not a cron",
+            },
+        )
+
+        assert response.status_code == 400
+        body = response.json()
+        assert "cron" in body["error"].lower()
+
+    def test_scheduled_task_appears_in_task_list(self) -> None:
+        """A scheduled task should appear when listing tasks."""
+        task = _make_task_row(status="scheduled")
+        task = task.model_copy(
+            update={
+                "scheduled_at": "2025-06-01T12:00:00+00:00",
+                "cron_expression": "0 9 * * MON",
+            }
+        )
+        mock_db = MagicMock()
+        mock_db.list_tasks.return_value = [task]
+
+        client = _make_test_client(db_mock=mock_db)
+        response = client.get("/api/flows/code_review/tasks")
+
+        assert response.status_code == 200
+        body = response.json()
+        assert len(body) == 1
+        assert body[0]["status"] == "scheduled"
+        assert body[0]["scheduled_at"] == "2025-06-01T12:00:00+00:00"
+        assert body[0]["cron_expression"] == "0 9 * * MON"
+
+    def test_task_response_includes_scheduling_fields(self) -> None:
+        """Task responses always include scheduled_at and cron_expression fields."""
+        task = _make_task_row()
+        mock_db = MagicMock()
+        mock_db.get_task.return_value = task
+        mock_db.get_task_history.return_value = []
+        mock_db.get_child_tasks.return_value = []
+
+        client = _make_test_client(db_mock=mock_db)
+        response = client.get("/api/tasks/task-1")
+
+        assert response.status_code == 200
+        body = response.json()
+        # Fields should be present even when None
+        assert "scheduled_at" in body
+        assert "cron_expression" in body
+        assert body["scheduled_at"] is None
+        assert body["cron_expression"] is None
+
+    def test_submit_task_without_scheduling_fields(self) -> None:
+        """Submitting a task without scheduling fields passes None to DB."""
+        task = _make_task_row()
+        mock_db = MagicMock()
+        mock_db.create_task.return_value = "task-1"
+        mock_db.get_task.return_value = task
+
+        client = _make_test_client(
+            flows={"code_review": VALID_FLOW},
+            db_mock=mock_db,
+        )
+        response = client.post(
+            "/api/flows/code_review/tasks",
+            json={"title": "Normal task"},
+        )
+
+        assert response.status_code == 201
+        call_kwargs = mock_db.create_task.call_args[1]
+        assert call_kwargs["scheduled_at"] is None
+        assert call_kwargs["cron_expression"] is None
+
+
 class TestAllTaskRoutesAsync:
     def test_all_task_routes_are_async(self) -> None:
         """Verify that all task route handler functions are async."""

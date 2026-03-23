@@ -124,6 +124,8 @@ class SubmitTaskRequest(BaseModel):
     description: str = Field("", max_length=4096)
     params: dict[str, str | float | bool] = {}
     priority: int = Field(0, ge=0, le=100)
+    scheduled_at: str | None = None  # ISO 8601 timestamp for deferred execution
+    cron: str | None = None  # cron expression for recurring tasks
 
 
 class UpdateTaskRequest(BaseModel):

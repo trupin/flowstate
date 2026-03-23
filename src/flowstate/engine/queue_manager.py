@@ -81,7 +81,20 @@ class QueueManager:
             await asyncio.sleep(self._poll_interval)
 
     async def _process_queues(self) -> None:
-        """Check all flows for queued tasks and start runs if capacity allows."""
+        """Check all flows for queued tasks and start runs if capacity allows.
+
+        Before processing queued tasks, transitions due scheduled tasks to
+        queued status and creates next occurrences for recurring tasks.
+        Uses per-flow ``max_parallel`` from the flow AST instead of a global limit.
+        """
+        # Transition due scheduled tasks to queued
+        due_tasks = self._db.get_due_scheduled_tasks()
+        for task in due_tasks:
+            self._db.update_task_queue_status(task.id, "queued")
+            # Create next occurrence for recurring tasks
+            if task.cron_expression:
+                self._db.create_next_recurring_task(task)
+
         flow_names = self._db.list_queued_flow_names()
 
         for flow_name in flow_names:
@@ -89,8 +102,18 @@ class QueueManager:
             if not self._db.is_flow_enabled(flow_name):
                 continue
 
+            # Look up the flow to get per-flow max_parallel from the AST
+            max_parallel = self._max_concurrent  # fallback to global default
+            flow = self._registry.get_flow_by_name(flow_name)
+            if flow and flow.status == "valid" and getattr(flow, "source_dsl", None):
+                try:
+                    flow_ast = parse_flow(flow.source_dsl)
+                    max_parallel = flow_ast.max_parallel
+                except Exception:
+                    pass  # parse failure: fall back to global default
+
             running_count = self._db.count_running_tasks(flow_name)
-            if running_count >= self._max_concurrent:
+            if running_count >= max_parallel:
                 continue
 
             next_task = self._db.get_next_queued_task(flow_name)

@@ -424,3 +424,242 @@ class TestQueueManagerLifecycle:
         qm, _, _, _ = _make_queue_manager()
         await qm.stop()  # should not raise
         assert qm._running is False
+
+
+# ---------------------------------------------------------------------------
+# Tests: Per-flow max_parallel (ENGINE-030)
+# ---------------------------------------------------------------------------
+
+MAX_PARALLEL_3_FLOW_DSL = """\
+flow parallel_flow {
+    budget = 60m
+    on_error = pause
+    context = handoff
+    max_parallel = 3
+
+    entry start {
+        prompt = "Do the start step"
+    }
+
+    exit finish {
+        prompt = "Do the finish step"
+    }
+
+    start -> finish
+}
+"""
+
+
+class TestPerFlowMaxParallel:
+    async def test_per_flow_max_parallel_allows_multiple(self) -> None:
+        """A flow with max_parallel=3 allows 3 concurrent tasks."""
+        flow = MockDiscoveredFlow(
+            id="parallel_flow",
+            name="parallel_flow",
+            file_path="/tmp/parallel_flow.flow",
+            source_dsl=MAX_PARALLEL_3_FLOW_DSL,
+            status="valid",
+        )
+        registry = MockFlowRegistry([flow])
+        # Global max_concurrent=1 but flow AST says max_parallel=3
+        qm, db, _, rm = _make_queue_manager(registry=registry, max_concurrent=1)
+
+        # Create 4 queued tasks
+        db.create_task("parallel_flow", "Task 1")
+        db.create_task("parallel_flow", "Task 2")
+        db.create_task("parallel_flow", "Task 3")
+        db.create_task("parallel_flow", "Task 4")
+
+        # First process: should start up to max_parallel=3 tasks (one per call)
+        await qm._process_queues()
+        assert len(rm.started_runs) == 1  # one task started per _process_queues call
+
+        # After 3 are running, 4th should be blocked
+        # The first started run marks task as running
+        await qm._process_queues()
+        assert len(rm.started_runs) == 2
+
+        await qm._process_queues()
+        assert len(rm.started_runs) == 3
+
+        # 4th task should be blocked (3 running = max_parallel)
+        await qm._process_queues()
+        assert len(rm.started_runs) == 3
+
+    async def test_per_flow_max_parallel_default_1(self) -> None:
+        """A flow without explicit max_parallel defaults to 1."""
+        flow = MockDiscoveredFlow(
+            id="test_flow",
+            name="test_flow",
+            file_path="/tmp/test_flow.flow",
+            source_dsl=SIMPLE_FLOW_DSL,  # no max_parallel set -> default 1
+            status="valid",
+        )
+        registry = MockFlowRegistry([flow])
+        qm, db, _, rm = _make_queue_manager(registry=registry, max_concurrent=5)
+
+        db.create_task("test_flow", "Task 1")
+        db.create_task("test_flow", "Task 2")
+
+        await qm._process_queues()
+        assert len(rm.started_runs) == 1  # first started
+
+        await qm._process_queues()
+        assert len(rm.started_runs) == 1  # second blocked (max_parallel=1 from AST)
+
+    async def test_per_flow_max_parallel_fallback_for_missing_registry(self) -> None:
+        """If the flow is not in the registry, fall back to global max_concurrent.
+
+        The capacity check should use the global default when the flow AST
+        cannot be parsed. (The task will fail at _start_task because the flow
+        is missing from the registry.)
+        """
+        # Registry has no flows -- get_flow_by_name returns None
+        registry = MockFlowRegistry([])
+        qm, db, _, rm = _make_queue_manager(registry=registry, max_concurrent=2)
+
+        db.create_task("unknown_flow", "Task 1")
+
+        await qm._process_queues()
+
+        # Task should be failed because the flow is not in the registry
+        task = db.list_tasks("unknown_flow")[0]
+        assert task.status == "failed"
+        assert len(rm.started_runs) == 0
+
+
+# ---------------------------------------------------------------------------
+# Tests: Scheduled task handling (ENGINE-030)
+# ---------------------------------------------------------------------------
+
+
+class TestScheduledTaskTransition:
+    async def test_due_scheduled_tasks_transition_to_queued(self) -> None:
+        """Scheduled tasks whose scheduled_at has passed get transitioned to queued."""
+        from datetime import UTC, datetime
+
+        flow = MockDiscoveredFlow(
+            id="test_flow",
+            name="test_flow",
+            file_path="/tmp/test_flow.flow",
+            source_dsl=SIMPLE_FLOW_DSL,
+            status="valid",
+        )
+        registry = MockFlowRegistry([flow])
+        qm, db, _, rm = _make_queue_manager(registry=registry)
+
+        # Create a scheduled task with scheduled_at in the past
+        past_time = datetime(2020, 1, 1, tzinfo=UTC).isoformat()
+        task_id = db.create_task(
+            "test_flow",
+            "Scheduled task",
+            scheduled_at=past_time,
+        )
+
+        # Before processing, task should be scheduled
+        task = db.get_task(task_id)
+        assert task is not None
+        assert task.status == "scheduled"
+
+        # Process queues -- scheduled task should be transitioned and started
+        await qm._process_queues()
+
+        # Run should have started
+        assert len(rm.started_runs) == 1
+
+    async def test_future_scheduled_tasks_not_started(self) -> None:
+        """Scheduled tasks in the future should not be transitioned or started."""
+        from datetime import UTC, datetime, timedelta
+
+        flow = MockDiscoveredFlow(
+            id="test_flow",
+            name="test_flow",
+            file_path="/tmp/test_flow.flow",
+            source_dsl=SIMPLE_FLOW_DSL,
+            status="valid",
+        )
+        registry = MockFlowRegistry([flow])
+        qm, db, _, rm = _make_queue_manager(registry=registry)
+
+        # Create a scheduled task far in the future
+        future_time = (datetime.now(UTC) + timedelta(hours=24)).isoformat()
+        task_id = db.create_task(
+            "test_flow",
+            "Future task",
+            scheduled_at=future_time,
+        )
+
+        await qm._process_queues()
+
+        # Task should still be scheduled, no runs started
+        task = db.get_task(task_id)
+        assert task is not None
+        assert task.status == "scheduled"
+        assert len(rm.started_runs) == 0
+
+
+class TestRecurringTaskCreation:
+    async def test_recurring_task_creates_next_occurrence(self) -> None:
+        """When a recurring (cron) task is due, the next occurrence is created."""
+        from datetime import UTC, datetime
+
+        flow = MockDiscoveredFlow(
+            id="test_flow",
+            name="test_flow",
+            file_path="/tmp/test_flow.flow",
+            source_dsl=SIMPLE_FLOW_DSL,
+            status="valid",
+        )
+        registry = MockFlowRegistry([flow])
+        qm, db, _, rm = _make_queue_manager(registry=registry)
+
+        # Create a recurring task with cron and scheduled_at in the past
+        past_time = datetime(2020, 1, 1, tzinfo=UTC).isoformat()
+        task_id = db.create_task(
+            "test_flow",
+            "Recurring task",
+            scheduled_at=past_time,
+            cron_expression="0 9 * * *",  # daily at 9am
+        )
+
+        await qm._process_queues()
+
+        # Original task should have been started
+        assert len(rm.started_runs) == 1
+
+        # A new scheduled task should have been created (the next occurrence)
+        all_tasks = db.list_tasks("test_flow")
+        assert len(all_tasks) == 2
+
+        # The new task should be scheduled (not queued)
+        new_task = next(t for t in all_tasks if t.id != task_id)
+        assert new_task.status == "scheduled"
+        assert new_task.cron_expression == "0 9 * * *"
+        assert new_task.scheduled_at is not None
+
+    async def test_non_recurring_task_no_next_occurrence(self) -> None:
+        """A non-recurring scheduled task does not create a next occurrence."""
+        from datetime import UTC, datetime
+
+        flow = MockDiscoveredFlow(
+            id="test_flow",
+            name="test_flow",
+            file_path="/tmp/test_flow.flow",
+            source_dsl=SIMPLE_FLOW_DSL,
+            status="valid",
+        )
+        registry = MockFlowRegistry([flow])
+        qm, db, _, _rm = _make_queue_manager(registry=registry)
+
+        past_time = datetime(2020, 1, 1, tzinfo=UTC).isoformat()
+        db.create_task(
+            "test_flow",
+            "One-time task",
+            scheduled_at=past_time,
+        )
+
+        await qm._process_queues()
+
+        # Only the original task should exist
+        all_tasks = db.list_tasks("test_flow")
+        assert len(all_tasks) == 1

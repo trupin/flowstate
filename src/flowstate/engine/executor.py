@@ -24,7 +24,7 @@ import logging
 import os
 import time
 import uuid
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -1568,6 +1568,281 @@ class FlowExecutor:
             )
 
     # ------------------------------------------------------------------ #
+    # Wait node execution
+    # ------------------------------------------------------------------ #
+
+    async def _execute_wait_node(
+        self,
+        flow_run_id: str,
+        task_execution_id: str,
+        node: Node,
+        completed_queue: asyncio.Queue[str],
+    ) -> None:
+        """Handle a WAIT node: compute wait_until, sleep, then mark completed.
+
+        Wait nodes don't launch a Claude Code subprocess. They pause the flow
+        for a specified duration (``wait_delay_seconds``) or until a cron time
+        (``wait_until_cron``). Wait time does NOT count toward the flow budget.
+        """
+        now = datetime.now(UTC)
+        if node.wait_delay_seconds is not None and node.wait_delay_seconds > 0:
+            wait_until = now + timedelta(seconds=node.wait_delay_seconds)
+        elif node.wait_until_cron:
+            from croniter import croniter
+
+            cron = croniter(node.wait_until_cron, now)
+            wait_until = cron.get_next(datetime)
+        else:
+            # Fallback: no delay configured (shouldn't happen if type checker validates)
+            wait_until = now
+
+        # Set task to 'waiting' with the computed wait_until
+        self._db.update_task_status(
+            task_execution_id,
+            "waiting",
+            wait_until=wait_until.isoformat(),
+            started_at=_now_iso(),
+        )
+
+        self._emit_activity(
+            flow_run_id,
+            task_execution_id,
+            f"Wait node '{node.name}': waiting until {wait_until.isoformat()}",
+        )
+
+        self._emit(
+            FlowEvent(
+                type=EventType.TASK_WAITING,
+                flow_run_id=flow_run_id,
+                timestamp=_now_iso(),
+                payload={
+                    "task_execution_id": task_execution_id,
+                    "node_name": node.name,
+                    "wait_until": wait_until.isoformat(),
+                    "reason": "delay" if node.wait_delay_seconds else "cron",
+                },
+            )
+        )
+
+        # Track task node history for queue tasks
+        if self._task_id:
+            self._db.update_task_queue_status(self._task_id, "running", current_node=node.name)
+            self._db.add_task_node_history(self._task_id, node.name, flow_run_id)
+
+        # Poll until wait expires (budget-exempt -- don't add to budget)
+        while not self._cancelled:
+            remaining = (wait_until - datetime.now(UTC)).total_seconds()
+            if remaining <= 0:
+                break
+            await asyncio.sleep(min(5.0, remaining))
+
+        if self._cancelled:
+            self._db.update_task_status(
+                task_execution_id,
+                "failed",
+                error_message="Flow cancelled",
+                completed_at=_now_iso(),
+            )
+            await completed_queue.put(task_execution_id)
+            return
+
+        # Mark as completed (no budget charge -- wait time is free)
+        self._db.update_task_status(
+            task_execution_id,
+            "completed",
+            completed_at=_now_iso(),
+            elapsed_seconds=0.0,
+        )
+
+        if self._task_id:
+            self._db.complete_task_node_history(self._task_id, node.name)
+
+        self._emit(
+            FlowEvent(
+                type=EventType.TASK_COMPLETED,
+                flow_run_id=flow_run_id,
+                timestamp=_now_iso(),
+                payload={
+                    "task_execution_id": task_execution_id,
+                    "node_name": node.name,
+                    "exit_code": 0,
+                    "elapsed_seconds": 0.0,
+                },
+            )
+        )
+
+        await completed_queue.put(task_execution_id)
+
+    # ------------------------------------------------------------------ #
+    # Fence node execution (ENGINE-031)
+    # ------------------------------------------------------------------ #
+
+    async def _execute_fence_node(
+        self,
+        flow_run_id: str,
+        task_execution_id: str,
+        node: Node,
+        completed_queue: asyncio.Queue[str],
+    ) -> None:
+        """Handle a FENCE node: wait until all other tasks have reached this point.
+
+        A fence is a synchronization barrier. It marks the arriving task as
+        ``waiting`` and polls until every other running/pending task in the same
+        flow run has either completed, failed, skipped, or is also waiting at a
+        fence. Once all tasks are synchronized, the fence is released and the
+        task is marked ``completed``.
+
+        Fence nodes have no prompt -- no Claude Code subprocess is launched.
+        Fence time does NOT count toward the flow budget.
+        """
+        self._db.update_task_status(task_execution_id, "waiting", started_at=_now_iso())
+
+        self._emit_activity(
+            flow_run_id,
+            task_execution_id,
+            f"Fence '{node.name}': waiting for all tasks to arrive",
+        )
+
+        self._emit(
+            FlowEvent(
+                type=EventType.TASK_WAITING,
+                flow_run_id=flow_run_id,
+                timestamp=_now_iso(),
+                payload={
+                    "task_execution_id": task_execution_id,
+                    "node_name": node.name,
+                    "reason": "fence",
+                },
+            )
+        )
+
+        # Track task node history for queue tasks
+        if self._task_id:
+            self._db.update_task_queue_status(self._task_id, "running", current_node=node.name)
+            self._db.add_task_node_history(self._task_id, node.name, flow_run_id)
+
+        # Poll until all running tasks in this flow run are at the fence (or completed)
+        while not self._cancelled:
+            all_tasks = self._db.list_task_executions(flow_run_id)
+            # Check if any other task is still running or pending (not yet at a fence)
+            blocking = [
+                t
+                for t in all_tasks
+                if t.id != task_execution_id and t.status in ("running", "pending")
+            ]
+
+            if not blocking:
+                # All other tasks are completed/waiting/failed/skipped -- fence passes
+                break
+
+            await asyncio.sleep(0.5)
+
+        if self._cancelled:
+            self._db.update_task_status(
+                task_execution_id,
+                "failed",
+                error_message="Flow cancelled",
+                completed_at=_now_iso(),
+            )
+            await completed_queue.put(task_execution_id)
+            return
+
+        # Mark as completed (no budget charge -- fence wait time is free)
+        self._db.update_task_status(
+            task_execution_id,
+            "completed",
+            completed_at=_now_iso(),
+            elapsed_seconds=0.0,
+        )
+
+        if self._task_id:
+            self._db.complete_task_node_history(self._task_id, node.name)
+
+        self._emit_activity(
+            flow_run_id,
+            task_execution_id,
+            f"Fence '{node.name}': all tasks arrived, proceeding",
+        )
+
+        self._emit(
+            FlowEvent(
+                type=EventType.TASK_COMPLETED,
+                flow_run_id=flow_run_id,
+                timestamp=_now_iso(),
+                payload={
+                    "task_execution_id": task_execution_id,
+                    "node_name": node.name,
+                    "exit_code": 0,
+                    "elapsed_seconds": 0.0,
+                },
+            )
+        )
+
+        await completed_queue.put(task_execution_id)
+
+    # ------------------------------------------------------------------ #
+    # Atomic node lock (ENGINE-032)
+    # ------------------------------------------------------------------ #
+
+    async def _acquire_atomic_lock(
+        self,
+        flow_run_id: str,
+        task_execution_id: str,
+        node: Node,
+    ) -> None:
+        """Wait until no other flow run has a running task for this atomic node.
+
+        Atomic nodes provide mutual exclusion per (flow_name, node_name) across
+        all concurrent flow runs. This method polls the database for any other
+        task execution with the same ``node_name`` that is currently running
+        (across ALL flow runs, not just this one). Once no other execution is
+        running, the method returns and the caller can proceed to launch the
+        subprocess.
+        """
+        first_check = True
+        while not self._cancelled:
+            row = self._db._fetchone(  # type: ignore[attr-defined]
+                """SELECT COUNT(*) as cnt FROM task_executions
+                   WHERE node_name = ? AND status = 'running'
+                   AND id != ?""",
+                (node.name, task_execution_id),
+            )
+
+            if row and row["cnt"] == 0:
+                break  # No other run has this atomic node running
+
+            if first_check:
+                self._db.update_task_status(task_execution_id, "waiting", started_at=_now_iso())
+                self._emit(
+                    FlowEvent(
+                        type=EventType.TASK_WAITING,
+                        flow_run_id=flow_run_id,
+                        timestamp=_now_iso(),
+                        payload={
+                            "task_execution_id": task_execution_id,
+                            "node_name": node.name,
+                            "reason": "atomic",
+                        },
+                    )
+                )
+                first_check = False
+
+            self._emit_activity(
+                flow_run_id,
+                task_execution_id,
+                f"Atomic '{node.name}': waiting for exclusive access",
+            )
+
+            await asyncio.sleep(0.5)
+
+        if not self._cancelled:
+            self._emit_activity(
+                flow_run_id,
+                task_execution_id,
+                f"Atomic '{node.name}': acquired exclusive lock",
+            )
+
+    # ------------------------------------------------------------------ #
     # Task execution
     # ------------------------------------------------------------------ #
 
@@ -1588,6 +1863,29 @@ class FlowExecutor:
             return
 
         node = flow.nodes[task_exec.node_name]
+
+        # Wait nodes don't launch a subprocess -- they just pause until a time/duration elapses
+        if node.node_type == NodeType.WAIT:
+            await self._execute_wait_node(flow_run_id, task_execution_id, node, completed_queue)
+            return
+
+        # Fence nodes are synchronization barriers -- no subprocess, just wait for all tasks
+        if node.node_type == NodeType.FENCE:
+            await self._execute_fence_node(flow_run_id, task_execution_id, node, completed_queue)
+            return
+
+        # Atomic nodes acquire an exclusive lock before launching the subprocess
+        if node.node_type == NodeType.ATOMIC:
+            await self._acquire_atomic_lock(flow_run_id, task_execution_id, node)
+            if self._cancelled:
+                self._db.update_task_status(
+                    task_execution_id,
+                    "failed",
+                    error_message="Flow cancelled",
+                    completed_at=_now_iso(),
+                )
+                await completed_queue.put(task_execution_id)
+                return
 
         # Update status to running
         self._db.update_task_status(task_execution_id, "running", started_at=_now_iso())

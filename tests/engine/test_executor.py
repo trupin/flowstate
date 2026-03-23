@@ -3871,3 +3871,512 @@ class TestAwaitEdgeSetsWaitingStatus:
         final_task = db.get_task(task_id)
         assert final_task is not None
         assert final_task.status == "completed"
+
+
+# ---------------------------------------------------------------------------
+# Tests: Wait node execution (ENGINE-030)
+# ---------------------------------------------------------------------------
+
+
+def _make_wait_flow(
+    wait_delay_seconds: int | None = None,
+    wait_until_cron: str | None = None,
+    workspace: str = "/workspace",
+) -> Flow:
+    """Build a flow with a wait node: entry -> wait -> finish."""
+    nodes: dict[str, Node] = {
+        "start": Node(name="start", node_type=NodeType.ENTRY, prompt="Do the start step"),
+        "pause": Node(
+            name="pause",
+            node_type=NodeType.WAIT,
+            wait_delay_seconds=wait_delay_seconds,
+            wait_until_cron=wait_until_cron,
+        ),
+        "finish": Node(name="finish", node_type=NodeType.EXIT, prompt="Do the finish step"),
+    }
+
+    edges = [
+        Edge(edge_type=EdgeType.UNCONDITIONAL, source="start", target="pause"),
+        Edge(edge_type=EdgeType.UNCONDITIONAL, source="pause", target="finish"),
+    ]
+
+    return Flow(
+        name="wait-flow",
+        budget_seconds=3600,
+        on_error=ErrorPolicy.PAUSE,
+        context=ContextMode.HANDOFF,
+        workspace=workspace,
+        nodes=nodes,
+        edges=tuple(edges),
+    )
+
+
+class TestWaitNodeWithDelay:
+    """Wait node with delay_seconds pauses the flow for the specified duration."""
+
+    async def test_wait_node_completes_flow(self) -> None:
+        """A flow with a short wait node completes successfully."""
+        db = _make_db()
+        _events, callback = _collect_events()
+        mock_mgr = MockSubprocessManager()
+        executor = FlowExecutor(db, callback, mock_mgr, max_concurrent=4)
+
+        # Use a very short delay (1 second) so test runs quickly
+        flow = _make_wait_flow(wait_delay_seconds=1)
+        flow_run_id = await asyncio.wait_for(executor.execute(flow, {}, "/workspace"), timeout=15)
+
+        # Flow should complete
+        run = db.get_flow_run(flow_run_id)
+        assert run is not None
+        assert run.status == "completed"
+
+        # All 3 task executions should exist (start, pause, finish)
+        task_execs = db.list_task_executions(flow_run_id)
+        assert len(task_execs) == 3
+
+        # The wait node should have completed with 0 elapsed_seconds (budget-exempt)
+        wait_exec = next(te for te in task_execs if te.node_name == "pause")
+        assert wait_exec.status == "completed"
+        assert wait_exec.elapsed_seconds == 0.0
+
+    async def test_wait_node_does_not_charge_budget(self) -> None:
+        """Wait time should NOT count toward the flow's budget."""
+        db = _make_db()
+        events, callback = _collect_events()
+        mock_mgr = MockSubprocessManager()
+        executor = FlowExecutor(db, callback, mock_mgr, max_concurrent=4)
+
+        flow = _make_wait_flow(wait_delay_seconds=1)
+        flow_run_id = await asyncio.wait_for(executor.execute(flow, {}, "/workspace"), timeout=15)
+
+        # Check budget: no budget warnings should have been emitted
+        budget_warnings = [e for e in events if e.type == EventType.FLOW_BUDGET_WARNING]
+        assert len(budget_warnings) == 0
+
+        # The flow should complete normally even with very small budget
+        run = db.get_flow_run(flow_run_id)
+        assert run is not None
+        assert run.status == "completed"
+
+    async def test_wait_node_emits_waiting_event(self) -> None:
+        """The executor should emit a TASK_WAITING event for wait nodes."""
+        db = _make_db()
+        events, callback = _collect_events()
+        mock_mgr = MockSubprocessManager()
+        executor = FlowExecutor(db, callback, mock_mgr, max_concurrent=4)
+
+        flow = _make_wait_flow(wait_delay_seconds=1)
+        await asyncio.wait_for(executor.execute(flow, {}, "/workspace"), timeout=15)
+
+        waiting_events = [e for e in events if e.type == EventType.TASK_WAITING]
+        assert len(waiting_events) == 1
+        assert waiting_events[0].payload["node_name"] == "pause"
+        assert waiting_events[0].payload["reason"] == "delay"
+        assert "wait_until" in waiting_events[0].payload
+
+    async def test_wait_node_no_subprocess_launched(self) -> None:
+        """Wait nodes should NOT launch a Claude Code subprocess."""
+        db = _make_db()
+        _events, callback = _collect_events()
+        mock_mgr = MockSubprocessManager()
+        executor = FlowExecutor(db, callback, mock_mgr, max_concurrent=4)
+
+        flow = _make_wait_flow(wait_delay_seconds=1)
+        await asyncio.wait_for(executor.execute(flow, {}, "/workspace"), timeout=15)
+
+        # Only start and finish should have launched subprocesses (not pause/wait)
+        assert len(mock_mgr.calls) == 2
+        prompts = [call[0] for call in mock_mgr.calls]
+        assert any("start" in p for p in prompts)
+        assert any("finish" in p for p in prompts)
+        assert not any("pause" in p for p in prompts)
+
+    async def test_wait_node_sets_waiting_status_in_db(self) -> None:
+        """During the wait, the task execution should be in 'waiting' status."""
+        db = _make_db()
+        _events, callback = _collect_events()
+        mock_mgr = MockSubprocessManager()
+        executor = FlowExecutor(db, callback, mock_mgr, max_concurrent=4)
+
+        # Use a 2-second delay so we can observe the waiting state
+        flow = _make_wait_flow(wait_delay_seconds=2)
+
+        waiting_seen = False
+
+        async def observe_waiting() -> None:
+            nonlocal waiting_seen
+            for _ in range(100):
+                await asyncio.sleep(0.05)
+                runs = db.list_flow_runs()
+                if not runs:
+                    continue
+                execs = db.list_task_executions(runs[0].id)
+                for te in execs:
+                    if te.node_name == "pause" and te.status == "waiting":
+                        waiting_seen = True
+                        return
+
+        execute_task = asyncio.create_task(executor.execute(flow, {}, "/workspace"))
+        observe_task = asyncio.create_task(observe_waiting())
+
+        await asyncio.wait_for(execute_task, timeout=15)
+        await observe_task
+
+        assert waiting_seen, "Wait node was never observed in 'waiting' status"
+
+
+class TestWaitNodeWithSmallBudget:
+    """Verify wait time does not count toward budget even with a tiny budget."""
+
+    async def test_wait_node_with_tiny_budget_still_completes(self) -> None:
+        """A flow with budget=5s and a 1s wait should complete (wait is free)."""
+        db = _make_db()
+        _events, callback = _collect_events()
+        mock_mgr = MockSubprocessManager()
+        executor = FlowExecutor(db, callback, mock_mgr, max_concurrent=4)
+
+        flow = _make_wait_flow(wait_delay_seconds=1)
+        # Override budget to be very small
+        from dataclasses import replace
+
+        flow = replace(flow, budget_seconds=5)
+
+        flow_run_id = await asyncio.wait_for(executor.execute(flow, {}, "/workspace"), timeout=15)
+
+        run = db.get_flow_run(flow_run_id)
+        assert run is not None
+        assert run.status == "completed"
+
+
+# ---------------------------------------------------------------------------
+# Tests: Fence node execution (ENGINE-031)
+# ---------------------------------------------------------------------------
+
+
+def _make_fence_flow_simple(workspace: str = "/workspace") -> Flow:
+    """Build a flow with a fence node: entry -> fence -> finish.
+
+    With a single linear path, the fence has no other tasks to wait for
+    and should complete immediately.
+    """
+    nodes: dict[str, Node] = {
+        "start": Node(name="start", node_type=NodeType.ENTRY, prompt="Do the start step"),
+        "sync": Node(name="sync", node_type=NodeType.FENCE),
+        "finish": Node(name="finish", node_type=NodeType.EXIT, prompt="Do the finish step"),
+    }
+
+    edges = [
+        Edge(edge_type=EdgeType.UNCONDITIONAL, source="start", target="sync"),
+        Edge(edge_type=EdgeType.UNCONDITIONAL, source="sync", target="finish"),
+    ]
+
+    return Flow(
+        name="fence-simple-flow",
+        budget_seconds=3600,
+        on_error=ErrorPolicy.PAUSE,
+        context=ContextMode.HANDOFF,
+        workspace=workspace,
+        nodes=nodes,
+        edges=tuple(edges),
+    )
+
+
+def _make_fence_fork_join_flow(workspace: str = "/workspace") -> Flow:
+    """Build a fork-join flow with parallel branches.
+
+    entry -> fork [branch_a, branch_b] -> join -> merge -> finish
+
+    Both branches run in parallel. The join waits for all fork members
+    to complete before continuing to merge.
+    """
+    nodes: dict[str, Node] = {
+        "start": Node(name="start", node_type=NodeType.ENTRY, prompt="Do the start step"),
+        "branch_a": Node(name="branch_a", node_type=NodeType.TASK, prompt="Do the branch_a step"),
+        "branch_b": Node(name="branch_b", node_type=NodeType.TASK, prompt="Do the branch_b step"),
+        "merge": Node(name="merge", node_type=NodeType.TASK, prompt="Do the merge step"),
+        "finish": Node(name="finish", node_type=NodeType.EXIT, prompt="Do the finish step"),
+    }
+
+    edges = [
+        Edge(
+            edge_type=EdgeType.FORK,
+            source="start",
+            fork_targets=("branch_a", "branch_b"),
+        ),
+        Edge(
+            edge_type=EdgeType.JOIN,
+            join_sources=("branch_a", "branch_b"),
+            target="merge",
+        ),
+        Edge(edge_type=EdgeType.UNCONDITIONAL, source="merge", target="finish"),
+    ]
+
+    return Flow(
+        name="fence-fork-flow",
+        budget_seconds=3600,
+        on_error=ErrorPolicy.PAUSE,
+        context=ContextMode.HANDOFF,
+        workspace=workspace,
+        nodes=nodes,
+        edges=tuple(edges),
+    )
+
+
+class TestFenceNodeSimple:
+    """Fence node with no other tasks completes immediately."""
+
+    async def test_fence_node_completes_flow(self) -> None:
+        """A linear flow with a fence node completes: entry -> fence -> exit."""
+        db = _make_db()
+        _events, callback = _collect_events()
+        mock_mgr = MockSubprocessManager()
+        executor = FlowExecutor(db, callback, mock_mgr, max_concurrent=4)
+
+        flow = _make_fence_flow_simple()
+        flow_run_id = await asyncio.wait_for(executor.execute(flow, {}, "/workspace"), timeout=15)
+
+        run = db.get_flow_run(flow_run_id)
+        assert run is not None
+        assert run.status == "completed"
+
+        tasks = db.list_task_executions(flow_run_id)
+        assert len(tasks) == 3
+        node_names = [t.node_name for t in tasks]
+        assert node_names == ["start", "sync", "finish"]
+        for t in tasks:
+            assert t.status == "completed"
+
+    async def test_fence_node_no_subprocess_launched(self) -> None:
+        """Fence nodes do not invoke Claude Code."""
+        db = _make_db()
+        _events, callback = _collect_events()
+        mock_mgr = MockSubprocessManager()
+        executor = FlowExecutor(db, callback, mock_mgr, max_concurrent=4)
+
+        flow = _make_fence_flow_simple()
+        await asyncio.wait_for(executor.execute(flow, {}, "/workspace"), timeout=15)
+
+        # Only start and finish should have subprocess calls (not the fence)
+        assert len(mock_mgr.calls) == 2
+        prompts = [c[0] for c in mock_mgr.calls]
+        assert any("start" in p for p in prompts)
+        assert any("finish" in p for p in prompts)
+        assert not any("sync" in p for p in prompts)
+
+    async def test_fence_node_emits_waiting_event(self) -> None:
+        """Fence emits a TASK_WAITING event with reason='fence'."""
+        db = _make_db()
+        events, callback = _collect_events()
+        mock_mgr = MockSubprocessManager()
+        executor = FlowExecutor(db, callback, mock_mgr, max_concurrent=4)
+
+        flow = _make_fence_flow_simple()
+        await asyncio.wait_for(executor.execute(flow, {}, "/workspace"), timeout=15)
+
+        waiting_events = [
+            e
+            for e in events
+            if e.type == EventType.TASK_WAITING and e.payload.get("reason") == "fence"
+        ]
+        assert len(waiting_events) == 1
+        assert waiting_events[0].payload["node_name"] == "sync"
+
+    async def test_fence_node_does_not_charge_budget(self) -> None:
+        """Fence waiting time does not count toward budget elapsed."""
+        db = _make_db()
+        _events, callback = _collect_events()
+        mock_mgr = MockSubprocessManager()
+        executor = FlowExecutor(db, callback, mock_mgr, max_concurrent=4)
+
+        flow = _make_fence_flow_simple()
+        flow_run_id = await asyncio.wait_for(executor.execute(flow, {}, "/workspace"), timeout=15)
+
+        # The fence task should have 0 elapsed_seconds
+        tasks = db.list_task_executions(flow_run_id)
+        fence_task = next(t for t in tasks if t.node_name == "sync")
+        assert fence_task.elapsed_seconds == 0.0
+
+
+class TestFenceNodeWithForkJoin:
+    """Fence synchronizes parallel branches in a fork-join flow."""
+
+    async def test_fence_in_fork_join_flow_completes(self) -> None:
+        """Fork-join flow with parallel branches completes."""
+        db = _make_db()
+        _events, callback = _collect_events()
+        mock_mgr = MockSubprocessManager()
+        executor = FlowExecutor(db, callback, mock_mgr, max_concurrent=4)
+
+        flow = _make_fence_fork_join_flow()
+        flow_run_id = await asyncio.wait_for(executor.execute(flow, {}, "/workspace"), timeout=15)
+
+        run = db.get_flow_run(flow_run_id)
+        assert run is not None
+        assert run.status == "completed"
+
+        tasks = db.list_task_executions(flow_run_id)
+        completed_names = {t.node_name for t in tasks if t.status == "completed"}
+        # All five should be completed: start, branch_a, branch_b, merge, finish
+        assert "start" in completed_names
+        assert "branch_a" in completed_names
+        assert "branch_b" in completed_names
+        assert "merge" in completed_names
+        assert "finish" in completed_names
+
+
+# ---------------------------------------------------------------------------
+# Tests: Atomic node execution (ENGINE-032)
+# ---------------------------------------------------------------------------
+
+
+def _make_atomic_flow(workspace: str = "/workspace") -> Flow:
+    """Build a flow with an atomic node: entry -> atomic -> finish."""
+    nodes: dict[str, Node] = {
+        "start": Node(name="start", node_type=NodeType.ENTRY, prompt="Do the start step"),
+        "deploy": Node(name="deploy", node_type=NodeType.ATOMIC, prompt="Do the deploy step"),
+        "finish": Node(name="finish", node_type=NodeType.EXIT, prompt="Do the finish step"),
+    }
+
+    edges = [
+        Edge(edge_type=EdgeType.UNCONDITIONAL, source="start", target="deploy"),
+        Edge(edge_type=EdgeType.UNCONDITIONAL, source="deploy", target="finish"),
+    ]
+
+    return Flow(
+        name="atomic-flow",
+        budget_seconds=3600,
+        on_error=ErrorPolicy.PAUSE,
+        context=ContextMode.HANDOFF,
+        workspace=workspace,
+        nodes=nodes,
+        edges=tuple(edges),
+    )
+
+
+class TestAtomicNodeNoContention:
+    """Atomic node proceeds immediately when no other run has it."""
+
+    async def test_atomic_node_completes_flow(self) -> None:
+        """A flow with an atomic node completes normally when no contention."""
+        db = _make_db()
+        _events, callback = _collect_events()
+        mock_mgr = MockSubprocessManager()
+        executor = FlowExecutor(db, callback, mock_mgr, max_concurrent=4)
+
+        flow = _make_atomic_flow()
+        flow_run_id = await asyncio.wait_for(executor.execute(flow, {}, "/workspace"), timeout=15)
+
+        run = db.get_flow_run(flow_run_id)
+        assert run is not None
+        assert run.status == "completed"
+
+        tasks = db.list_task_executions(flow_run_id)
+        assert len(tasks) == 3
+        node_names = [t.node_name for t in tasks]
+        assert node_names == ["start", "deploy", "finish"]
+        for t in tasks:
+            assert t.status == "completed"
+
+    async def test_atomic_node_launches_subprocess(self) -> None:
+        """Atomic nodes DO invoke Claude Code (unlike fence/wait)."""
+        db = _make_db()
+        _events, callback = _collect_events()
+        mock_mgr = MockSubprocessManager()
+        executor = FlowExecutor(db, callback, mock_mgr, max_concurrent=4)
+
+        flow = _make_atomic_flow()
+        await asyncio.wait_for(executor.execute(flow, {}, "/workspace"), timeout=15)
+
+        # All three nodes should have subprocess calls
+        assert len(mock_mgr.calls) == 3
+        prompts = [c[0] for c in mock_mgr.calls]
+        assert any("deploy" in p for p in prompts)
+
+    async def test_atomic_no_waiting_event_when_no_contention(self) -> None:
+        """When no contention, atomic should not emit TASK_WAITING."""
+        db = _make_db()
+        events, callback = _collect_events()
+        mock_mgr = MockSubprocessManager()
+        executor = FlowExecutor(db, callback, mock_mgr, max_concurrent=4)
+
+        flow = _make_atomic_flow()
+        await asyncio.wait_for(executor.execute(flow, {}, "/workspace"), timeout=15)
+
+        waiting_events = [
+            e
+            for e in events
+            if e.type == EventType.TASK_WAITING and e.payload.get("reason") == "atomic"
+        ]
+        assert len(waiting_events) == 0
+
+
+class TestAtomicNodeWithContention:
+    """Atomic node waits when another run has the same node running."""
+
+    async def test_atomic_node_waits_for_other_run(self) -> None:
+        """When another run has the same atomic node running, the second run waits."""
+        db = _make_db()
+        _events, callback = _collect_events()
+        mock_mgr = MockSubprocessManager()
+
+        # Add a delay to the deploy step so it holds the lock
+        mock_mgr.task_delays["deploy"] = 1.0
+
+        # Run two flows concurrently. The first should acquire the lock,
+        # the second should wait until the first completes.
+        executor1 = FlowExecutor(db, callback, mock_mgr, max_concurrent=4)
+        executor2 = FlowExecutor(db, callback, mock_mgr, max_concurrent=4)
+
+        flow = _make_atomic_flow()
+
+        task1 = asyncio.create_task(executor1.execute(flow, {}, "/workspace"))
+        # Small delay to ensure the first run reaches the atomic node first
+        await asyncio.sleep(0.2)
+        task2 = asyncio.create_task(executor2.execute(flow, {}, "/workspace"))
+
+        flow_run_id1, flow_run_id2 = await asyncio.wait_for(
+            asyncio.gather(task1, task2), timeout=30
+        )
+
+        # Both should complete
+        run1 = db.get_flow_run(flow_run_id1)
+        run2 = db.get_flow_run(flow_run_id2)
+        assert run1 is not None
+        assert run2 is not None
+        assert run1.status == "completed"
+        assert run2.status == "completed"
+
+        # Both should have 3 task executions each
+        tasks1 = db.list_task_executions(flow_run_id1)
+        tasks2 = db.list_task_executions(flow_run_id2)
+        assert len(tasks1) == 3
+        assert len(tasks2) == 3
+
+    async def test_atomic_emits_activity_when_waiting(self) -> None:
+        """When contention occurs, atomic emits activity logs about waiting."""
+        db = _make_db()
+        events, callback = _collect_events()
+        mock_mgr = MockSubprocessManager()
+
+        # Add a delay to the deploy step to force contention
+        mock_mgr.task_delays["deploy"] = 1.5
+
+        executor1 = FlowExecutor(db, callback, mock_mgr, max_concurrent=4)
+        executor2 = FlowExecutor(db, callback, mock_mgr, max_concurrent=4)
+
+        flow = _make_atomic_flow()
+
+        task1 = asyncio.create_task(executor1.execute(flow, {}, "/workspace"))
+        await asyncio.sleep(0.2)
+        task2 = asyncio.create_task(executor2.execute(flow, {}, "/workspace"))
+
+        await asyncio.wait_for(asyncio.gather(task1, task2), timeout=30)
+
+        # Check that at least one TASK_WAITING event was emitted with reason='atomic'
+        waiting_events = [
+            e
+            for e in events
+            if e.type == EventType.TASK_WAITING and e.payload.get("reason") == "atomic"
+        ]
+        # The second executor should have emitted at least one waiting event
+        assert len(waiting_events) >= 1

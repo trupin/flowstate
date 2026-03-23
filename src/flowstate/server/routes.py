@@ -744,6 +744,8 @@ def _task_to_response(task: TaskRow) -> dict[str, Any]:
         "created_by": task.created_by,
         "flow_run_id": task.flow_run_id,
         "priority": task.priority,
+        "scheduled_at": task.scheduled_at,
+        "cron_expression": task.cron_expression,
         "created_at": task.created_at,
         "started_at": task.started_at,
         "completed_at": task.completed_at,
@@ -771,6 +773,15 @@ async def submit_task(request: Request, flow_name: str, body: SubmitTaskRequest)
     if flow is None:
         raise FlowstateError(f"Flow '{flow_name}' not found", status_code=404)
 
+    # Validate cron expression if provided
+    if body.cron:
+        try:
+            from croniter import croniter
+
+            croniter(body.cron)
+        except (ValueError, KeyError) as e:
+            raise FlowstateError(f"Invalid cron expression: {e}", status_code=400) from e
+
     db = _get_db(request)
     task_id = db.create_task(
         flow_name=flow_name,
@@ -779,6 +790,8 @@ async def submit_task(request: Request, flow_name: str, body: SubmitTaskRequest)
         params_json=json.dumps(body.params) if body.params else None,
         created_by="user",
         priority=body.priority,
+        scheduled_at=body.scheduled_at,
+        cron_expression=body.cron,
     )
     task = db.get_task(task_id)
     assert task is not None  # just created — must exist

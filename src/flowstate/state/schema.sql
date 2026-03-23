@@ -35,7 +35,7 @@ CREATE TABLE IF NOT EXISTS task_executions (
     id TEXT PRIMARY KEY,
     flow_run_id TEXT NOT NULL REFERENCES flow_runs(id),
     node_name TEXT NOT NULL,
-    node_type TEXT NOT NULL CHECK(node_type IN ('entry', 'task', 'exit')),
+    node_type TEXT NOT NULL CHECK(node_type IN ('entry', 'task', 'exit', 'wait', 'fence', 'atomic')),
     status TEXT NOT NULL CHECK(status IN (
         'pending', 'waiting', 'running', 'completed', 'failed', 'skipped'
     )),
