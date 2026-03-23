@@ -5,6 +5,9 @@ flow e2e_cycle {
     workspace = "/tmp/flowstate-e2e-cycle"
     skip_permissions = true
 
+    input {
+        task_name: string = "default"
+    }
     entry plan {
         prompt = """
         Create a plan.md listing exactly 2 improvements:

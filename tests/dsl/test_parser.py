@@ -61,8 +61,9 @@ class TestLinearFlow:
         assert flow.edges[1].source == "add_ci"
         assert flow.edges[1].target == "done"
 
-    def test_no_input_fields(self, flow):
-        assert flow.input_fields == ()
+    def test_has_default_input(self, flow):
+        """Linear flow fixture has a default input field (required by S9)."""
+        assert len(flow.input_fields) >= 1
         assert flow.output_fields == ()
 
 
@@ -1051,6 +1052,146 @@ class TestFileEdges:
         file_edges = [e for e in flow.edges if e.edge_type == EdgeType.FILE]
         assert len(file_edges) == 1
         assert file_edges[0].line > 0
+
+
+class TestFileEdgeTimingVariants:
+    """DSL-010: file edge timing variants (after/at)."""
+
+    def test_file_delayed_edge(self):
+        source = (
+            "flow f { budget = 1h on_error = pause context = handoff "
+            'entry review { prompt = "x" } exit b { prompt = "y" } '
+            "review files bugfix after 30m review -> b }"
+        )
+        flow = parse_flow(source)
+        file_edges = [e for e in flow.edges if e.edge_type == EdgeType.FILE]
+        assert len(file_edges) == 1
+        assert file_edges[0].source == "review"
+        assert file_edges[0].target == "bugfix"
+        assert file_edges[0].config.delay_seconds == 1800
+        assert file_edges[0].condition is None
+
+    def test_file_delayed_edge_seconds(self):
+        source = (
+            "flow f { budget = 1h on_error = pause context = handoff "
+            'entry a { prompt = "x" } exit b { prompt = "y" } '
+            "a files child after 45s a -> b }"
+        )
+        flow = parse_flow(source)
+        file_edges = [e for e in flow.edges if e.edge_type == EdgeType.FILE]
+        assert len(file_edges) == 1
+        assert file_edges[0].config.delay_seconds == 45
+
+    def test_file_delayed_edge_hours(self):
+        source = (
+            "flow f { budget = 2h on_error = pause context = handoff "
+            'entry a { prompt = "x" } exit b { prompt = "y" } '
+            "a files child after 1h a -> b }"
+        )
+        flow = parse_flow(source)
+        file_edges = [e for e in flow.edges if e.edge_type == EdgeType.FILE]
+        assert len(file_edges) == 1
+        assert file_edges[0].config.delay_seconds == 3600
+
+    def test_file_scheduled_edge(self):
+        source = (
+            "flow f { budget = 1h on_error = pause context = handoff "
+            'entry review { prompt = "x" } exit b { prompt = "y" } '
+            'review files nightly at "0 2 * * *" review -> b }'
+        )
+        flow = parse_flow(source)
+        file_edges = [e for e in flow.edges if e.edge_type == EdgeType.FILE]
+        assert len(file_edges) == 1
+        assert file_edges[0].source == "review"
+        assert file_edges[0].target == "nightly"
+        assert file_edges[0].config.schedule == "0 2 * * *"
+        assert file_edges[0].condition is None
+
+    def test_file_delayed_edge_has_line_info(self):
+        source = """flow f {
+    budget = 1h
+    on_error = pause
+    context = handoff
+    entry a { prompt = "x" }
+    exit b { prompt = "y" }
+    a files child after 10m
+    a -> b
+}"""
+        flow = parse_flow(source)
+        file_edges = [e for e in flow.edges if e.edge_type == EdgeType.FILE]
+        assert len(file_edges) == 1
+        assert file_edges[0].line > 0
+
+    def test_file_scheduled_edge_has_line_info(self):
+        source = """flow f {
+    budget = 1h
+    on_error = pause
+    context = handoff
+    entry a { prompt = "x" }
+    exit b { prompt = "y" }
+    a files child at "0 3 * * *"
+    a -> b
+}"""
+        flow = parse_flow(source)
+        file_edges = [e for e in flow.edges if e.edge_type == EdgeType.FILE]
+        assert len(file_edges) == 1
+        assert file_edges[0].line > 0
+
+    def test_file_timing_coexists_with_regular_edges(self):
+        source = """flow f {
+    budget = 1h
+    on_error = pause
+    context = handoff
+    entry review { prompt = "review code" }
+    task fix { prompt = "fix issues" }
+    exit done { prompt = "completed" }
+    review files bugfix after 30m
+    review files nightly at "0 2 * * *"
+    review -> fix
+    fix -> done
+}"""
+        flow = parse_flow(source)
+        file_edges = [e for e in flow.edges if e.edge_type == EdgeType.FILE]
+        regular_edges = [
+            e for e in flow.edges if e.edge_type in (EdgeType.UNCONDITIONAL, EdgeType.CONDITIONAL)
+        ]
+        assert len(file_edges) == 2
+        assert len(regular_edges) == 2
+
+        delayed = [e for e in file_edges if e.config.delay_seconds is not None]
+        scheduled = [e for e in file_edges if e.config.schedule is not None]
+        assert len(delayed) == 1
+        assert delayed[0].config.delay_seconds == 1800
+        assert len(scheduled) == 1
+        assert scheduled[0].config.schedule == "0 2 * * *"
+
+    def test_file_timing_with_plain_file_edge(self):
+        """All three file edge forms coexist: plain, delayed, and scheduled."""
+        source = (
+            "flow f { budget = 1h on_error = pause context = handoff "
+            'entry a { prompt = "x" } exit b { prompt = "y" } '
+            "a files child1 "
+            "a files child2 after 5m "
+            'a files child3 at "0 0 * * *" '
+            "a -> b }"
+        )
+        flow = parse_flow(source)
+        file_edges = [e for e in flow.edges if e.edge_type == EdgeType.FILE]
+        assert len(file_edges) == 3
+
+        plain = [e for e in file_edges if e.target == "child1"]
+        delayed = [e for e in file_edges if e.target == "child2"]
+        scheduled = [e for e in file_edges if e.target == "child3"]
+
+        assert len(plain) == 1
+        assert plain[0].config.delay_seconds is None
+        assert plain[0].config.schedule is None
+
+        assert len(delayed) == 1
+        assert delayed[0].config.delay_seconds == 300
+
+        assert len(scheduled) == 1
+        assert scheduled[0].config.schedule == "0 0 * * *"
 
 
 class TestAwaitEdges:

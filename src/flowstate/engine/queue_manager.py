@@ -156,14 +156,10 @@ class QueueManager:
         else:
             workspace = os.path.expanduser(f"~/.flowstate/workspaces/{flow_ast.name}/{run_id[:8]}")
 
-        # Build params: start with task's title/description, then merge task-specific params
-        task_params: dict[str, str | float | bool] = {
-            "title": task.title,
-        }
-        if task.description:
-            task_params["description"] = task.description
+        # Build params from task's params_json (matches flow's declared input fields)
+        task_params: dict[str, str | float | bool] = {}
         if task.params_json:
-            task_params.update(json.loads(task.params_json))
+            task_params = json.loads(task.params_json)
 
         # Mark task as running. The flow_run_id is set later by the executor
         # once the flow_runs row is created (foreign key constraint requires it).

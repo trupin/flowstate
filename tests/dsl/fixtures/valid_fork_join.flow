@@ -3,7 +3,10 @@ flow full_test {
     budget = 1h
     on_error = pause
     context = handoff
-    workspace = "./app"
+
+    input {
+        task_name: string = "default"
+    }    workspace = "./app"
 
     entry analyze {
         prompt = "Read the codebase and identify what needs testing."

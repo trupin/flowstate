@@ -375,6 +375,28 @@ class _FlowTransformer(Transformer[Token, Flow]):
         )
 
     @v_args(meta=True)
+    def file_delayed_edge(self, meta: Any, items: list[Token]) -> Edge:
+        return Edge(
+            edge_type=EdgeType.FILE,
+            source=str(items[0]),
+            target=str(items[1]),
+            config=EdgeConfig(delay_seconds=_parse_duration(str(items[2]))),
+            line=_meta_line(meta),
+            column=_meta_column(meta),
+        )
+
+    @v_args(meta=True)
+    def file_scheduled_edge(self, meta: Any, items: list[Token]) -> Edge:
+        return Edge(
+            edge_type=EdgeType.FILE,
+            source=str(items[0]),
+            target=str(items[1]),
+            config=EdgeConfig(schedule=_strip_string(items[2])),
+            line=_meta_line(meta),
+            column=_meta_column(meta),
+        )
+
+    @v_args(meta=True)
     def await_edge(self, meta: Any, items: list[Token]) -> Edge:
         return Edge(
             edge_type=EdgeType.AWAIT,

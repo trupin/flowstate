@@ -5,6 +5,9 @@ flow e2e_fork_join {
     workspace = "/tmp/flowstate-e2e-forkjoin"
     skip_permissions = true
 
+    input {
+        task_name: string = "default"
+    }
     entry analyze {
         prompt = """
         Create a plan.md file describing two independent tasks:

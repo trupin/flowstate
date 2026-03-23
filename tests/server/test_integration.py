@@ -46,6 +46,10 @@ flow test_flow {
     context = handoff
     workspace = "."
 
+    input {
+        task_name: string = "default"
+    }
+
     entry start {
         prompt = "Initialize the project"
     }

@@ -243,8 +243,17 @@ def _check_structural(flow: Flow) -> list[FlowTypeError]:
                 )
             )
 
-    # S8: Removed — workspace is now optional. When omitted, the server
-    # auto-generates an isolated workspace per run (ENGINE-026).
+    # S8: Removed — workspace is now optional (ENGINE-026).
+
+    # S9: Flow must declare input fields
+    if not flow.input_fields:
+        errors.append(
+            FlowTypeError(
+                "S9",
+                "Flow must declare an input block with at least one field",
+                flow.name,
+            )
+        )
 
     return errors
 

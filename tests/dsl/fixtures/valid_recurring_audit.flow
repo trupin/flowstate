@@ -3,7 +3,10 @@ flow weekly_audit {
     budget = 1h
     on_error = pause
     context = handoff
-    workspace = "./monorepo"
+
+    input {
+        task_name: string = "default"
+    }    workspace = "./monorepo"
     schedule = "0 9 * * MON"
     on_overlap = skip
 

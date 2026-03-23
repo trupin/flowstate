@@ -25,6 +25,10 @@ flow setup_project {
     context = session
     workspace = "./project"
 
+    input {
+        project_name: string = "myproject"
+    }
+
     entry scaffold {
         prompt = "Create project"
     }

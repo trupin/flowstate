@@ -51,6 +51,13 @@ def _minimal_flow(
         }
     if not edges:
         edges = (Edge(edge_type=EdgeType.UNCONDITIONAL, source="start", target="end"),)
+    # Default input field so S9 (mandatory input) passes unless explicitly overridden
+    if "input_fields" not in kwargs:
+        from flowstate.dsl.ast import TaskTypeField
+
+        kwargs["input_fields"] = (
+            TaskTypeField(name="task_name", type="string", default="default"),
+        )
     return Flow(
         name="test_flow",
         budget_seconds=budget_seconds,
@@ -1629,6 +1636,7 @@ class TestSchedulingParserRoundTrip:
     budget = 1h
     on_error = pause
     context = handoff
+    input { task_name: string = "x" }
     entry a { prompt = "start" }
     wait cooldown { delay = 30s }
     exit b { prompt = "done" }
@@ -1644,6 +1652,7 @@ class TestSchedulingParserRoundTrip:
     budget = 1h
     on_error = pause
     context = handoff
+    input { task_name: string = "x" }
     entry a { prompt = "start" }
     wait morning { until = "0 9 * * 1-5" }
     exit b { prompt = "done" }
@@ -1659,6 +1668,7 @@ class TestSchedulingParserRoundTrip:
     budget = 1h
     on_error = pause
     context = handoff
+    input { task_name: string = "x" }
     entry a { prompt = "start" }
     fence barrier { }
     exit b { prompt = "done" }
@@ -1674,6 +1684,7 @@ class TestSchedulingParserRoundTrip:
     budget = 1h
     on_error = pause
     context = handoff
+    input { task_name: string = "x" }
     entry a { prompt = "start" }
     atomic deploy { prompt = "Deploy to production" }
     exit b { prompt = "done" }
@@ -1689,6 +1700,7 @@ class TestSchedulingParserRoundTrip:
     budget = 1h
     on_error = pause
     context = handoff
+    input { task_name: string = "x" }
     max_parallel = 5
     entry a { prompt = "start" }
     exit b { prompt = "done" }
@@ -1704,6 +1716,7 @@ class TestSchedulingParserRoundTrip:
     budget = 2h
     on_error = pause
     context = handoff
+    input { task_name: string = "x" }
     max_parallel = 3
     entry start { prompt = "begin" }
     wait cooldown { delay = 5m }

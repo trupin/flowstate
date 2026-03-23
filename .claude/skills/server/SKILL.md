@@ -49,19 +49,37 @@ Save PIDs to `/tmp/flowstate-backend.pid` and `/tmp/flowstate-frontend.pid` so `
 
 ### `stop`
 
-Stop running Flowstate server processes.
+Stop running Flowstate server processes and cancel any in-flight flow runs.
 
-1. Read PIDs from `/tmp/flowstate-backend.pid` and `/tmp/flowstate-frontend.pid`
-2. Kill each process if still running
-3. Clean up PID files
-4. If no PID files exist, search for processes:
+1. **Cancel orphaned flow runs first** — the server tracks executors in-memory, so after a stop/restart they're lost. Mark any `running` flow runs as `cancelled` and their `running`/`pending`/`waiting` tasks as `failed` in the DB:
+   ```bash
+   uv run python -c "
+   from flowstate.state.repository import FlowstateDB
+   import os
+   db = FlowstateDB(os.path.expanduser('~/.flowstate/flowstate.db'))
+   runs = db.list_flow_runs()
+   for r in runs:
+       if r.status == 'running':
+           db.update_flow_run_status(r.id, 'cancelled', error_message='Cancelled on server stop')
+           tasks = db.list_task_executions(r.id)
+           for t in tasks:
+               if t.status in ('running', 'pending', 'waiting'):
+                   db.update_task_status(t.id, 'failed', error_message='Run cancelled on server stop')
+           print(f'Cancelled run {r.id[:8]}')
+   db.close()
+   "
+   ```
+2. Read PIDs from `/tmp/flowstate-backend.pid` and `/tmp/flowstate-frontend.pid`
+3. Kill each process if still running
+4. Clean up PID files
+5. If no PID files exist, search for processes:
    ```bash
    # Find uvicorn/flowstate processes
    pgrep -f "flowstate server" || pgrep -f "uvicorn.*flowstate"
    # Find vite dev server
    pgrep -f "vite.*flowstate-ui"
    ```
-5. Report which processes were stopped
+6. Report which processes were stopped
 
 ### `status`
 
@@ -230,7 +248,7 @@ Then read the screenshot at `/tmp/flowstate-debug.png` to see what the page look
 
 ### `restart`
 
-Shorthand for `stop` followed by `start` with the same flags.
+Shorthand for `stop` followed by `start` with the same flags. **IMPORTANT**: The `stop` step must cancel orphaned flow runs in the DB before killing the server process — see `stop` subcommand for details.
 
 ## Hot reload after UI changes
 

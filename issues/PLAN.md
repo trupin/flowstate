@@ -197,14 +197,14 @@
 
 | Issue      | Title                                                     | Domain | Priority | Depends On        | Status |
 | ---------- | --------------------------------------------------------- | ------ | -------- | ----------------- | ------ |
-| DSL-009    | Add wait, fence, atomic node types + max_parallel         | dsl    | P0       | —                 | todo   |
+| DSL-009    | Add wait, fence, atomic node types + max_parallel         | dsl    | P0       | —                 | done   |
 | DSL-010    | Add files edge timing variants (after/at)                 | dsl    | P1       | DSL-009           | todo   |
-| STATE-008  | Add scheduling columns to tasks table                     | state  | P0       | —                 | todo   |
-| ENGINE-030 | Wait node execution + per-flow max_parallel               | engine | P0       | DSL-009, STATE-008 | todo   |
-| ENGINE-031 | Fence node — synchronization barrier                      | engine | P1       | DSL-009           | todo   |
-| ENGINE-032 | Atomic node — exclusive execution mutex                    | engine | P1       | DSL-009           | todo   |
-| SERVER-012 | Task scheduling API + recurring task management           | server | P1       | STATE-008         | todo   |
-| UI-034     | Task scheduling UI — datetime picker + cron input         | ui     | P1       | SERVER-012        | todo   |
+| STATE-008  | Add scheduling columns to tasks table                     | state  | P0       | —                 | done   |
+| ENGINE-030 | Wait node execution + per-flow max_parallel               | engine | P0       | DSL-009, STATE-008 | done   |
+| ENGINE-031 | Fence node — synchronization barrier                      | engine | P1       | DSL-009           | done   |
+| ENGINE-032 | Atomic node — exclusive execution mutex                    | engine | P1       | DSL-009           | done   |
+| SERVER-012 | Task scheduling API + recurring task management           | server | P1       | STATE-008         | done   |
+| UI-034     | Task scheduling UI — datetime picker + cron input         | ui     | P1       | SERVER-012        | done   |
 
 
 ---

@@ -4,6 +4,10 @@ flow discuss_flowstate {
     context = handoff
     skip_permissions = true
 
+    input {
+        topic: string = "why Flowstate is a great system"
+    }
+
     entry moderator {
         prompt = """
         You are a moderator facilitating a discussion between two colleagues —

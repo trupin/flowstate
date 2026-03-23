@@ -3,7 +3,10 @@ flow deploy_and_monitor {
     budget = 2h
     on_error = pause
     context = handoff
-    workspace = "./app"
+
+    input {
+        task_name: string = "default"
+    }    workspace = "./app"
 
     entry prepare {
         prompt = """

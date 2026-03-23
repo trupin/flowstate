@@ -62,7 +62,7 @@ node_attr: "prompt" "=" string  -> node_prompt
          | "judge" "=" BOOL_LIT -> node_judge
 
 // Edges
-edge_decl: simple_edge | cond_edge | fork_edge | join_edge | file_edge | file_cond_edge | await_edge | await_cond_edge
+edge_decl: simple_edge | cond_edge | fork_edge | join_edge | file_edge | file_cond_edge | file_delayed_edge | file_scheduled_edge | await_edge | await_cond_edge
 
 simple_edge: NAME "->" NAME edge_config?
 cond_edge:   NAME "->" NAME "when" string edge_config?
@@ -71,6 +71,8 @@ join_edge:   "[" name_list "]" "->" NAME
 
 file_edge: NAME "files" NAME
 file_cond_edge: NAME "files" NAME "when" string
+file_delayed_edge: NAME "files" NAME "after" DURATION
+file_scheduled_edge: NAME "files" NAME "at" STRING
 await_edge: NAME "awaits" NAME
 await_cond_edge: NAME "awaits" NAME "when" string
 

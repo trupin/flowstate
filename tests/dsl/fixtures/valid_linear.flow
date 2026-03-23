@@ -3,7 +3,10 @@ flow setup_project {
     budget = 30m
     on_error = pause
     context = session
-    workspace = "./new-project"
+
+    input {
+        task_name: string = "default"
+    }    workspace = "./new-project"
 
     entry scaffold {
         prompt = """

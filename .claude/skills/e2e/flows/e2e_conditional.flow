@@ -5,6 +5,9 @@ flow e2e_conditional {
     workspace = "/tmp/flowstate-e2e-conditional"
     skip_permissions = true
 
+    input {
+        task_name: string = "default"
+    }
     entry implement {
         prompt = """
         Create a file called code.py containing a simple Python function

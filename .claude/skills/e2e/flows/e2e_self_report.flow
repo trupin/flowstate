@@ -4,6 +4,10 @@ flow e2e_self_report {
     context = handoff
     workspace = "/tmp/flowstate-e2e-self-report"
     skip_permissions = true
+
+    input {
+        task_name: string = "default"
+    }
     judge = false
 
     entry analyze {

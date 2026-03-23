@@ -5,6 +5,9 @@ flow e2e_error {
     workspace = "/tmp/flowstate-e2e-error"
     skip_permissions = true
 
+    input {
+        task_name: string = "default"
+    }
     entry start {
         prompt = """
         Create a file called setup.txt with the text "Setup complete".
