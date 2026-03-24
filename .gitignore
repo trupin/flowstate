@@ -38,3 +38,4 @@ flowstate.db
 # OS
 .DS_Store
 Thumbs.db
+demo/*.webm
