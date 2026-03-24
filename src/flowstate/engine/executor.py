@@ -45,6 +45,7 @@ from flowstate.engine.context import (
     resolve_cwd,
 )
 from flowstate.engine.events import EventType, FlowEvent
+from flowstate.engine.harness import HarnessManager
 from flowstate.engine.judge import JudgeContext, JudgeDecision, JudgePauseError, JudgeProtocol
 from flowstate.engine.subprocess_mgr import StreamEventType, SubprocessManager
 from flowstate.engine.worktree import (
@@ -58,6 +59,7 @@ if TYPE_CHECKING:
     from collections.abc import Callable
 
     from flowstate.dsl.ast import Edge, Flow, Node
+    from flowstate.engine.harness import Harness
     from flowstate.state.models import TaskExecutionRow
     from flowstate.state.repository import FlowstateDB
 
@@ -217,10 +219,12 @@ class FlowExecutor:
         judge: JudgeProtocol | None = None,
         max_concurrent: int = 4,
         worktree_cleanup: bool = True,
+        harness_mgr: HarnessManager | None = None,
     ) -> None:
         self._db = db
         self._raw_callback = event_callback
         self._subprocess_mgr = subprocess_mgr
+        self._harness_mgr = harness_mgr or HarnessManager(default_harness=subprocess_mgr)
         self._judge = judge or JudgeProtocol(subprocess_mgr)
         self._semaphore = asyncio.Semaphore(max_concurrent)
         self._max_concurrent = max_concurrent
@@ -242,6 +246,8 @@ class FlowExecutor:
         self._worktree_info: WorktreeInfo | None = None
         # Queue task tracking (set by execute() when processing a queue task)
         self._task_id: str | None = None
+        # Track which harness each session uses for kill() dispatch
+        self._session_harness: dict[str, str] = {}
 
     def _emit(self, event: FlowEvent) -> None:
         """Emit an event via the callback, catching any callback exceptions."""
@@ -1460,11 +1466,14 @@ class FlowExecutor:
         # Wake up the main loop if it's waiting on _resume_event (paused state).
         self._resume_event.set()
 
-        # Kill all running subprocesses
+        # Kill all running subprocesses via their respective harnesses
         for task_id in list(self._running_tasks):
             task_exec = self._db.get_task_execution(task_id)
             if task_exec and task_exec.claude_session_id:
-                await self._subprocess_mgr.kill(task_exec.claude_session_id)
+                sid = task_exec.claude_session_id
+                harness_name = self._session_harness.get(sid, "claude")
+                harness = self._harness_mgr.get(harness_name)
+                await harness.kill(sid)
             atask = self._running_tasks.get(task_id)
             if atask:
                 atask.cancel()
@@ -1939,16 +1948,22 @@ class FlowExecutor:
             skip_perms = flow.skip_permissions
             session_id = task_exec.claude_session_id or str(uuid.uuid4())
 
+            # Resolve harness: node-level overrides flow-level
+            harness_name = node.harness or flow.harness
+            harness: Harness = self._harness_mgr.get(harness_name)
+            # Track session -> harness name for kill() dispatch
+            self._session_harness[session_id] = harness_name
+
             # Determine if this is a session resume or fresh task
             if task_exec.context_mode == ContextMode.SESSION.value and task_exec.claude_session_id:
-                stream = self._subprocess_mgr.run_task_resume(
+                stream = harness.run_task_resume(
                     task_exec.prompt_text,
                     task_exec.cwd,
                     task_exec.claude_session_id,
                     skip_permissions=skip_perms,
                 )
             else:
-                stream = self._subprocess_mgr.run_task(
+                stream = harness.run_task(
                     task_exec.prompt_text,
                     task_exec.cwd,
                     session_id,

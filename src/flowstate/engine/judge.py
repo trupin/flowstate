@@ -15,8 +15,12 @@ from __future__ import annotations
 import json
 from dataclasses import dataclass
 from pathlib import Path
+from typing import TYPE_CHECKING
 
-from flowstate.engine.subprocess_mgr import JudgeError, JudgeResult, SubprocessManager
+from flowstate.engine.subprocess_mgr import JudgeError, JudgeResult
+
+if TYPE_CHECKING:
+    from flowstate.engine.harness import Harness
 
 
 @dataclass
@@ -157,7 +161,7 @@ class JudgeProtocol:
 
     def __init__(
         self,
-        subprocess_mgr: SubprocessManager,
+        subprocess_mgr: Harness,
     ) -> None:
         self._subprocess_mgr = subprocess_mgr
 

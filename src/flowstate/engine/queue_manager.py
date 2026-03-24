@@ -19,6 +19,7 @@ from flowstate.dsl.parser import parse_flow
 from flowstate.engine.executor import FlowExecutor
 
 if TYPE_CHECKING:
+    from flowstate.engine.harness import HarnessManager
     from flowstate.engine.subprocess_mgr import SubprocessManager
     from flowstate.server.flow_registry import FlowRegistry
     from flowstate.server.run_manager import RunManager
@@ -46,11 +47,13 @@ class QueueManager:
         config: object,
         poll_interval: float = 2.0,
         max_concurrent: int = 1,
+        harness_mgr: HarnessManager | None = None,
     ) -> None:
         self._db = db
         self._registry = flow_registry
         self._run_manager = run_manager
         self._subprocess_mgr = subprocess_mgr
+        self._harness_mgr = harness_mgr
         self._ws_hub = ws_hub
         self._config = config
         self._poll_interval = poll_interval
@@ -147,6 +150,7 @@ class QueueManager:
             subprocess_mgr=self._subprocess_mgr,
             max_concurrent=getattr(self._config, "max_concurrent_tasks", 4),
             worktree_cleanup=getattr(self._config, "worktree_cleanup", True),
+            harness_mgr=self._harness_mgr,
         )
 
         # Generate run ID and workspace
