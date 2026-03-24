@@ -53,6 +53,7 @@ A named directed graph defining a workflow. Flows are **reusable processors** �
 - An **on_error** policy (default behavior when a task fails)
 - A **context** mode (default context passing strategy)
 - A **judge** mode (`true` = separate judge subprocess, `false` = task self-reports routing)
+- A **harness** (which agent runtime to use — `"claude"` by default, or any ACP-compatible agent)
 - A **max_parallel** limit (how many tasks from the queue can run simultaneously, default 1)
 - One or more **nodes** and **edges**
 
@@ -276,7 +277,7 @@ Path:           "./relative/path" (always quoted)
 Keywords:       flow, entry, task, exit, wait, fence, atomic,
                 when, input, output, budget, workspace, on_error,
                 context, prompt, cwd, judge, worktree, max_parallel,
-                skip_permissions, schedule, on_overlap, delay,
+                skip_permissions, harness, schedule, on_overlap, delay,
                 files, awaits, after, at
 Operators:      ->  =  [  ]  {  }  ,  :
 Template vars:  {{identifier}}
@@ -293,6 +294,7 @@ flow <name> {
     judge = true | false                  // optional — default: false (self-report)
     worktree = true | false               // optional — default: true (git worktree isolation)
     max_parallel = <number>               // optional — default: 1 (serial processing)
+    harness = <string>                    // optional — default: "claude" (agent runtime)
     skip_permissions = true | false       // optional — default: false
     schedule = <cron_expression>          // optional — recurring flow
     on_overlap = skip | queue | parallel  // optional — default: skip
@@ -312,6 +314,8 @@ flow <name> {
 `judge` controls the default routing mode for conditional edges. `false` (default) means task agents self-report their routing decision via `DECISION.json`. `true` means a separate judge subprocess evaluates the conditions.
 
 `max_parallel` controls how many tasks from the queue can run simultaneously (default 1 = serial).
+
+`harness` sets the default agent runtime for all nodes. `"claude"` (default) uses the native Claude Code CLI. Other values (e.g., `"gemini"`, `"custom"`) use the ACP (Agent Client Protocol) to communicate with the agent subprocess. Harnesses are configured in `flowstate.toml` under `[harnesses.<name>]`. Each node can override the flow-level harness with its own `harness` attribute.
 
 `context` sets the default context mode for all edges (can be overridden per-edge). Recommended default is `handoff`.
 
@@ -349,12 +353,14 @@ entry <name> {
     prompt = <string>
     cwd = <path>           // optional — overrides flow-level workspace
     judge = true | false   // optional — overrides flow-level judge setting
+    harness = <string>     // optional — overrides flow-level harness
 }
 
 task <name> {
     prompt = <string>
     cwd = <path>           // optional — overrides flow-level workspace
     judge = true | false   // optional — overrides flow-level judge setting
+    harness = <string>     // optional — overrides flow-level harness
 }
 
 exit <name> {
@@ -373,6 +379,7 @@ fence <name> { }           // synchronization barrier — no body needed
 atomic <name> {
     prompt = <string>
     cwd = <path>           // optional
+    harness = <string>     // optional — overrides flow-level harness
 }
 ```
 
@@ -1297,6 +1304,55 @@ When `worktree = true` (default) and the resolved workspace is a git repository:
 
 If the workspace is not a git repo, worktree creation is silently skipped.
 
+### 9.8 Agent Harnesses (ACP)
+
+Flowstate supports multiple agent runtimes via the **harness** abstraction. A harness is a named agent runtime that the engine communicates with to execute nodes.
+
+**Built-in harness**: `"claude"` (default) uses the native Claude Code CLI protocol (`--output-format stream-json`). This is the original `SubprocessManager` implementation and requires no additional configuration.
+
+**ACP harnesses**: Any ACP-compatible agent can be used by defining a harness in `flowstate.toml`:
+
+```toml
+[harnesses.gemini]
+command = ["gemini"]
+
+[harnesses.custom_agent]
+command = ["python", "my_agent.py"]
+env = { MY_API_KEY = "..." }
+```
+
+The engine communicates with ACP harnesses via the Agent Client Protocol (JSON-RPC 2.0 over stdio). The lifecycle for each task:
+
+1. Spawn agent subprocess with the configured `command`
+2. ACP `initialize` — negotiate protocol version and capabilities
+3. ACP `session/new` — create a session with `cwd` set to the task's workspace
+4. ACP `session/prompt` — send the assembled task prompt
+5. Receive `session/update` notifications (mapped to Flowstate's `StreamEvent` types)
+6. On completion: `stopReason: end_turn` signals success
+
+**Harness resolution** per node: `node.harness → flow.harness → "claude"`. This allows heterogeneous flows where different nodes use different agent runtimes:
+
+```
+flow mixed_pipeline {
+    harness = "claude"        // default: Claude for most nodes
+
+    task analyze {
+        harness = "gemini"    // this node uses Gemini
+        prompt = "Analyze the data"
+    }
+
+    task implement {
+        prompt = "Implement changes"  // uses default (claude)
+    }
+}
+```
+
+**Key constraints**:
+- The `"claude"` harness uses the native CLI protocol, not ACP (Claude Code doesn't support ACP yet)
+- ACP is only used for non-Claude harnesses
+- Judge evaluation always uses the flow's default harness
+- `SUMMARY.md`, `DECISION.json`, and `OUTPUT.json` file conventions are agent-agnostic — they work regardless of harness
+
 ### 9.4 Error Detection
 
 | Signal | Meaning | Response |
@@ -1499,9 +1555,9 @@ The sidebar provides navigation across all three sections of the app:
 See `src/flowstate/dsl/grammar.lark` for the authoritative grammar. Key additions beyond the original MVP:
 
 - **`input {}` / `output {}` blocks** replace `param` declarations
-- **`judge = true|false`**, **`worktree = true|false`**, **`skip_permissions = true|false`**, **`max_parallel = N`** flow attributes
+- **`judge = true|false`**, **`worktree = true|false`**, **`skip_permissions = true|false`**, **`max_parallel = N`**, **`harness = "<name>"`** flow attributes
 - **`wait`**, **`fence`**, **`atomic`** node types
-- **`judge = true|false`** per-node override
+- **`judge = true|false`** and **`harness = "<name>"`** per-node overrides
 - **`files`** and **`awaits`** edge types with timing variants (`after`, `at`)
 - **`BOOL_LIT`** token for boolean attributes
 
@@ -1514,10 +1570,10 @@ See `src/flowstate/dsl/ast.py` for the authoritative definitions. All dataclasse
 - **`ContextMode`**: HANDOFF, SESSION, NONE
 - **`ErrorPolicy`**: PAUSE, ABORT, SKIP
 - **`TaskTypeField`**: Represents a single field in `input {}` or `output {}` (name, type, optional default)
-- **`Node`**: name, node_type, prompt, cwd, judge (per-node override), wait_delay_seconds, wait_until_cron
+- **`Node`**: name, node_type, prompt, cwd, judge (per-node override), harness (per-node override), wait_delay_seconds, wait_until_cron
 - **`EdgeConfig`**: context override, delay_seconds, schedule (cron)
 - **`Edge`**: edge_type, source, target, fork_targets (tuple), join_sources (tuple), condition, config
-- **`Flow`**: name, budget_seconds, on_error, context, workspace, schedule, on_overlap, skip_permissions, judge (default False), worktree (default True), input_fields (tuple of TaskTypeField), output_fields, max_parallel (default 1), nodes (dict), edges (tuple)
+- **`Flow`**: name, budget_seconds, on_error, context, workspace, schedule, on_overlap, skip_permissions, judge (default False), harness (default "claude"), worktree (default True), input_fields (tuple of TaskTypeField), output_fields, max_parallel (default 1), nodes (dict), edges (tuple)
 
 ---
 
@@ -1581,6 +1637,11 @@ wal_mode = true
 
 [flows]
 watch_dir = "./flows"   # directory to watch for .flow files
+
+# Optional: define additional agent harnesses (ACP protocol)
+# [harnesses.gemini]
+# command = ["gemini"]
+# env = { GEMINI_API_KEY = "..." }
 
 [logging]
 level = "info"

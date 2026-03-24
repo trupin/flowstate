@@ -54,6 +54,7 @@ class Node:
     prompt: str = ""
     cwd: str | None = None
     judge: bool | None = None
+    harness: str | None = None
     wait_delay_seconds: int | None = None
     wait_until_cron: str | None = None
     line: int = 0
@@ -91,6 +92,7 @@ class Flow:
     on_overlap: OverlapPolicy = OverlapPolicy.SKIP
     skip_permissions: bool = False
     judge: bool = False
+    harness: str = "claude"
     worktree: bool = True
     input_fields: tuple[TaskTypeField, ...] = ()
     output_fields: tuple[TaskTypeField, ...] = ()

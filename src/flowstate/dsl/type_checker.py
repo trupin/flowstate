@@ -440,8 +440,7 @@ def _check_edges(flow: Flow) -> list[FlowTypeError]:
                 errors.append(
                     FlowTypeError(
                         "E7",
-                        f"context = session is not allowed on {edge.edge_type.value} "
-                        f"edges ({loc})",
+                        f"context = session is not allowed on {edge.edge_type.value} edges ({loc})",
                         loc,
                     )
                 )

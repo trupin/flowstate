@@ -1,0 +1,28 @@
+// Test fixture: flow-level and node-level harness attribute
+flow ml_pipeline {
+    budget = 2h
+    on_error = pause
+    context = handoff
+    harness = "gemini"
+
+    input {
+        model_name: string
+    }
+
+    entry prepare {
+        prompt = "Prepare training data"
+        harness = "custom_runner"
+    }
+
+    task train {
+        prompt = "Train the model"
+    }
+
+    exit evaluate {
+        prompt = "Evaluate results"
+        harness = "claude"
+    }
+
+    prepare -> train
+    train -> evaluate
+}

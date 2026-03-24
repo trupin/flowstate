@@ -36,3 +36,9 @@ Enough detail for an autonomous agent to implement without asking questions.
 
 ## Testing Strategy
 How to verify this works.
+
+## Completion Checklist
+- [ ] Unit tests written and passing
+- [ ] `/simplify` run on all changed code
+- [ ] `/lint` passes (ruff, pyright, eslint)
+- [ ] Acceptance criteria verified

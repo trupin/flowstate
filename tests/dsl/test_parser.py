@@ -1524,3 +1524,78 @@ class TestMixedNewNodeTypes:
         assert flow.nodes["barrier"].node_type == NodeType.FENCE
         assert flow.nodes["deploy"].node_type == NodeType.ATOMIC
         assert flow.nodes["cooldown"].wait_delay_seconds == 300
+
+
+# ---------------------------------------------------------------------------
+# Harness attribute
+# ---------------------------------------------------------------------------
+
+
+class TestHarness:
+    """Test harness string attribute at flow level and node level."""
+
+    def test_flow_harness_from_fixture(self):
+        flow = parse_flow(load_fixture("valid_harness.flow"))
+        assert flow.harness == "gemini"
+
+    def test_flow_harness_nodes_from_fixture(self):
+        flow = parse_flow(load_fixture("valid_harness.flow"))
+        assert flow.nodes["prepare"].harness == "custom_runner"
+        assert flow.nodes["train"].harness is None  # inherits from flow
+        assert flow.nodes["evaluate"].harness == "claude"
+
+    def test_flow_harness_default_is_claude(self):
+        source = (
+            "flow f { budget = 1h on_error = pause context = handoff "
+            'entry a { prompt = "x" } exit b { prompt = "y" } a -> b }'
+        )
+        flow = parse_flow(source)
+        assert flow.harness == "claude"
+
+    def test_flow_harness_custom(self):
+        source = (
+            'flow f { budget = 1h on_error = pause context = handoff harness = "gemini" '
+            'entry a { prompt = "x" } exit b { prompt = "y" } a -> b }'
+        )
+        flow = parse_flow(source)
+        assert flow.harness == "gemini"
+
+    def test_node_harness_override(self):
+        source = (
+            'flow f { budget = 1h on_error = pause context = handoff harness = "gemini" '
+            'entry a { prompt = "x" harness = "custom" } '
+            'exit b { prompt = "y" } a -> b }'
+        )
+        flow = parse_flow(source)
+        assert flow.harness == "gemini"
+        assert flow.nodes["a"].harness == "custom"
+        assert flow.nodes["b"].harness is None
+
+    def test_node_harness_default_is_none(self):
+        source = (
+            "flow f { budget = 1h on_error = pause context = handoff "
+            'entry a { prompt = "x" } exit b { prompt = "y" } a -> b }'
+        )
+        flow = parse_flow(source)
+        assert flow.nodes["a"].harness is None
+        assert flow.nodes["b"].harness is None
+
+    def test_task_node_harness(self):
+        source = (
+            "flow f { budget = 1h on_error = pause context = handoff "
+            'entry a { prompt = "x" } '
+            'task t { prompt = "work" harness = "o3" } '
+            'exit b { prompt = "y" } a -> t t -> b }'
+        )
+        flow = parse_flow(source)
+        assert flow.nodes["t"].harness == "o3"
+
+    def test_atomic_node_harness(self):
+        source = (
+            "flow f { budget = 1h on_error = pause context = handoff "
+            'entry a { prompt = "x" } '
+            'atomic d { prompt = "deploy" harness = "gpt4" } '
+            'exit b { prompt = "y" } a -> d d -> b }'
+        )
+        flow = parse_flow(source)
+        assert flow.nodes["d"].harness == "gpt4"

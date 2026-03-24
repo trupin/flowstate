@@ -21,6 +21,7 @@ flow_attr: "budget" "=" DURATION       -> flow_budget
          | "on_overlap" "=" OVERLAP_POLICY -> flow_on_overlap
          | "skip_permissions" "=" BOOL_LIT -> flow_skip_permissions
          | "judge" "=" BOOL_LIT -> flow_judge
+         | "harness" "=" STRING -> flow_harness
          | "worktree" "=" BOOL_LIT -> flow_worktree
          | "max_parallel" "=" NUMBER -> flow_max_parallel
 
@@ -60,6 +61,7 @@ node_body: node_attr+
 node_attr: "prompt" "=" string  -> node_prompt
          | "cwd" "=" STRING     -> node_cwd
          | "judge" "=" BOOL_LIT -> node_judge
+         | "harness" "=" STRING -> node_harness
 
 // Edges
 edge_decl: simple_edge | cond_edge | fork_edge | join_edge | file_edge | file_cond_edge | file_delayed_edge | file_scheduled_edge | await_edge | await_cond_edge

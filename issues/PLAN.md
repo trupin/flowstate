@@ -208,6 +208,17 @@
 | E2E-002    | Mocked integration test: unit test generation flow        | e2e    | P1       | —                 | done   |
 
 
+### Phase 11 — ACP Harness Abstraction
+
+
+| Issue      | Title                                                         | Domain | Priority | Depends On  | Status |
+| ---------- | ------------------------------------------------------------- | ------ | -------- | ----------- | ------ |
+| DSL-011    | Add `harness` attribute to grammar, parser, and AST           | dsl    | P1       | —           | in_progress |
+| ENGINE-033 | Harness Protocol + HarnessManager                             | engine | P1       | DSL-011     | todo   |
+| ENGINE-034 | ACP harness implementation (AcpHarness)                       | engine | P1       | ENGINE-033  | todo   |
+| SERVER-013 | Harness config + server wiring                                | server | P1       | ENGINE-033  | todo   |
+
+
 ---
 
 ## Cross-Domain Coordination
