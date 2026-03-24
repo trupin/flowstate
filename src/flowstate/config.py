@@ -1,9 +1,22 @@
 """Flowstate configuration — TOML loader and defaults."""
 
 import tomllib
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
+
+
+@dataclass
+class HarnessConfigEntry:
+    """Configuration for a named harness backend.
+
+    Each entry maps to a ``[harnesses.<name>]`` section in flowstate.toml.
+    The ``command`` field is the executable + args list; ``env`` provides
+    optional extra environment variables for the subprocess.
+    """
+
+    command: list[str] = field(default_factory=list)
+    env: dict[str, str] | None = None
 
 
 @dataclass
@@ -22,6 +35,7 @@ class FlowstateConfig:
     watch_dir: str = "./flows"
     log_level: str = "info"
     worktree_cleanup: bool = True
+    harnesses: dict[str, HarnessConfigEntry] = field(default_factory=dict)
 
 
 def load_config(path: str | None = None) -> FlowstateConfig:
@@ -88,5 +102,15 @@ def _parse_toml(path: Path) -> FlowstateConfig:
     logging_section = data.get("logging", {})
     if "level" in logging_section:
         kwargs["log_level"] = logging_section["level"]
+
+    harnesses_raw = data.get("harnesses", {})
+    if harnesses_raw:
+        harness_configs: dict[str, HarnessConfigEntry] = {}
+        for name, entry in harnesses_raw.items():
+            harness_configs[name] = HarnessConfigEntry(
+                command=entry["command"],
+                env=entry.get("env"),
+            )
+        kwargs["harnesses"] = harness_configs
 
     return FlowstateConfig(**kwargs)

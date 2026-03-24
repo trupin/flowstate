@@ -142,6 +142,11 @@ def _flow_to_frontend(f: DiscoveredFlow, include_detail: bool = False) -> dict[s
     except OSError:
         pass
 
+    # Extract harness from the AST JSON (defaults to "claude")
+    harness = "claude"
+    if f.ast_json:
+        harness = f.ast_json.get("harness", "claude")
+
     result: dict[str, Any] = {
         "id": f.id,
         "name": f.name,
@@ -152,6 +157,7 @@ def _flow_to_frontend(f: DiscoveredFlow, include_detail: bool = False) -> dict[s
         "nodes": nodes_out,
         "edges": edges_out,
         "last_modified": last_modified,
+        "harness": harness,
         # Keep "status" for backward compat with API-only consumers
         "status": f.status,
     }
@@ -280,6 +286,7 @@ async def start_run(
     config = request.app.state.config
     subprocess_mgr = request.app.state.subprocess_manager
     ws_hub = request.app.state.ws_hub
+    harness_mgr = getattr(request.app.state, "harness_manager", None)
 
     executor = FlowExecutor(
         db=db,
@@ -287,6 +294,7 @@ async def start_run(
         subprocess_mgr=subprocess_mgr,
         max_concurrent=config.max_concurrent_tasks,
         worktree_cleanup=config.worktree_cleanup,
+        harness_mgr=harness_mgr,
     )
 
     # Register and start as background task with a single shared run_id
@@ -705,6 +713,7 @@ async def trigger_schedule(request: Request, schedule_id: str) -> dict[str, str]
     config = request.app.state.config
     subprocess_mgr = request.app.state.subprocess_manager
     ws_hub = request.app.state.ws_hub
+    harness_mgr = getattr(request.app.state, "harness_manager", None)
 
     executor = FlowExecutor(
         db=db,
@@ -712,6 +721,7 @@ async def trigger_schedule(request: Request, schedule_id: str) -> dict[str, str]
         subprocess_mgr=subprocess_mgr,
         max_concurrent=config.max_concurrent_tasks,
         worktree_cleanup=config.worktree_cleanup,
+        harness_mgr=harness_mgr,
     )
 
     run_manager = _get_run_manager(request)

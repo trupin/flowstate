@@ -185,6 +185,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None]:
     # Initialize queue manager (SHARED-003: task queue model)
     from flowstate.engine.queue_manager import QueueManager
 
+    harness_mgr = getattr(app.state, "harness_manager", None)
     queue_manager = QueueManager(
         db=db,
         flow_registry=registry,
@@ -192,6 +193,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None]:
         subprocess_mgr=app.state.subprocess_manager,
         ws_hub=ws_hub,
         config=config,
+        harness_mgr=harness_mgr,
     )
     app.state.queue_manager = queue_manager
     await queue_manager.start()
@@ -241,6 +243,18 @@ def create_app(
         subprocess_manager = SubprocessManager()
     app.state.config = config
     app.state.subprocess_manager = subprocess_manager
+
+    # Create HarnessManager from config and store on app state
+    from flowstate.engine.harness import HarnessConfig, HarnessManager
+
+    harness_configs: dict[str, HarnessConfig] = {}
+    for name, entry in config.harnesses.items():
+        harness_configs[name] = HarnessConfig(command=entry.command, env=entry.env)
+    harness_mgr = HarnessManager(
+        default_harness=subprocess_manager,
+        configs=harness_configs,
+    )
+    app.state.harness_manager = harness_mgr
 
     # CORS for localhost dev (React dev server)
     app.add_middleware(

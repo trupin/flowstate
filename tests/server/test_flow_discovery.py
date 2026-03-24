@@ -643,3 +643,63 @@ class TestEnableDisableToggle:
         assert calls[0].kwargs == {"enabled": True}
         assert calls[1].args == ("my_flow",)
         assert calls[1].kwargs == {"enabled": False}
+
+
+# ---------------------------------------------------------------------------
+# Harness field in flow API response (SERVER-013)
+# ---------------------------------------------------------------------------
+
+
+class TestFlowHarnessFieldInResponse:
+    def test_flow_list_includes_harness_field(self) -> None:
+        """GET /api/flows response includes 'harness' field from AST."""
+        flow_with_harness = DiscoveredFlow(
+            id="gemini_flow",
+            name="gemini_flow",
+            file_path="/flows/gemini_flow.flow",
+            source_dsl="...",
+            status="valid",
+            errors=[],
+            ast_json={"name": "gemini_flow", "harness": "gemini", "nodes": {}, "edges": []},
+            params=[],
+        )
+        client = _make_test_app({"gemini_flow": flow_with_harness})
+        response = client.get("/api/flows")
+        assert response.status_code == 200
+        body = response.json()
+        assert len(body) == 1
+        assert body[0]["harness"] == "gemini"
+
+    def test_flow_detail_includes_harness_field(self) -> None:
+        """GET /api/flows/:id response includes 'harness' field."""
+        flow_with_harness = DiscoveredFlow(
+            id="gemini_flow",
+            name="gemini_flow",
+            file_path="/flows/gemini_flow.flow",
+            source_dsl="...",
+            status="valid",
+            errors=[],
+            ast_json={"name": "gemini_flow", "harness": "gemini", "nodes": {}, "edges": []},
+            params=[],
+        )
+        client = _make_test_app({"gemini_flow": flow_with_harness})
+        response = client.get("/api/flows/gemini_flow")
+        assert response.status_code == 200
+        body = response.json()
+        assert body["harness"] == "gemini"
+
+    def test_flow_without_harness_defaults_to_claude(self) -> None:
+        """Flows without harness in AST default to 'claude'."""
+        client = _make_test_app({"code_review": SAMPLE_FLOW})
+        response = client.get("/api/flows")
+        assert response.status_code == 200
+        body = response.json()
+        assert body[0]["harness"] == "claude"
+
+    def test_error_flow_harness_defaults_to_claude(self) -> None:
+        """Error flows (no AST) default harness to 'claude'."""
+        client = _make_test_app({"broken": SAMPLE_FLOW_ERROR})
+        response = client.get("/api/flows")
+        assert response.status_code == 200
+        body = response.json()
+        assert body[0]["harness"] == "claude"

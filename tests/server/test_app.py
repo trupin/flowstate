@@ -7,7 +7,7 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from starlette.middleware.cors import CORSMiddleware
 
-from flowstate.config import FlowstateConfig, load_config
+from flowstate.config import FlowstateConfig, HarnessConfigEntry, load_config
 from flowstate.server.app import FlowstateError, create_app
 
 # ---------------------------------------------------------------------------
@@ -30,6 +30,7 @@ class TestDefaultConfig:
         assert config.database_wal_mode is True
         assert config.watch_dir == "./flows"
         assert config.log_level == "info"
+        assert config.harnesses == {}
 
 
 class TestLoadConfigFromFile:
@@ -172,6 +173,62 @@ class TestLoadConfigUnknownKeys:
 
 
 # ---------------------------------------------------------------------------
+# Harness config tests (SERVER-013)
+# ---------------------------------------------------------------------------
+
+
+class TestHarnessConfigParsing:
+    def test_parse_harness_section(self, tmp_path: Path) -> None:
+        """TOML with [harnesses.gemini] parses command and env fields."""
+        toml_file = tmp_path / "config.toml"
+        toml_file.write_text(
+            "[harnesses.gemini]\n"
+            'command = ["gemini"]\n'
+            'env = { GEMINI_API_KEY = "test-key" }\n'
+        )
+        config = load_config(path=str(toml_file))
+        assert "gemini" in config.harnesses
+        entry = config.harnesses["gemini"]
+        assert isinstance(entry, HarnessConfigEntry)
+        assert entry.command == ["gemini"]
+        assert entry.env == {"GEMINI_API_KEY": "test-key"}
+
+    def test_parse_multiple_harnesses(self, tmp_path: Path) -> None:
+        """Multiple [harnesses.*] sections are all parsed."""
+        toml_file = tmp_path / "config.toml"
+        toml_file.write_text(
+            "[harnesses.gemini]\n"
+            'command = ["gemini"]\n'
+            "\n"
+            "[harnesses.gpt]\n"
+            'command = ["openai", "run"]\n'
+            'env = { OPENAI_API_KEY = "sk-test" }\n'
+        )
+        config = load_config(path=str(toml_file))
+        assert len(config.harnesses) == 2
+        assert config.harnesses["gemini"].command == ["gemini"]
+        assert config.harnesses["gemini"].env is None
+        assert config.harnesses["gpt"].command == ["openai", "run"]
+        assert config.harnesses["gpt"].env == {"OPENAI_API_KEY": "sk-test"}
+
+    def test_no_harnesses_section_returns_empty_dict(self, tmp_path: Path) -> None:
+        """TOML without [harnesses] section gives empty harnesses dict."""
+        toml_file = tmp_path / "config.toml"
+        toml_file.write_text("[server]\nport = 9090\n")
+        config = load_config(path=str(toml_file))
+        assert config.harnesses == {}
+
+    def test_harness_env_optional(self, tmp_path: Path) -> None:
+        """Harness entry without env field defaults to None."""
+        toml_file = tmp_path / "config.toml"
+        toml_file.write_text("[harnesses.custom]\n" 'command = ["my-agent", "--mode", "fast"]\n')
+        config = load_config(path=str(toml_file))
+        entry = config.harnesses["custom"]
+        assert entry.command == ["my-agent", "--mode", "fast"]
+        assert entry.env is None
+
+
+# ---------------------------------------------------------------------------
 # App factory tests
 # ---------------------------------------------------------------------------
 
@@ -204,6 +261,37 @@ class TestCreateApp:
 
         app = create_app()
         assert isinstance(app.state.subprocess_manager, SubprocessManager)
+
+
+class TestCreateAppHarnessManager:
+    def test_harness_manager_created_on_app_state(self) -> None:
+        """create_app() stores a HarnessManager on app.state.harness_manager."""
+        from flowstate.engine.harness import HarnessManager
+
+        app = create_app()
+        assert hasattr(app.state, "harness_manager")
+        assert isinstance(app.state.harness_manager, HarnessManager)
+
+    def test_harness_manager_has_claude_default(self) -> None:
+        """HarnessManager always has 'claude' registered as the default."""
+        app = create_app()
+        mgr = app.state.harness_manager
+        assert "claude" in mgr.names
+
+    def test_harness_manager_configs_from_config(self) -> None:
+        """HarnessManager receives configs from FlowstateConfig.harnesses."""
+        from flowstate.engine.harness import HarnessManager
+
+        config = FlowstateConfig(
+            harnesses={
+                "gemini": HarnessConfigEntry(command=["gemini"], env={"KEY": "val"}),
+            }
+        )
+        app = create_app(config=config)
+        mgr = app.state.harness_manager
+        assert isinstance(mgr, HarnessManager)
+        # The default "claude" is always registered
+        assert "claude" in mgr.names
 
 
 class TestCreateAppWithCustomConfig:

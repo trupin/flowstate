@@ -291,6 +291,45 @@ class TestStartRunReturns202:
         assert len(body["flow_run_id"]) > 0
 
 
+class TestStartRunPassesHarnessManager:
+    def test_start_run_passes_harness_mgr_to_executor(self) -> None:
+        """FlowExecutor is constructed with harness_mgr from app.state."""
+        mock_db = MagicMock()
+        run_manager = RunManager()
+
+        with (
+            patch("flowstate.server.routes.parse_flow") as mock_parse,
+            patch("flowstate.server.routes.FlowExecutor") as mock_executor_cls,
+        ):
+            mock_flow_ast = MagicMock()
+            mock_flow_ast.default_workspace = "."
+            mock_parse.return_value = mock_flow_ast
+
+            mock_executor = MagicMock()
+            mock_executor.execute = AsyncMock(return_value="run-123")
+            mock_executor_cls.return_value = mock_executor
+
+            client = _make_test_client(
+                flows={"code_review": VALID_FLOW},
+                db_mock=mock_db,
+                run_manager=run_manager,
+            )
+
+            response = client.post(
+                "/api/flows/code_review/runs",
+                json={"params": {"focus": "auth"}},
+            )
+
+        assert response.status_code == 202
+        # Verify FlowExecutor was called with harness_mgr keyword argument
+        call_kwargs = mock_executor_cls.call_args[1]
+        assert "harness_mgr" in call_kwargs
+        # The harness_mgr should be a HarnessManager instance (created by create_app)
+        from flowstate.engine.harness import HarnessManager
+
+        assert isinstance(call_kwargs["harness_mgr"], HarnessManager)
+
+
 class TestStartRunFlowNotFound:
     def test_start_run_flow_not_found(self) -> None:
         """POST /api/flows/nonexistent/runs returns 404."""
