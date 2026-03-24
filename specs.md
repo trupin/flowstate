@@ -11,7 +11,7 @@ Version 0.1.0 — Draft
 Flowstate is a state-machine-based orchestration system for AI agents. It lets you define a directed graph where:
 
 - **Nodes** are tasks executed by Claude Code subprocess sessions
-- **Edges** are transitions between tasks, evaluated by judge agents
+- **Edges** are transitions between tasks, with routing evaluated by judge agents or task self-report
 - The graph has a single **entry** node and one or more **exit** nodes
 - A custom **DSL** defines the flow, with static analysis that validates correctness before execution
 
@@ -43,40 +43,50 @@ An individual developer using Flowstate as an internal tool to orchestrate compl
 
 ### 2.1 Flow
 
-A named directed graph defining a workflow. A flow has:
+A named directed graph defining a workflow. Flows are **reusable processors** — they define a pipeline that processes **tasks** from a queue. A flow has:
 
 - A **name** (identifier)
 - A **budget** (wall-clock time limit)
-- An optional **workspace** (default working directory for tasks)
-- Optional **parameters** (template variables injected into prompts)
+- An optional **workspace** (default working directory for tasks; auto-generated per run if omitted)
+- **Input fields** (declared via `input {}` block — template variables injected into prompts)
+- Optional **output fields** (declared via `output {}` block)
 - An **on_error** policy (default behavior when a task fails)
 - A **context** mode (default context passing strategy)
+- A **judge** mode (`true` = separate judge subprocess, `false` = task self-reports routing)
+- A **max_parallel** limit (how many tasks from the queue can run simultaneously, default 1)
 - One or more **nodes** and **edges**
+
+Flows can be **enabled or disabled** at runtime. When disabled, the flow finishes its current task but stops processing the queue.
 
 ### 2.2 Node
 
-A vertex in the flow graph. Three types:
+A vertex in the flow graph. Six types:
 
 | Type | Cardinality | Purpose |
 |------|-------------|---------|
-| `entry` | Exactly 1 | Starting point. Receives initial parameters. |
+| `entry` | Exactly 1 | Starting point. Receives input parameters. |
 | `task` | 0 or more | Intermediate work. Bulk of the flow. |
 | `exit` | At least 1 | Terminal point. Flow completes when an exit node finishes. |
+| `wait` | 0 or more | Time pause. Blocks the flow until a duration elapses or a cron expression matches. No Claude subprocess. |
+| `fence` | 0 or more | Synchronization barrier. Blocks until all running tasks in the flow have reached the fence. |
+| `atomic` | 0 or more | Exclusive execution. Only one task can execute this node at a time across all concurrent runs of the same flow. |
 
-Each node has a **prompt** — the instruction given to the Claude Code subprocess — and an optional **cwd** that sets the working directory for that task.
+Entry, task, exit, and atomic nodes have a **prompt** — the instruction given to the Claude Code subprocess — and an optional **cwd**. Wait and fence nodes have no prompt (they are engine-level synchronization primitives).
 
 ### 2.3 Edge
 
-A directed connection between nodes. Four types:
+A directed connection between nodes. Six types:
 
 | Type | Syntax | Semantics |
 |------|--------|-----------|
 | Unconditional | `A -> B` | B starts when A completes. Only valid when A has exactly 1 outgoing edge. |
-| Conditional | `A -> B when "condition"` | A judge evaluates the condition. All outgoing edges from A must be conditional. |
+| Conditional | `A -> B when "condition"` | A judge (or self-report) evaluates the condition. All outgoing edges from A must be conditional. |
 | Fork | `A -> [B, C]` | B and C start in parallel when A completes. |
 | Join | `[B, C] -> D` | D starts when both B and C complete. The set must match a prior fork. |
+| File | `A files B` | Async cross-flow filing. When A completes, a task is submitted to flow B's queue. A does not wait. |
+| Await | `A awaits B` | Sync cross-flow filing. When A completes, a task is submitted to flow B and the current flow waits for it to finish. |
 
-Edges can carry an optional **configuration block** that controls context passing and scheduling.
+Edges can carry an optional **configuration block** that controls context passing and scheduling. File edges also support timing variants (`after` duration, `at` cron).
 
 ### 2.4 Task Execution
 
@@ -89,17 +99,22 @@ A running instance of a node. Each task execution:
 - Must write a `SUMMARY.md` to its task directory upon completion
 - Streams output to the web UI in real time
 
-### 2.5 Judge
+### 2.5 Routing (Judge vs Self-Report)
 
-A special-purpose Claude Code subprocess that evaluates conditional edges. After a task completes at a branching node, a judge:
+When a node has conditional outgoing edges, the engine needs a routing decision. Two modes:
 
-1. Reads the completed task's `SUMMARY.md` from `~/.flowstate/runs/<run-id>/tasks/<name>-<gen>/`
-2. Optionally inspects the task's cwd for additional context
+**Judge mode** (`judge = true`): A separate Claude Code subprocess evaluates the conditions. The judge:
+1. Reads the completed task's `SUMMARY.md`
+2. Optionally inspects the task's cwd
 3. Evaluates the `when` conditions on all outgoing edges
 4. Selects exactly one edge to transition through
 5. Records its reasoning for auditability
 
-Judges have **read-only** access to the task's cwd — they observe but don't modify.
+Judges have **read-only** access to the task's cwd.
+
+**Self-report mode** (`judge = false`, the default): The task agent itself decides which transition to take by writing a `DECISION.json` file to its task directory. The file contains `{"decision": "<target>", "reasoning": "...", "confidence": 0.9}`. This avoids spawning a separate subprocess for routing and is faster.
+
+The `judge` attribute can be set at flow level (default for all nodes) or overridden per node.
 
 ### 2.6 Working Directories
 
@@ -108,13 +123,17 @@ Each task runs in its own **cwd** (current working directory). This is where the
 **cwd resolution** (in priority order):
 1. The task's `cwd` attribute (if declared in the node block)
 2. The flow's `workspace` attribute (if declared)
-3. Type check error — at least one must be specified
+3. Auto-generated workspace: `~/.flowstate/workspaces/<flow-name>/<run-id>/`
+
+`workspace` is optional. If omitted, the engine auto-generates an isolated workspace directory per run.
+
+**Worktree isolation** (`worktree = true`, the default): When the resolved workspace is a git repository, the engine creates a git worktree for each flow run. This provides complete file-level isolation between concurrent runs without duplicating the full repo. Worktrees are cleaned up after the run completes (configurable via `worktree_cleanup` in config).
 
 Tasks in the same flow can share a cwd (common for single-repo workflows) or each operate on different directories (multi-repo workflows).
 
-**Parallel safety**: When forked tasks share the same cwd, they should operate on different files. The system does not enforce this — it's a convention.
+**Parallel safety**: When forked tasks share the same cwd, they should operate on different files. Git worktree isolation helps when `max_parallel > 1`.
 
-### 2.6.1 Flowstate Data Directory
+### 2.7 Flowstate Data Directory
 
 All flowstate metadata lives in **`~/.flowstate/`**, completely separated from project directories. Flowstate never writes to a project's working directory (beyond what the Claude Code agent itself does).
 
@@ -122,21 +141,29 @@ All flowstate metadata lives in **`~/.flowstate/`**, completely separated from p
 ~/.flowstate/
 ├── flowstate.db                ← SQLite database (flows, runs, tasks, logs)
 ├── config.toml                 ← global configuration (optional)
+├── workspaces/                 ← auto-generated workspaces (when flow omits workspace)
+│   └── <flow-name>/
+│       └── <run-id>/
 └── runs/
     └── <run-id>/
-        └── tasks/
-            ├── analyze-1/
-            │   ├── SUMMARY.md  ← required: what the task did and its outcome
-            │   └── (scratch files)
-            ├── implement-1/
-            │   └── SUMMARY.md
-            ├── implement-2/    ← generation 2 (cycle re-entry)
-            │   └── SUMMARY.md
+        ├── tasks/
+        │   ├── analyze-1/
+        │   │   ├── INPUT.md        ← assembled prompt (written by engine)
+        │   │   ├── SUMMARY.md      ← required: what the task did and its outcome
+        │   │   ├── DECISION.json   ← self-report routing (when judge=false + conditional edges)
+        │   │   ├── OUTPUT.json     ← structured output (for cross-flow filing)
+        │   │   └── (scratch files)
+        │   ├── implement-1/
+        │   │   └── SUMMARY.md
+        │   └── implement-2/        ← generation 2 (cycle re-entry)
+        │       └── SUMMARY.md
+        └── judge/                   ← judge evaluation data (when judge=true)
             └── review-1/
-                └── SUMMARY.md
+                ├── REQUEST.md       ← judge prompt (written by engine)
+                └── DECISION.json    ← judge decision
 ```
 
-### 2.9 Context Mode
+### 2.8 Context Mode
 
 Determines how context flows from one task to the next along an edge. Two modes:
 
@@ -153,7 +180,7 @@ A third option, `none`, starts a fresh session with no upstream context (only th
 
 **`none`**: Fresh session with only the task's own prompt. No upstream context. Useful for tasks that are fully self-contained.
 
-### 2.7 Budget Guard
+### 2.9 Budget Guard
 
 A wall-clock time limit for a flow run. Claude Code subprocesses don't expose API costs, so time is used as a proxy.
 
@@ -162,7 +189,7 @@ A wall-clock time limit for a flow run. Claude Code subprocesses don't expose AP
 - When budget is exceeded: completes the current task, then pauses the flow
 - Does **not** kill tasks mid-execution
 
-### 2.8 Generation
+### 2.10 Generation
 
 An integer counter per node, starting at 1. Incremented each time the node is re-entered via a cycle. Used to:
 
@@ -170,7 +197,7 @@ An integer counter per node, starting at 1. Incremented each time the node is re
 - Match fork-join groups across cycle iterations
 - Provide context in the UI ("review, attempt 3")
 
-### 2.10 Scheduling
+### 2.11 Scheduling
 
 Flowstate supports three scheduling patterns:
 
@@ -197,7 +224,42 @@ monitor -> monitor when "not yet healthy" {
 }
 ```
 
-This executes `monitor` every 5 minutes until the judge decides it's healthy.
+This executes `monitor` every 5 minutes until the routing decision (self-report or judge) determines it's healthy.
+
+### 2.12 Task Queue Model
+
+Flows are **reusable processors**. Users submit **tasks** to a flow's queue. Each task carries input parameters, a title, and an optional description. The engine's **QueueManager** polls per-flow queues and processes tasks:
+
+1. A task enters the queue with status `queued` (or `scheduled` if deferred)
+2. When a slot is available (`max_parallel` not exceeded), the QueueManager picks the next task and creates a flow run
+3. The flow run processes the task through the node graph
+4. On completion, the task is marked `completed` with optional `output_json`
+
+**Task scheduling**: Tasks can be submitted for immediate processing, scheduled for a specific time (`scheduled_at`), or recurring (`cron_expression`). Recurring tasks auto-create the next occurrence after completion.
+
+**Task status lifecycle** (distinct from task_execution lifecycle in Section 6.2):
+
+```
+Scheduled ──► Queued ──► Running ──► Completed
+                │            │
+                │            ├──► Failed
+                │            ├──► Cancelled
+                │            └──► Paused
+                └──► Cancelled
+```
+
+| Status | Meaning |
+|--------|---------|
+| `scheduled` | Deferred — `scheduled_at` is in the future |
+| `queued` | Ready to be picked up by the QueueManager |
+| `running` | A flow run is processing this task |
+| `waiting` | Task is between nodes (e.g., at a wait/fence node) |
+| `completed` | Flow run finished the exit node successfully |
+| `failed` | Flow run failed or was aborted |
+| `cancelled` | User cancelled the task before or during processing |
+| `paused` | Flow run was paused; task resumes when the flow resumes |
+
+**Enable/disable**: Flows can be enabled or disabled at runtime via the `flow_enabled` table. Disabled flows finish their current task but stop picking up new ones from the queue.
 
 ---
 
@@ -211,10 +273,12 @@ Strings:        "double quoted" or """triple-quoted multiline"""
 Identifiers:    [a-zA-Z_][a-zA-Z0-9_]*
 Duration:       <integer>(s|m|h)  — e.g., 2h, 30m, 90s
 Path:           "./relative/path" (always quoted)
-Keywords:       flow, entry, task, exit, when, param, budget,
-                workspace, on_error, context, prompt, cwd,
-                schedule, on_overlap, delay
-Operators:      ->  =  [  ]  {  }  ,
+Keywords:       flow, entry, task, exit, wait, fence, atomic,
+                when, input, output, budget, workspace, on_error,
+                context, prompt, cwd, judge, worktree, max_parallel,
+                skip_permissions, schedule, on_overlap, delay,
+                files, awaits, after, at
+Operators:      ->  =  [  ]  {  }  ,  :
 Template vars:  {{identifier}}
 ```
 
@@ -225,19 +289,29 @@ flow <name> {
     budget = <duration>
     on_error = pause | abort | skip
     context = handoff | session | none
-    workspace = <path>                    // optional — default cwd for tasks
+    workspace = <path>                    // optional — auto-generated if omitted
+    judge = true | false                  // optional — default: false (self-report)
+    worktree = true | false               // optional — default: true (git worktree isolation)
+    max_parallel = <number>               // optional — default: 1 (serial processing)
+    skip_permissions = true | false       // optional — default: false
     schedule = <cron_expression>          // optional — recurring flow
     on_overlap = skip | queue | parallel  // optional — default: skip
 
-    <param_declarations>
+    input { <field_declarations> }        // required — declares flow input parameters
+    output { <field_declarations> }       // optional — declares flow output fields
+
     <node_declarations>
     <edge_declarations>
 }
 ```
 
-`budget`, `on_error`, and `context` are required. `workspace` is optional — if present, it serves as the default cwd for tasks that don't declare their own.
+`budget`, `on_error`, and `context` are required. The `input {}` block is mandatory (type check rule S9).
 
-`schedule` is optional — if present, the flowstate daemon triggers new runs on the cron schedule. `on_overlap` controls what happens when a trigger fires while a previous run is still active (default: `skip`).
+`workspace` is optional — if omitted, the engine auto-generates a workspace per run at `~/.flowstate/workspaces/<flow-name>/<run-id>/`.
+
+`judge` controls the default routing mode for conditional edges. `false` (default) means task agents self-report their routing decision via `DECISION.json`. `true` means a separate judge subprocess evaluates the conditions.
+
+`max_parallel` controls how many tasks from the queue can run simultaneously (default 1 = serial).
 
 `context` sets the default context mode for all edges (can be overridden per-edge). Recommended default is `handoff`.
 
@@ -249,16 +323,24 @@ flow <name> {
 | `abort` | Cancel the entire flow immediately. |
 | `skip` | Mark the failed task as skipped and continue to the next edge. |
 
-### 3.3 Parameters
+### 3.3 Input and Output Declarations
 
 ```
-param <name>: <type>
-param <name>: <type> = <default_value>
+input {
+    <name>: <type>
+    <name>: <type> = <default_value>
+}
+
+output {
+    <name>: <type>
+}
 ```
 
 Supported types: `string`, `number`, `bool`.
 
-Parameters are referenced in prompts via `{{name}}`. They are provided when starting a flow run.
+Input fields are referenced in prompts via `{{name}}`. They are provided when submitting a task to the flow's queue. Fields with default values are optional at submission time.
+
+Output fields declare the structure of the flow's output (used by cross-flow `files`/`awaits` edges to map data between flows).
 
 ### 3.4 Node Declarations
 
@@ -266,22 +348,39 @@ Parameters are referenced in prompts via `{{name}}`. They are provided when star
 entry <name> {
     prompt = <string>
     cwd = <path>           // optional — overrides flow-level workspace
+    judge = true | false   // optional — overrides flow-level judge setting
 }
 
 task <name> {
     prompt = <string>
     cwd = <path>           // optional — overrides flow-level workspace
+    judge = true | false   // optional — overrides flow-level judge setting
 }
 
 exit <name> {
     prompt = <string>
     cwd = <path>           // optional — overrides flow-level workspace
 }
+
+wait <name> {
+    delay = <duration>     // fixed delay (e.g., 5m, 1h)
+    // OR
+    until = <cron>         // wait until next cron match (e.g., "0 9 * * *")
+}
+
+fence <name> { }           // synchronization barrier — no body needed
+
+atomic <name> {
+    prompt = <string>
+    cwd = <path>           // optional
+}
 ```
 
-The prompt can use template variables (`{{param_name}}`) and triple-quoted strings for multiline content.
+The prompt can use template variables (`{{field_name}}`) and triple-quoted strings for multiline content.
 
-`cwd` sets the working directory for the Claude Code subprocess. If omitted, the task inherits the flow-level `workspace`. If neither is set, the type checker reports an error. Paths are resolved relative to the `.flow` file's directory.
+`cwd` sets the working directory for the Claude Code subprocess. If omitted, the task inherits the flow-level `workspace`. If neither is set, the engine auto-generates a workspace.
+
+`wait` nodes pause the flow — they have no prompt and don't spawn a subprocess. `fence` nodes block until all running tasks in the flow reach the fence. `atomic` nodes ensure exclusive execution — only one instance runs at a time across all concurrent runs of the same flow.
 
 ### 3.5 Edge Declarations
 
@@ -290,7 +389,7 @@ The prompt can use template variables (`{{param_name}}`) and triple-quoted strin
 analyze -> implement
 ```
 
-**Conditional** — judge-evaluated branch:
+**Conditional** — routing decision (judge or self-report):
 ```
 review -> done when "all changes are approved and tests pass"
 review -> implement when "changes need more work"
@@ -329,6 +428,22 @@ prepare -> deploy {
 
 `delay` and `schedule` are mutually exclusive on an edge.
 
+**File edge** — async cross-flow task filing:
+```
+generate_tests files code_review           // unconditional
+generate_tests files code_review when "tests pass"  // conditional
+generate_tests files code_review after 30m  // delayed
+generate_tests files nightly at "0 2 * * *" // scheduled
+```
+
+**Await edge** — sync cross-flow task filing (blocks until the filed task completes):
+```
+analyze awaits deep_scan
+analyze awaits deep_scan when "complex code detected"
+```
+
+File and await edges reference target flow names, not node names. The source node's `OUTPUT.json` is mapped to the target flow's declared `input` fields.
+
 ### 3.6 Context Modes
 
 Each edge can override the flow-level `context` setting. If omitted, the flow's default applies.
@@ -361,7 +476,9 @@ flow code_review {
     context = handoff
     workspace = "./project"
 
-    param focus: string = "all"
+    input {
+        focus: string = "all"
+    }
 
     entry analyze {
         prompt = """
@@ -397,7 +514,8 @@ flow code_review {
         prompt = "Write a summary of all changes to CHANGELOG.md."
     }
 
-    // Flow
+    // Edges (conditional edges use self-report routing by default;
+    // set judge = true at flow level to use judge subprocess instead)
     analyze -> implement {
         context = session    // implement continues analyze's conversation
     }
@@ -425,7 +543,8 @@ The type checker validates a parsed flow AST before execution. All rules produce
 | S5 | No duplicate node names | Names are identifiers used in edges |
 | S6 | `entry` node has no incoming unconditional edges (conditional back-edges allowed; unconditional back-edges allowed when entry has a default edge) | Nothing transitions into the start without a judge decision |
 | S7 | `exit` nodes have no outgoing edges | Nothing transitions out of a terminal |
-| S8 | Every node must have a resolvable cwd (own `cwd` or flow-level `workspace`) | Tasks need a working directory |
+| S8 | _(removed — workspace is auto-generated if not specified)_ | |
+| S9 | Every flow must have a non-empty `input {}` block | Flows are task processors; inputs define the task contract |
 
 ### 4.2 Edge Rules
 
@@ -440,8 +559,9 @@ The type checker validates a parsed flow AST before execution. All rules produce
 | E7 | `context = session` is not allowed on fork or join edges | Sessions cannot be cloned into parallel instances or merged |
 | E8 | `delay` and `schedule` are mutually exclusive on an edge | An edge can wait for a duration or a cron match, not both |
 | E9 | `schedule` (cron) on an edge must be a valid cron expression | Prevents runtime errors from bad cron syntax |
+| E10 | `file` and `await` edge targets must reference valid flow names (validated at runtime, not parse time) | Cross-flow edges target external flows |
 
-**Default edge pattern**: A node may have exactly one unconditional edge (the "default") plus one or more conditional edges. The engine invokes the judge on the conditional edges; if no condition matches, the unconditional edge is followed as a fallback. The node is considered a conditional checkpoint for cycle analysis (C2) because the judge evaluates at that node every iteration and can exit the cycle via a conditional edge.
+**Default edge pattern**: A node may have exactly one unconditional edge (the "default") plus one or more conditional edges. The engine acquires a routing decision (via judge or self-report) for the conditional edges; if no condition matches, the unconditional edge is followed as a fallback. The node is considered a conditional checkpoint for cycle analysis (C2) because routing is evaluated at that node every iteration and can exit the cycle via a conditional edge.
 
 ### 4.3 Cycle Rules
 
@@ -479,8 +599,8 @@ B -> [C, D]     // C appears in two fork groups — invalid
 
 ```
 1. Build adjacency list from edges
-2. Verify S1-S7 (structural)
-3. For each node, classify outgoing edges and verify E1-E7
+2. Verify S1-S7, S9 (structural)
+3. For each node, classify outgoing edges and verify E1-E10
 4. Identify all fork-join pairs, verify F1-F3
 5. Detect cycles via DFS, verify C1-C3
 6. Verify reachability (S3-S4) via BFS from entry
@@ -493,23 +613,23 @@ B -> [C, D]     // C appears in two fork groups — invalid
 ### 5.1 Component Overview
 
 ```
-┌──────────────────────────────────────────────┐
-│              Web UI (React)                  │
-│    Graph Viz  │  Log Viewer  │  Controls     │
-└──────────┬───────────────────────────────────┘
+┌──────────────────────────────────────────────────────┐
+│                  Web UI (React)                      │
+│  Graph Viz │ Log Viewer │ Controls │ Task Queue UI   │
+└──────────┬───────────────────────────────────────────┘
            │ WebSocket + REST
-┌──────────▼───────────────────────────────────┐
-│           Web Server (FastAPI)               │
-│    REST API  │  WebSocket Hub                │
-└──────────┬───────────────────────────────────┘
+┌──────────▼───────────────────────────────────────────┐
+│              Web Server (FastAPI)                     │
+│    REST API  │  WebSocket Hub                        │
+└──────────┬───────────────────────────────────────────┘
            │
-     ┌─────┼──────────────┬───────────────┐
-     │     │              │               │
-┌────▼───┐ ┌──▼────────┐ ┌──▼──────────┐ ┌──▼──────────┐
-│Execution│ │   State   │ │   Budget    │ │   File      │
-│ Engine  │ │  Manager  │ │   Guard     │ │  Watcher    │
-│(asyncio)│ │ (SQLite)  │ │(time track) │ │(watchfiles) │
-└────┬────┘ └───────────┘ └─────────────┘ └─────────────┘
+     ┌─────┼──────────┬──────────────┬───────────────┐
+     │     │          │              │               │
+┌────▼───┐ ┌──▼────┐ ┌──▼──────────┐ ┌──▼────────┐ ┌──▼──────────┐
+│Execution│ │Queue  │ │   State     │ │  Budget   │ │   File      │
+│ Engine  │ │Manager│ │  Manager    │ │  Guard    │ │  Watcher    │
+│(asyncio)│ │(polls)│ │ (SQLite)    │ │(time trk) │ │(watchfiles) │
+└────┬────┘ └───────┘ └────────────┘ └───────────┘ └─────────────┘
      │
 ┌────▼──────────────────────────────────┐
 │     Claude Code Subprocesses          │
@@ -541,10 +661,18 @@ B -> [C, D]     // C appears in two fork groups — invalid
 
 ### 5.4 Execution Engine
 
-- **Input**: Validated AST + parameter values
-- **Manages**: Claude Code subprocess lifecycle, fork-join coordination, judge invocation, cycle tracking
+- **Input**: Validated AST + parameter values + task context
+- **Manages**: Claude Code subprocess lifecycle, fork-join coordination, routing (judge or self-report), cycle tracking, wait/fence/atomic synchronization, worktree isolation, cross-flow filing
 - **Concurrency**: Python `asyncio` with `asyncio.create_subprocess_exec`
 - **Parallelism**: Semaphore-bounded concurrent subprocesses (configurable, default 4)
+
+### 5.4.1 Queue Manager
+
+- **Implementation**: Background `asyncio` task polling per-flow task queues
+- **Per-flow concurrency**: Reads `max_parallel` from the flow AST; only starts a new run when running count is below the limit
+- **Scheduling**: Checks `scheduled_at` on tasks; transitions due tasks from `scheduled` to `queued`
+- **Recurring tasks**: After a recurring task completes, auto-creates the next occurrence based on `cron_expression`
+- **Enable/disable**: Checks `flow_enabled` table before processing; skips disabled flows
 
 ### 5.5 State Manager
 
@@ -623,11 +751,13 @@ Pending ──► Waiting ──► Running ──► Completed
 | Status | Meaning |
 |--------|---------|
 | `pending` | Dependencies met, ready to run (or waiting for semaphore) |
-| `waiting` | Delayed — a `delay` or `schedule` on the incoming edge hasn't elapsed yet |
-| `running` | Claude Code subprocess is executing |
+| `waiting` | Delayed — a `delay` or `schedule` hasn't elapsed yet; or blocked at a fence/atomic mutex |
+| `running` | Claude Code subprocess is executing (or wait node timer active) |
 | `completed` | Task finished successfully |
 | `failed` | Task errored |
 | `skipped` | User chose to skip a failed task |
+
+**Special node types**: Wait nodes go directly from `pending` → `waiting` → `completed` (no subprocess). Fence nodes go from `pending` → `waiting` (at barrier) → `completed` (when all arrive). Atomic nodes may go from `pending` → `waiting` (mutex held) → `running` → `completed`.
 
 ### 6.3 Execution Algorithm
 
@@ -678,7 +808,9 @@ async def execute_flow(flow_ast, params):
             elif has_default_edge(outgoing):  # 1 unconditional + N conditional
                 default = get_default_edge(outgoing)
                 conditionals = get_conditional_edges(outgoing)
-                decision = await invoke_judge(run, task, conditionals)
+                decision = await acquire_routing_decision(run, task, conditionals)
+                # acquire_routing_decision: if judge=true, spawns judge subprocess;
+                # if judge=false, reads DECISION.json written by the task agent
                 if decision == "__none__":
                     enqueue_task(run, default.target, generation=next_gen(task),
                                 edge=default)  # follow default
@@ -687,9 +819,9 @@ async def execute_flow(flow_ast, params):
                                 edge=decision.edge)
 
             elif is_conditional(outgoing):
-                decision = await invoke_judge(run, task, outgoing)
+                decision = await acquire_routing_decision(run, task, outgoing)
                 if decision == "__none__":
-                    pause_flow(run, reason="Judge could not match any condition")
+                    pause_flow(run, reason="No condition matched")
                 else:
                     enqueue_task(run, decision.target, generation=next_gen(task),
                                 edge=decision.edge)
@@ -726,7 +858,7 @@ def enqueue_task(run, node, generation, edge=None, fork_group=None):
         task.status = "pending"
 ```
 
-### 6.8 Edge Delays
+### 6.4 Edge Delays
 
 When a task is created with status `waiting`:
 
@@ -736,7 +868,7 @@ When a task is created with status `waiting`:
 4. Wait time does **not** count toward the flow's budget
 5. The web UI shows a countdown/next-trigger time for waiting tasks
 
-### 6.9 Recurring Flow Runs
+### 6.5 Recurring Flow Runs
 
 When a flow declares `schedule`:
 
@@ -749,24 +881,28 @@ When a flow declares `schedule`:
    - If `parallel`: create and start immediately
 4. The daemon emits a `flow.scheduled_trigger` event for the web UI
 
-### 6.4 Fork-Join Execution
+### 6.6 Fork-Join Execution
 
 1. **Fork**: Source task completes → all target tasks created as `pending` simultaneously → a `fork_group` record links them
 2. **Parallel execution**: Ready tasks are picked up concurrently (up to semaphore limit)
 3. **Join**: Each fork member completes → check if all members of the fork group are `completed` → if yes, create pending task for the join target
 4. **Generation**: All tasks in a fork group share the same generation. The join target gets `generation + 1`.
 
-### 6.5 Conditional Branching
+### 6.7 Conditional Branching
 
 1. Source task completes at a node with conditional outgoing edges
-2. Execution engine reads the task's `SUMMARY.md` from `.flowstate/tasks/<name>-<gen>/`
-3. Execution engine spawns a **judge** subprocess with the summary as context
-4. Judge evaluates conditions and returns structured decision (target node + reasoning + confidence)
-5. If `confidence < 0.5`: pause flow for human review (even though a decision was returned)
-6. If decision is `__none__`: pause flow
-7. Otherwise: create pending task for the chosen target, using the edge's context mode
+2. **If judge mode** (`judge = true`):
+   a. Engine reads the task's `SUMMARY.md` and spawns a **judge** subprocess
+   b. Judge evaluates conditions and returns structured decision (target node + reasoning + confidence)
+   c. If `confidence < 0.5`: pause flow for human review
+3. **If self-report mode** (`judge = false`, default):
+   a. The task prompt includes routing instructions with available transitions
+   b. The task agent writes a `DECISION.json` to its task directory with `{decision, reasoning, confidence}`
+   c. Engine reads `DECISION.json` after the task completes
+4. If decision is `__none__`: pause flow
+5. Otherwise: create pending task for the chosen target, using the edge's context mode
 
-### 6.6 Cycle Re-entry
+### 6.8 Cycle Re-entry
 
 When a conditional edge targets an already-executed node:
 
@@ -780,15 +916,82 @@ When a conditional edge targets an already-executed node:
 
 **Note on `session` mode and cycles**: If a cycle edge uses `session` mode, the re-entered task resumes the *source* task's session (the task that triggered the cycle), not its own previous session. This means the agent that did the review continues into the implementation, carrying its full review context.
 
-### 6.7 Concurrency Controls
+### 6.9 Concurrency Controls
 
 - **Max concurrent tasks**: Configurable (default 4). Enforced via `asyncio.Semaphore`.
-- **Judge calls**: Count toward the concurrency limit (they are also subprocesses).
+- **Judge calls** (when `judge = true`): Count toward the concurrency limit (they are also subprocesses). In self-report mode (default), no separate judge subprocess is spawned.
 - **Paused flows**: Release all semaphore slots. No subprocesses run while paused.
+
+### 6.10 Wait Node Execution
+
+When the engine reaches a `wait` node:
+
+1. Create a `task_execution` with `node_type = 'wait'` and status `waiting`
+2. Set `wait_until` based on the node's `delay` (now + duration) or `until` (next cron match)
+3. No Claude subprocess is spawned — wait nodes are engine-level primitives
+4. The scheduler checks waiting tasks periodically; when `wait_until` has elapsed, transition to `completed`
+5. Wait time does **not** count toward the flow's budget
+6. The UI shows a countdown timer on wait nodes
+
+### 6.11 Fence Node Execution (Synchronization Barrier)
+
+When a task execution reaches a `fence` node:
+
+1. Mark the task as `waiting` at the fence
+2. Check if all other running tasks for this flow run have also reached the fence (or completed)
+3. If yes: release all waiting tasks — transition them to `completed` and continue to outgoing edges
+4. If no: keep waiting until all arrive
+
+This is conceptually a barrier (like `pthread_barrier`). Fence nodes are useful when `max_parallel > 1` and multiple tasks need to synchronize before continuing.
+
+### 6.12 Atomic Node Execution (Exclusive Mutex)
+
+Before executing an `atomic` node:
+
+1. Check if any other task execution for this node name (across all concurrent runs of the same flow) is currently running
+2. If yes: set this task to `waiting` state
+3. When the running one completes: wake the next waiting one and transition it to `running`
+
+This ensures only one instance of an atomic node executes at a time across all concurrent runs. Useful for operations that must not overlap (e.g., deploying to production).
+
+### 6.13 Cross-Flow Filing (File and Await Edges)
+
+When a node completes and has outgoing `file` or `await` edges:
+
+1. Engine reads `OUTPUT.json` from the completed task's directory
+2. Maps `OUTPUT.json` key-value pairs to the target flow's declared `input` fields
+3. Submits a new task to the target flow's queue with the mapped parameters
+
+**File edges** (async): The source flow continues immediately after filing. The child task runs independently.
+
+**Await edges** (sync): The source flow blocks until the child task completes. The child task's `output_json` is available for subsequent nodes.
+
+**Timing variants** on file edges:
+- `after <duration>`: Sets `scheduled_at` on the child task instead of queuing immediately
+- `at <cron>`: Sets `scheduled_at` to the next cron match
+
+**Depth tracking**: Each filed task increments a `depth` counter (`parent.depth + 1`). This prevents unbounded recursive filing chains.
+
+**Parent-child relationship**: The child task's `parent_task_id` references the source task, enabling lineage tracking.
+
+### 6.14 Activity Logs
+
+The executor emits human-readable activity log entries at key decision points. These are stored in the `task_logs` table with `log_type = 'system'` and content `{"subtype": "activity", "message": "..."}`.
+
+Activity events include:
+- `Dispatching node '<name>' (generation N)` — task subprocess about to launch
+- `Edge transition: <from> → <to>` — edge traversal
+- `Judge started for node '<name>'` / `Judge decided: <target>` — routing events
+- `Fork started: [<targets>]` / `Fork joined at <node>` — parallel execution
+- `Flow paused: <reason>` / `Flow completed` — lifecycle events
+
+These logs appear alongside streaming Claude output in the UI log viewer, providing a unified timeline of what happened during a run.
 
 ---
 
 ## 7. Judge Protocol
+
+> **Note**: This section describes judge mode (`judge = true`). When `judge = false` (the default), the task agent writes `DECISION.json` directly — see Section 9.6 for the file format and Section 6.5 for the execution flow.
 
 ### 7.1 Judge Prompt Template
 
@@ -881,133 +1084,18 @@ Key constraints:
 
 ### 8.1 SQLite Schema
 
-```sql
--- Flow definitions (parsed DSL stored alongside source)
-CREATE TABLE flow_definitions (
-    id TEXT PRIMARY KEY,
-    name TEXT NOT NULL UNIQUE,
-    source_dsl TEXT NOT NULL,
-    ast_json TEXT NOT NULL,
-    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-);
+See `src/flowstate/state/schema.sql` for the authoritative schema. Key tables:
 
--- Flow runs (execution instances)
-CREATE TABLE flow_runs (
-    id TEXT PRIMARY KEY,
-    flow_definition_id TEXT NOT NULL REFERENCES flow_definitions(id),
-    status TEXT NOT NULL CHECK(status IN (
-        'created', 'running', 'paused', 'completed',
-        'failed', 'cancelled', 'budget_exceeded'
-    )),
-    default_workspace TEXT,         -- optional flow-level workspace (may be NULL)
-    data_dir TEXT NOT NULL,         -- ~/.flowstate/runs/<id>/
-    params_json TEXT,
-    budget_seconds INTEGER NOT NULL,
-    elapsed_seconds REAL DEFAULT 0,
-    on_error TEXT NOT NULL CHECK(on_error IN ('pause', 'abort', 'skip')),
-    started_at TIMESTAMP,
-    completed_at TIMESTAMP,
-    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    error_message TEXT
-);
-
--- Task executions (individual node runs within a flow run)
-CREATE TABLE task_executions (
-    id TEXT PRIMARY KEY,
-    flow_run_id TEXT NOT NULL REFERENCES flow_runs(id),
-    node_name TEXT NOT NULL,
-    node_type TEXT NOT NULL CHECK(node_type IN ('entry', 'task', 'exit')),
-    status TEXT NOT NULL CHECK(status IN (
-        'pending', 'waiting', 'running', 'completed', 'failed', 'skipped'
-    )),
-    wait_until TIMESTAMP,           -- NULL if not delayed; set for waiting tasks
-    generation INTEGER NOT NULL DEFAULT 1,
-    context_mode TEXT NOT NULL CHECK(context_mode IN ('handoff', 'session', 'none')),
-    cwd TEXT NOT NULL,              -- resolved working directory for this task
-    claude_session_id TEXT,
-    task_dir TEXT NOT NULL,         -- ~/.flowstate/runs/<run-id>/tasks/<name>-<gen>/
-    prompt_text TEXT NOT NULL,
-    started_at TIMESTAMP,
-    completed_at TIMESTAMP,
-    elapsed_seconds REAL,
-    exit_code INTEGER,
-    summary_path TEXT,              -- path to SUMMARY.md (set on completion)
-    error_message TEXT,
-    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-);
-
--- Edge transitions (log of every edge traversal)
-CREATE TABLE edge_transitions (
-    id TEXT PRIMARY KEY,
-    flow_run_id TEXT NOT NULL REFERENCES flow_runs(id),
-    from_task_id TEXT NOT NULL REFERENCES task_executions(id),
-    to_task_id TEXT REFERENCES task_executions(id),
-    edge_type TEXT NOT NULL CHECK(edge_type IN (
-        'unconditional', 'conditional', 'fork', 'join'
-    )),
-    condition_text TEXT,
-    judge_session_id TEXT,
-    judge_decision TEXT,
-    judge_reasoning TEXT,
-    judge_confidence REAL,
-    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-);
-
--- Fork groups (track parallel execution groups)
-CREATE TABLE fork_groups (
-    id TEXT PRIMARY KEY,
-    flow_run_id TEXT NOT NULL REFERENCES flow_runs(id),
-    source_task_id TEXT NOT NULL REFERENCES task_executions(id),
-    join_node_name TEXT NOT NULL,
-    generation INTEGER NOT NULL DEFAULT 1,
-    status TEXT NOT NULL CHECK(status IN ('active', 'joined', 'cancelled')),
-    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-);
-
--- Fork group members
-CREATE TABLE fork_group_members (
-    fork_group_id TEXT NOT NULL REFERENCES fork_groups(id),
-    task_execution_id TEXT NOT NULL REFERENCES task_executions(id),
-    PRIMARY KEY (fork_group_id, task_execution_id)
-);
-
--- Streaming logs from Claude subprocesses
-CREATE TABLE task_logs (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    task_execution_id TEXT NOT NULL REFERENCES task_executions(id),
-    timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    log_type TEXT NOT NULL CHECK(log_type IN (
-        'stdout', 'stderr', 'tool_use', 'assistant_message', 'system'
-    )),
-    content TEXT NOT NULL
-);
-
--- Flow schedules (recurring flow runs)
-CREATE TABLE flow_schedules (
-    id TEXT PRIMARY KEY,
-    flow_definition_id TEXT NOT NULL REFERENCES flow_definitions(id),
-    cron_expression TEXT NOT NULL,
-    on_overlap TEXT NOT NULL DEFAULT 'skip' CHECK(on_overlap IN ('skip', 'queue', 'parallel')),
-    enabled INTEGER NOT NULL DEFAULT 1,    -- 0 = paused
-    last_triggered_at TIMESTAMP,
-    next_trigger_at TIMESTAMP,
-    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-);
-
--- Indexes
-CREATE INDEX idx_flow_runs_status ON flow_runs(status);
-CREATE INDEX idx_task_executions_flow_run ON task_executions(flow_run_id);
-CREATE INDEX idx_task_executions_status ON task_executions(flow_run_id, status);
-CREATE INDEX idx_task_executions_waiting ON task_executions(status, wait_until)
-    WHERE status = 'waiting';
-CREATE INDEX idx_edge_transitions_flow_run ON edge_transitions(flow_run_id);
-CREATE INDEX idx_task_logs_execution ON task_logs(task_execution_id);
-CREATE INDEX idx_task_logs_timestamp ON task_logs(task_execution_id, timestamp);
-CREATE INDEX idx_fork_groups_flow_run ON fork_groups(flow_run_id);
-CREATE INDEX idx_flow_schedules_next ON flow_schedules(next_trigger_at)
-    WHERE enabled = 1;
-```
+- **`flow_definitions`** — Parsed DSL stored alongside source and AST JSON
+- **`flow_runs`** — Execution instances, with `worktree_path` and `task_id` FK
+- **`task_executions`** — Individual node runs, with `node_type` supporting `wait`, `fence`, `atomic`
+- **`edge_transitions`** — Log of every edge traversal with judge decision fields
+- **`fork_groups`** / **`fork_group_members`** — Track parallel execution groups
+- **`task_logs`** — Streaming logs from Claude subprocesses and executor activity logs
+- **`flow_schedules`** — Recurring flow runs with cron and overlap policy
+- **`tasks`** — Work items submitted to flow queues (title, params, scheduling, status lifecycle)
+- **`task_node_history`** — Which nodes a task passed through during execution
+- **`flow_enabled`** — Runtime enable/disable toggle per flow name
 
 ### 8.2 Transaction Boundaries
 
@@ -1066,7 +1154,7 @@ You are executing a task in a Flowstate workflow.
 {contents of ~/.flowstate/runs/<run-id>/tasks/<prev_name>-<prev_gen>/SUMMARY.md}
 
 ## Your task
-{Node prompt with {{params}} expanded}
+{Node prompt with {{input_fields}} expanded}
 
 ## Working directory
 Your working directory is: {resolved_cwd}
@@ -1083,13 +1171,31 @@ When you are done, you MUST write a SUMMARY.md to {task_dir}/SUMMARY.md describi
 
 ```
 ## Next task: {node_name}
-{Node prompt with {{params}} expanded}
+{Node prompt with {{input_fields}} expanded}
 
 When you are done, write a SUMMARY.md to {task_dir}/SUMMARY.md
 describing what you did and the outcome.
 ```
 
 (Shorter because the full conversation context is already present in the resumed session.)
+
+**Self-report routing appendix** (appended when `judge = false` and node has conditional outgoing edges):
+
+```
+## Routing Decision
+After completing your task, you must decide which transition to take.
+
+### Available Transitions
+- "condition text" → transitions to: target_node
+- "condition text" → transitions to: target_node
+If no condition clearly matches, use "__none__".
+
+### Instructions
+Write a JSON file to {task_dir}/DECISION.json with this format:
+{"decision": "<target_node_name>", "reasoning": "<brief explanation>",
+ "confidence": <float 0.0 to 1.0>}
+You MUST write this file before completing your task.
+```
 
 **Prompt construction for join nodes** (`handoff` mode with multiple predecessors):
 
@@ -1105,7 +1211,7 @@ You are executing a task in a Flowstate workflow.
 {contents of ~/.flowstate/runs/<run-id>/tasks/<member2>-<gen>/SUMMARY.md}
 
 ## Your task
-{Node prompt with {{params}} expanded}
+{Node prompt with {{input_fields}} expanded}
 
 ## Working directory and task directory
 [same as above]
@@ -1122,6 +1228,7 @@ With `--output-format stream-json`, Claude Code emits one JSON object per line o
 | `tool_result` | Tool output | Display in log viewer |
 | `error` | Error message | Detect failures |
 | `result` | Final result | Task completion output |
+| `system` | Process events, activity logs | Detect process exit, track executor decisions |
 
 The execution engine:
 
@@ -1144,54 +1251,31 @@ Before launching a task subprocess, the execution engine:
 
 1. Creates the run directory if needed: `~/.flowstate/runs/<run-id>/`
 2. Creates the task directory: `~/.flowstate/runs/<run-id>/tasks/<name>-<gen>/`
-3. Resolves the task's cwd (node `cwd` → flow `workspace` → error)
-4. The task prompt includes the absolute path to the task directory so the agent can write `SUMMARY.md`
+3. Resolves the task's cwd (node `cwd` → flow `workspace` → auto-generated workspace)
+4. If `worktree = true` and the workspace is a git repo, creates a git worktree for the run
+5. Writes `INPUT.md` with the assembled prompt to the task directory
+6. The task prompt includes the absolute path to the task directory so the agent can write `SUMMARY.md`
 
-### 9.6 Orchestrator Agents
+### 9.6 File-Based Communication
 
-The execution engine supports an optional **orchestrator agent** pattern that reduces cold-start overhead and improves context continuity across tasks. Instead of spawning a new Claude Code process for every task and judge call, one long-lived session is created per unique `(harness, cwd)` and **resumed** for each action.
-
-#### 9.6.1 Architecture
-
-| Agent Type | Lifecycle | Model | Role | Invocation |
-|-----------|-----------|-------|------|------------|
-| **Orchestrator** | Long-lived (flow run duration) | Sonnet | Spawns subagents, evaluates judge decisions | Single session, resumed per action |
-| **Node (subagent)** | Short-lived (one task) | Opus | Executes a single node's prompt | Spawned by orchestrator via Agent tool |
-
-One orchestrator per unique `(harness, cwd)` within a flow run. If a flow has tasks in `/project-a` and `/project-b`, two orchestrators are created.
-
-#### 9.6.2 Session Lifecycle
-
-1. **Init**: Engine creates orchestrator session via `claude -p "<system_prompt>" --model sonnet --output-format stream-json`. The system prompt describes the flow graph, workspace, and orchestrator responsibilities.
-2. **Task execution**: Engine writes `INPUT.md` to the task directory, then resumes the orchestrator with: "Execute task X — read INPUT.md, spawn subagent, ensure SUMMARY.md is written."
-3. **Judge evaluation**: Engine writes `REQUEST.md` to the judge directory, then resumes the orchestrator with: "Evaluate transition — read REQUEST.md, write DECISION.json."
-4. **Terminate**: When the flow completes or is cancelled, the engine stops resuming the orchestrator.
-
-#### 9.6.3 File-Based Communication Protocol
-
-All inter-agent communication uses files under `~/.flowstate/runs/<run-id>/`:
+Task-related files live under `~/.flowstate/runs/<run-id>/`:
 
 ```
 ~/.flowstate/runs/<run-id>/
-├── orchestrator/                    # Orchestrator metadata
-│   ├── <cwd-hash>/                  # One directory per orchestrator
-│   │   └── session_id              # Claude Code session ID (for recovery)
 ├── tasks/
 │   ├── <node>-<gen>/
-│   │   ├── INPUT.md                # Full assembled prompt (written by engine before launch)
-│   │   ├── SUMMARY.md              # Task output (written by subagent)
+│   │   ├── INPUT.md                # Full assembled prompt (written by engine)
+│   │   ├── SUMMARY.md              # Task output (written by agent)
+│   │   ├── DECISION.json           # Self-report routing decision (when judge=false)
+│   │   ├── OUTPUT.json             # Structured output for cross-flow filing
 │   │   └── (scratch files)
 ├── judge/
 │   ├── <source>-<gen>/
-│   │   ├── REQUEST.md              # Judge evaluation request (written by engine)
-│   │   └── DECISION.json           # Judge decision (written by orchestrator)
+│   │   ├── REQUEST.md              # Judge evaluation request (when judge=true)
+│   │   └── DECISION.json           # Judge decision
 ```
 
-**`INPUT.md`**: Contains the full assembled task prompt — the same content previously passed to `claude -p`. Written by the engine before resuming the orchestrator.
-
-**`REQUEST.md`**: Contains the judge evaluation context: completed task info (name, prompt, exit code, summary), available transitions with conditions.
-
-**`DECISION.json`**: Structured judge decision matching the schema in Section 7.2:
+**`DECISION.json`**: Structured routing decision (written by the task agent in self-report mode, or by the judge in judge mode):
 ```json
 {
     "decision": "<target_node_name or __none__>",
@@ -1200,22 +1284,18 @@ All inter-agent communication uses files under `~/.flowstate/runs/<run-id>/`:
 }
 ```
 
-**Key principle**: Files are the source of truth. If a process crashes mid-task, the engine can inspect which files exist to determine state and resume from there.
+**`OUTPUT.json`**: Structured output for cross-flow filing. When a node has outgoing `file` or `await` edges, the agent writes key-value pairs that are mapped to the target flow's `input` fields.
 
-#### 9.6.4 Why Orchestrator is Faster
+### 9.7 Worktree Isolation
 
-1. **Resume vs cold start**: `--resume` loads cached conversation, skipping session init.
-2. **No separate judge process**: The orchestrator evaluates transitions directly — saves one full process spawn per conditional edge.
-3. **Accumulated context**: The orchestrator remembers previous tasks, workspace state, and flow progress. No need to re-inject everything each time.
-4. **Subagent context inheritance**: The orchestrator passes relevant context to subagents naturally through its Agent tool prompt.
-5. **Parallel forks**: The orchestrator uses Claude Code's parallel Agent tool to spawn multiple subagents in a single resume call.
+When `worktree = true` (default) and the resolved workspace is a git repository:
 
-#### 9.6.5 Fallback Behavior
+1. Engine creates a git worktree: `git worktree add <path> --detach`
+2. The worktree path replaces the original workspace for all tasks in the run
+3. On run completion, the worktree is cleaned up (configurable via `worktree_cleanup` in config)
+4. This provides complete file-level isolation between concurrent runs
 
-If the orchestrator is not configured or fails to initialize, the engine falls back to the **direct subprocess** model (Section 9.1). This ensures backward compatibility:
-
-- Existing flows work unchanged without orchestrator configuration.
-- If an orchestrator session crashes, the current task fails and can be retried (the retry may fall back to direct subprocess).
+If the workspace is not a git repo, worktree creation is silently skipped.
 
 ### 9.4 Error Detection
 
@@ -1236,8 +1316,8 @@ Clean dashboard UI. Dark mode only. Desktop-only layout.
 
 | Page | Purpose |
 |------|---------|
-| Flow Library | List discovered `.flow` files from watched directory. Click to see graph preview. Shows parse/type-check errors inline. "Start Run" button opens modal. **No DSL editor** — flows are edited externally and auto-discovered via file watcher. |
-| Run Detail | Graph left (~60%) + log viewer right (~40%) + control bar bottom. Live visualization + streaming logs + flow controls. Active runs are accessed from the sidebar (no separate Run Dashboard page). |
+| Flow Library | List discovered `.flow` files from watched directory. Click to see graph preview + flow detail panel. Shows parse/type-check errors inline. "Submit Task" button opens task modal. Enable/disable toggle. **No DSL editor** — flows are edited externally and auto-discovered via file watcher. |
+| Run Detail | Graph left + log viewer right + control bar. Live visualization + streaming logs + activity logs + flow controls. Active runs are accessed from the sidebar. |
 
 ### 10.2 REST API
 
@@ -1245,11 +1325,20 @@ Flows are discovered from the filesystem (watched directory), not created manual
 
 | Method | Endpoint | Purpose |
 |--------|----------|---------|
-| `GET` | `/api/flows` | List discovered flows from watched directory (parsed, with error state) |
-| `GET` | `/api/flows/:id` | Get flow definition with DSL source and parse status |
-| `POST` | `/api/flows/:id/runs` | Start a new run (body: params) |
+| `GET` | `/api/flows` | List discovered flows from watched directory (parsed, with error state, enabled status) |
+| `GET` | `/api/flows/:id` | Get flow definition with DSL source, parse status, AST JSON |
+| `POST` | `/api/flows/:id/runs` | Start a new run directly (body: params) |
+| `POST` | `/api/flows/:name/enable` | Enable a flow to process its task queue |
+| `POST` | `/api/flows/:name/disable` | Disable a flow |
+| `POST` | `/api/flows/:name/tasks` | Submit a task to a flow's queue |
+| `GET` | `/api/flows/:name/tasks` | List tasks for a flow (filterable by status) |
+| `POST` | `/api/flows/:name/tasks/reorder` | Reorder queued tasks |
+| `GET` | `/api/tasks` | List all tasks across all flows |
+| `PATCH` | `/api/tasks/:id` | Update a queued task |
+| `DELETE` | `/api/tasks/:id` | Delete a queued task |
 | `GET` | `/api/runs` | List all runs (filterable by status) |
 | `GET` | `/api/runs/:id` | Get run details + task executions + edges |
+| `GET` | `/api/runs/:id/activity` | Get executor activity logs for a run |
 | `POST` | `/api/runs/:id/pause` | Pause a running flow |
 | `POST` | `/api/runs/:id/resume` | Resume a paused flow |
 | `POST` | `/api/runs/:id/cancel` | Cancel a flow |
@@ -1260,6 +1349,7 @@ Flows are discovered from the filesystem (watched directory), not created manual
 | `POST` | `/api/schedules/:id/pause` | Pause a recurring schedule |
 | `POST` | `/api/schedules/:id/resume` | Resume a paused schedule |
 | `POST` | `/api/schedules/:id/trigger` | Manually trigger a scheduled flow |
+| `POST` | `/api/open` | Open a file/directory in the user's IDE |
 
 ### 10.3 WebSocket Protocol
 
@@ -1343,11 +1433,12 @@ Flows are discovered from the filesystem (watched directory), not created manual
 
 ### 10.5 Log Viewer
 
-- Click a node in the graph → log viewer shows that task's streaming output
-- Raw streaming output, line by line
+- Click a node in the graph → log viewer shows that task's logs
+- Displays both streaming Claude output AND executor activity logs (dispatch, transition, exit events)
+- Rich rendering: thinking blocks (collapsible), assistant messages (markdown), tool call blocks (expandable with input/output)
+- "Noise" filter hides system init messages; toggle to show all
 - Monospace font, dark background
 - Real-time auto-scroll with pin-to-bottom toggle
-- No structured parsing of tool_use/tool_result — keep it simple, show raw output
 
 ### 10.6 Control Panel
 
@@ -1392,188 +1483,41 @@ The sidebar provides navigation across all three sections of the app:
 - If the file has errors: show a persistent error banner (not a toast), preserve the last valid graph
 - Technology: `watchfiles` (already a uvicorn dependency)
 
-### 10.9 Start Run Modal
+### 10.9 Submit Task Modal
 
-- Triggered by "Start Run" button on Flow Library page
-- Shows: flow name, parameter form (auto-generated from `param` declarations in the DSL)
-- Each param gets an input field with type-appropriate control (text input for `string`, number input for `number`, checkbox for `bool`)
-- Default values pre-filled from DSL
-- "Start" button creates the run and navigates to Run Detail
+- Triggered by "Submit Task" button on Flow Library page (replaces the former "Start Run" button)
+- Shows: task title (required), optional description, parameter form (auto-generated from `input {}` declarations in the DSL)
+- Each input field gets a type-appropriate control (text input for `string`, number input for `number`, checkbox for `bool`)
+- Default values pre-filled from DSL defaults
+- Scheduling options: Immediate (default), Schedule for (datetime picker), Recurring (cron input)
+- "Add to Queue" button submits the task to the flow's queue
 
 ---
 
 ## 11. Lark Grammar
 
-```lark
-// Flowstate DSL Grammar
+See `src/flowstate/dsl/grammar.lark` for the authoritative grammar. Key additions beyond the original MVP:
 
-start: flow_decl
-
-flow_decl: "flow" NAME "{" flow_body "}"
-
-flow_body: (flow_stmt)*
-
-flow_stmt: flow_attr
-         | param_decl
-         | node_decl
-         | edge_decl
-
-// Flow-level attributes
-flow_attr: "budget" "=" DURATION
-         | "workspace" "=" STRING
-         | "on_error" "=" ERROR_POLICY
-         | "context" "=" CONTEXT_MODE
-         | "schedule" "=" STRING
-         | "on_overlap" "=" OVERLAP_POLICY
-
-ERROR_POLICY: "pause" | "abort" | "skip"
-OVERLAP_POLICY: "skip" | "queue" | "parallel"
-
-// Parameters
-param_decl: "param" NAME ":" TYPE
-          | "param" NAME ":" TYPE "=" literal
-
-TYPE: "string" | "number" | "bool"
-
-literal: STRING
-       | NUMBER
-       | "true" -> true_lit
-       | "false" -> false_lit
-
-// Nodes
-node_decl: entry_node | task_node | exit_node
-
-entry_node: "entry" NAME "{" node_body "}"
-task_node:  "task"  NAME "{" node_body "}"
-exit_node:  "exit"  NAME "{" node_body "}"
-
-node_body: (node_attr)+
-node_attr: "prompt" "=" string
-         | "cwd" "=" STRING
-
-// Edges
-edge_decl: simple_edge | cond_edge | fork_edge | join_edge
-
-simple_edge: NAME "->" NAME [edge_config]
-cond_edge:   NAME "->" NAME "when" string [edge_config]
-fork_edge:   NAME "->" "[" name_list "]"
-join_edge:   "[" name_list "]" "->" NAME
-
-name_list: NAME ("," NAME)*
-
-edge_config: "{" edge_attr* "}"
-edge_attr: "context" "=" CONTEXT_MODE
-         | "delay" "=" DURATION
-         | "schedule" "=" STRING
-
-CONTEXT_MODE: "handoff" | "session" | "none"
-
-// String literals
-string: STRING | LONG_STRING
-
-STRING: "\"" /[^"]*/ "\""
-LONG_STRING: "\"\"\"" /[\s\S]*?/ "\"\"\""
-
-// Tokens
-DURATION: /[0-9]+[smh]/
-NAME: /[a-zA-Z_][a-zA-Z0-9_]*/
-NUMBER: /[0-9]+(\.[0-9]+)?/
-COMMENT: /\/\/[^\n]*/
-
-%import common.WS
-%ignore WS
-%ignore COMMENT
-```
+- **`input {}` / `output {}` blocks** replace `param` declarations
+- **`judge = true|false`**, **`worktree = true|false`**, **`skip_permissions = true|false`**, **`max_parallel = N`** flow attributes
+- **`wait`**, **`fence`**, **`atomic`** node types
+- **`judge = true|false`** per-node override
+- **`files`** and **`awaits`** edge types with timing variants (`after`, `at`)
+- **`BOOL_LIT`** token for boolean attributes
 
 ### 11.1 AST Node Definitions
 
-```python
-from dataclasses import dataclass, field
-from enum import Enum
-from typing import Optional
+See `src/flowstate/dsl/ast.py` for the authoritative definitions. All dataclasses are frozen (immutable). Enums use `StrEnum` for JSON-friendly serialization. Key types:
 
-class NodeType(Enum):
-    ENTRY = "entry"
-    TASK = "task"
-    EXIT = "exit"
-
-class EdgeType(Enum):
-    UNCONDITIONAL = "unconditional"
-    CONDITIONAL = "conditional"
-    FORK = "fork"
-    JOIN = "join"
-
-class ContextMode(Enum):
-    HANDOFF = "handoff"
-    SESSION = "session"
-    NONE = "none"
-
-class ErrorPolicy(Enum):
-    PAUSE = "pause"
-    ABORT = "abort"
-    SKIP = "skip"
-
-class ParamType(Enum):
-    STRING = "string"
-    NUMBER = "number"
-    BOOL = "bool"
-
-@dataclass
-class Param:
-    name: str
-    type: ParamType
-    default: Optional[str | float | bool] = None
-
-@dataclass
-class Node:
-    name: str
-    node_type: NodeType
-    prompt: str
-    cwd: Optional[str] = None  # per-task working directory override
-    line: int = 0    # source location for error reporting
-    column: int = 0
-
-class OverlapPolicy(Enum):
-    SKIP = "skip"
-    QUEUE = "queue"
-    PARALLEL = "parallel"
-
-@dataclass
-class EdgeConfig:
-    context: Optional[ContextMode] = None  # None means "use flow default"
-    delay_seconds: Optional[int] = None    # fixed delay before target starts
-    schedule: Optional[str] = None         # cron expression — wait for next match
-
-@dataclass
-class Edge:
-    edge_type: EdgeType
-    # For unconditional/conditional: single source and target
-    source: Optional[str] = None
-    target: Optional[str] = None
-    # For fork: single source, multiple targets
-    fork_targets: Optional[list[str]] = None
-    # For join: multiple sources, single target
-    join_sources: Optional[list[str]] = None
-    # For conditional: the when-clause
-    condition: Optional[str] = None
-    # Configuration
-    config: EdgeConfig = field(default_factory=EdgeConfig)
-    line: int = 0
-    column: int = 0
-
-@dataclass
-class Flow:
-    name: str
-    budget_seconds: int
-    on_error: ErrorPolicy
-    context: ContextMode                     # flow-level default context mode
-    workspace: Optional[str] = None          # optional default cwd for tasks
-    schedule: Optional[str] = None           # cron expression for recurring runs
-    on_overlap: OverlapPolicy = OverlapPolicy.SKIP
-    params: list[Param] = field(default_factory=list)
-    nodes: dict[str, Node] = field(default_factory=dict)   # name -> Node
-    edges: list[Edge] = field(default_factory=list)
-```
+- **`NodeType`**: ENTRY, TASK, EXIT, WAIT, FENCE, ATOMIC
+- **`EdgeType`**: UNCONDITIONAL, CONDITIONAL, FORK, JOIN, FILE, AWAIT
+- **`ContextMode`**: HANDOFF, SESSION, NONE
+- **`ErrorPolicy`**: PAUSE, ABORT, SKIP
+- **`TaskTypeField`**: Represents a single field in `input {}` or `output {}` (name, type, optional default)
+- **`Node`**: name, node_type, prompt, cwd, judge (per-node override), wait_delay_seconds, wait_until_cron
+- **`EdgeConfig`**: context override, delay_seconds, schedule (cron)
+- **`Edge`**: edge_type, source, target, fork_targets (tuple), join_sources (tuple), condition, config
+- **`Flow`**: name, budget_seconds, on_error, context, workspace, schedule, on_overlap, skip_permissions, judge (default False), worktree (default True), input_fields (tuple of TaskTypeField), output_fields, max_parallel (default 1), nodes (dict), edges (tuple)
 
 ---
 
@@ -1618,11 +1562,12 @@ Judge failures are **never** automatically skipped because a wrong routing decis
 ```toml
 [server]
 host = "127.0.0.1"
-port = 8080
+port = 9090
 
 [execution]
 max_concurrent_tasks = 4
 default_budget = "1h"
+worktree_cleanup = true         # clean up git worktrees after run completes
 
 [judge]
 model = "sonnet"
@@ -1649,7 +1594,7 @@ This file can be placed at `~/.flowstate/config.toml` (global) or in the current
 # Parse and validate a flow file
 flowstate check myflow.flow
 
-# Start the web server
+# Start the web server (default port 9090)
 flowstate server
 
 # Start a flow run (also possible via web UI)
@@ -1674,6 +1619,8 @@ flowstate trigger <flow-name>
 
 ### Appendix A: Example Flows
 
+> All examples below use self-report routing (`judge = false`, the default). The task agent at each conditional node writes `DECISION.json` to choose the next transition. Add `judge = true` to the flow declaration to use a separate judge subprocess instead.
+
 #### A.1 Simple Linear Flow
 
 ```
@@ -1682,6 +1629,10 @@ flow setup_project {
     on_error = pause
     context = session
     workspace = "./new-project"
+
+    input {
+        description: string
+    }
 
     entry scaffold {
         prompt = """
@@ -1714,6 +1665,10 @@ flow full_test {
     on_error = pause
     context = handoff
     workspace = "./app"
+
+    input {
+        description: string
+    }
 
     entry analyze {
         prompt = "Read the codebase and identify what needs testing."
@@ -1752,7 +1707,9 @@ flow iterative_refactor {
     context = handoff
     workspace = "./legacy-app"
 
-    param target: string
+    input {
+        target: string
+    }
 
     entry plan {
         prompt = """
@@ -1796,7 +1753,9 @@ flow feature_development {
     context = handoff
     // No flow-level workspace — per-task cwd for multi-repo
 
-    param feature: string
+    input {
+        feature: string
+    }
 
     entry design {
         cwd = "./backend"
@@ -1854,6 +1813,10 @@ flow deploy_and_monitor {
     context = handoff
     workspace = "./app"
 
+    input {
+        description: string
+    }
+
     entry prepare {
         prompt = """
         Run the full test suite. If all tests pass, build the
@@ -1904,6 +1867,10 @@ flow weekly_audit {
     schedule = "0 9 * * MON"
     on_overlap = skip
 
+    input {
+        description: string = "Weekly dependency audit"
+    }
+
     entry scan {
         prompt = """
         Scan all dependencies for known vulnerabilities.
@@ -1936,13 +1903,16 @@ flow weekly_audit {
 | Infinite cycle despite budget | Low | Budget guard checks after every task completion |
 | Context window growth in `session` mode | Medium | Use `handoff` mode for cycles; `session` mode chains grow unboundedly |
 | Agent doesn't write SUMMARY.md | Medium | Prompt engineering: instruction is injected into every task prompt. Engine warns if missing on completion. |
+| Worktree creation fails (not a git repo) | Low | Engine silently skips worktree creation; tasks run in the original workspace. Logged as warning. |
+| Task queue starvation (disabled flow with queued tasks) | Low | UI shows disabled status clearly. Tasks remain queued and resume when flow is re-enabled. |
+| Cross-flow circular filing (A files B files A) | Medium | Depth counter on tasks prevents unbounded recursion. Engine should enforce a max depth limit. |
+| Self-report agent writes wrong DECISION.json | Medium | Same mitigation as judge: confidence threshold + user review on low confidence. |
 
 ### Appendix C: Future Enhancements (Post-MVP)
 
 - Per-task model and tool overrides
 - Nested sub-flows (a node that is itself a flow)
 - Visual DSL editor in the web UI (drag-and-drop)
-- Git-based workspace with per-task branches for parallel safety
 - Cost tracking integration (if Claude Code exposes API costs)
 - Flow templates and a library of reusable patterns
 - Webhook notifications (Slack, email) on flow events

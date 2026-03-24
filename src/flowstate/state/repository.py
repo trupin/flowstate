@@ -98,6 +98,25 @@ class FlowstateDB:
         """Close the database connection."""
         self._db.close()
 
+    def reset_all(self) -> None:
+        """Delete all rows from all tables. Used in tests only."""
+        tables = [
+            "task_logs",
+            "edge_transitions",
+            "fork_group_members",
+            "fork_groups",
+            "task_node_history",
+            "task_executions",
+            "flow_runs",
+            "tasks",
+            "flow_schedules",
+            "flow_enabled",
+            "flow_definitions",
+        ]
+        for table in tables:
+            self._conn.execute(f"DELETE FROM {table}")
+        self._conn.commit()
+
     def __enter__(self) -> "FlowstateDB":
         return self
 

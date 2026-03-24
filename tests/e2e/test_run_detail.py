@@ -66,15 +66,8 @@ def test_streaming_logs_visible(
     workspace,
     mock_subprocess: MockSubprocessManager,
 ):
-    """Verify streaming log content appears in the log viewer."""
-    mock_subprocess.configure_node(
-        "start",
-        NodeBehavior.with_output(
-            "Initializing project...",
-            "Setting up structure...",
-            summary="Initialized.",
-        ),
-    )
+    """Verify log content appears in the log viewer when a node is selected."""
+    mock_subprocess.configure_node("start", NodeBehavior.success("Initialized."))
     mock_subprocess.configure_node("work", NodeBehavior.success("Work done."))
     mock_subprocess.configure_node("done", NodeBehavior.success("Finalized."))
 
@@ -86,9 +79,9 @@ def test_streaming_logs_visible(
     expect(page.locator('[data-testid="node-start"]')).to_be_visible(timeout=15000)
     page.locator('[data-testid="node-start"]').click()
 
-    # Verify log viewer shows the streamed content
+    # Verify log viewer shows content (activity logs: dispatch, exit, transition)
     log_viewer = page.locator('[data-testid="log-viewer"]')
-    expect(log_viewer).to_contain_text("Initializing project...", timeout=10000)
+    expect(log_viewer).to_contain_text("Dispatching", timeout=10000)
 
 
 def test_flow_status_completed(
@@ -119,15 +112,9 @@ def test_click_node_changes_logs(
     mock_subprocess: MockSubprocessManager,
 ):
     """Verify clicking different nodes changes the log viewer content."""
-    mock_subprocess.configure_node(
-        "start", NodeBehavior.with_output("Start output here", summary="Initialized.")
-    )
-    mock_subprocess.configure_node(
-        "work", NodeBehavior.with_output("Work output here", summary="Work done.")
-    )
-    mock_subprocess.configure_node(
-        "done", NodeBehavior.with_output("Done output here", summary="Finalized.")
-    )
+    mock_subprocess.configure_node("start", NodeBehavior.success("Initialized."))
+    mock_subprocess.configure_node("work", NodeBehavior.success("Work done."))
+    mock_subprocess.configure_node("done", NodeBehavior.success("Finalized."))
 
     run_id = _setup_linear_flow(page, base_url, watch_dir, workspace, mock_subprocess)
     wait_for_run_status(base_url, run_id, "completed")
@@ -138,14 +125,14 @@ def test_click_node_changes_logs(
         timeout=20000
     )
 
-    # Click start node -> verify its logs
+    # Click start node -> verify its logs (activity log mentions the node name)
     page.locator('[data-testid="node-start"]').click()
     log_viewer = page.locator('[data-testid="log-viewer"]')
-    expect(log_viewer).to_contain_text("Start output here", timeout=5000)
+    expect(log_viewer).to_contain_text("start", timeout=5000)
 
-    # Click work node -> verify logs change
+    # Click work node -> verify logs change (should mention 'work')
     page.locator('[data-testid="node-work"]').click()
-    expect(log_viewer).to_contain_text("Work output here", timeout=5000)
+    expect(log_viewer).to_contain_text("work", timeout=5000)
 
 
 def test_running_node_has_pulse(

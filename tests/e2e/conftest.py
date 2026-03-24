@@ -150,7 +150,7 @@ def page(browser, base_url):
 
     Navigates to the base URL and provides a clean DOM context.
     """
-    ctx = browser.new_context(viewport={"width": 1920, "height": 1080})
+    ctx = browser.new_context(viewport={"width": 1280, "height": 800})
     p = ctx.new_page()
     p.goto(base_url)
     yield p
@@ -161,7 +161,7 @@ def page(browser, base_url):
 @pytest.fixture()
 def context(browser, base_url):
     """Create a BrowserContext (for tests that need context-level APIs like set_offline)."""
-    ctx = browser.new_context(viewport={"width": 1920, "height": 1080})
+    ctx = browser.new_context(viewport={"width": 1280, "height": 800})
     yield ctx
     ctx.close()
 

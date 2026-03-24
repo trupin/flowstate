@@ -769,7 +769,7 @@ def _history_to_response(h: TaskNodeHistoryRow) -> dict[str, Any]:
 async def submit_task(request: Request, flow_name: str, body: SubmitTaskRequest) -> dict[str, Any]:
     """Submit a task to a flow's queue."""
     registry: FlowRegistry = request.app.state.flow_registry
-    flow = registry.get_flow(flow_name)
+    flow = registry.get_flow(flow_name) or registry.get_flow_by_name(flow_name)
     if flow is None:
         raise FlowstateError(f"Flow '{flow_name}' not found", status_code=404)
 
@@ -897,3 +897,13 @@ async def reorder_tasks(
     db = _get_db(request)
     db.reorder_tasks(flow_name, body.task_ids)
     return {"status": "reordered"}
+
+
+@router.post("/_test/reset")
+async def test_reset(request: Request) -> dict[str, str]:
+    """Reset all database state. Only available when FLOWSTATE_TEST_MODE=1."""
+    if os.environ.get("FLOWSTATE_TEST_MODE") != "1":
+        raise FlowstateError("Test reset only available in test mode", status_code=403)
+    db = _get_db(request)
+    db.reset_all()
+    return {"status": "reset"}

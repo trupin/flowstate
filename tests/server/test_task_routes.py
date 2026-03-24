@@ -93,6 +93,9 @@ def _make_test_client(
         flows = {}
     mock_registry.list_flows.return_value = list(flows.values())
     mock_registry.get_flow.side_effect = lambda fid: flows.get(fid)
+    mock_registry.get_flow_by_name.side_effect = lambda name: next(
+        (f for f in flows.values() if f.name == name), None
+    )
     app.state.flow_registry = mock_registry
 
     # Mock or real DB

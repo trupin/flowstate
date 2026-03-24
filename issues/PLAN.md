@@ -205,7 +205,7 @@
 | ENGINE-032 | Atomic node — exclusive execution mutex                    | engine | P1       | DSL-009           | done   |
 | SERVER-012 | Task scheduling API + recurring task management           | server | P1       | STATE-008         | done   |
 | UI-034     | Task scheduling UI — datetime picker + cron input         | ui     | P1       | SERVER-012        | done   |
-| E2E-002    | Mocked integration test: unit test generation flow        | e2e    | P1       | —                 | todo   |
+| E2E-002    | Mocked integration test: unit test generation flow        | e2e    | P1       | —                 | done   |
 
 
 ---

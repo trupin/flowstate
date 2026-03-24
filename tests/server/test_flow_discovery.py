@@ -43,6 +43,10 @@ flow test_flow {
     context = handoff
     workspace = "./ws"
 
+    input {
+        description: string = "test"
+    }
+
     entry start {
         prompt = "hello"
     }
@@ -61,6 +65,10 @@ flow another_flow {
     on_error = abort
     context = none
     workspace = "./ws2"
+
+    input {
+        description: string = "test"
+    }
 
     entry begin {
         prompt = "begin"
@@ -106,6 +114,10 @@ flow broken {
     on_error = pause
     context = handoff
     workspace = "."
+
+    input {
+        description: string = "test"
+    }
 
     entry start {
         prompt = "hello"
@@ -431,6 +443,9 @@ def _make_test_app(
         flows = {}
     mock_registry.list_flows.return_value = list(flows.values())
     mock_registry.get_flow.side_effect = lambda fid: flows.get(fid)
+    mock_registry.get_flow_by_name.side_effect = lambda name: next(
+        (f for f in flows.values() if f.name == name), None
+    )
     app.state.flow_registry = mock_registry
 
     # Mock DB — flow endpoints now call db.is_flow_enabled

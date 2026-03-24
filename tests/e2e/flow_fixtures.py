@@ -24,6 +24,10 @@ flow linear_test {{
     context = handoff
     workspace = "{workspace}"
 
+    input {{
+        description: string = "test"
+    }}
+
     entry start {{
         prompt = "Initialize the project. Set up the basic structure."
     }}
@@ -47,6 +51,10 @@ flow fork_join_test {{
     on_error = pause
     context = handoff
     workspace = "{workspace}"
+
+    input {{
+        description: string = "test"
+    }}
 
     entry analyze {{
         prompt = "Analyze the codebase and create a plan."
@@ -74,7 +82,12 @@ flow conditional_test {{
     budget = 2h
     on_error = pause
     context = handoff
+    judge = true
     workspace = "{workspace}"
+
+    input {{
+        description: string = "test"
+    }}
 
     entry implement {{
         prompt = "Implement the requested changes."
@@ -99,7 +112,12 @@ flow cycle_test {{
     budget = 3h
     on_error = pause
     context = handoff
+    judge = true
     workspace = "{workspace}"
+
+    input {{
+        description: string = "test"
+    }}
 
     entry plan {{
         prompt = "Create an implementation plan."
@@ -131,8 +149,10 @@ flow parameterized_test {{
     context = handoff
     workspace = "{workspace}"
 
-    param focus: string = "all"
-    param verbose: bool = false
+    input {{
+        focus: string = "all"
+        verbose: bool = false
+    }}
 
     entry start {{
         prompt = "Analyze the codebase. Focus on: {{{{focus}}}}."
@@ -157,6 +177,10 @@ flow failing_task_test {{
     on_error = pause
     context = handoff
     workspace = "{workspace}"
+
+    input {{
+        description: string = "test"
+    }}
 
     entry start {{
         prompt = "Initialize the project."
@@ -186,6 +210,10 @@ flow missing_exit {{
     on_error = pause
     context = handoff
     workspace = "{workspace}"
+
+    input {{
+        description: string = "test"
+    }}
 
     entry start {{
         prompt = "This flow has no exit node."
