@@ -1,0 +1,110 @@
+flow unit_test_gen {
+    budget = 30m
+    on_error = pause
+    context = handoff
+    judge = false
+
+    input {
+        ticket_id: string
+        repo: string = "default-repo"
+    }
+
+    entry receive_ticket {
+        prompt = "Acknowledge ticket {{ticket_id}} and start analysis"
+    }
+
+    task analyze_code {
+        prompt = "Analyze code in {{repo}} for defects. Report findings."
+    }
+
+    task developer_decision {
+        prompt = "Developer reviews defects. Choose: fix, skip, or escalate."
+    }
+
+    task fix_defects {
+        prompt = "Fix the reported defects before generating tests."
+    }
+
+    task skip_and_continue {
+        prompt = "Skip defect fixes, proceed with test generation."
+    }
+
+    task escalate_defects {
+        prompt = "Log defects and escalate to code owner."
+    }
+
+    task generate_tests {
+        prompt = "Generate unit tests for the codebase."
+    }
+
+    task open_pr {
+        prompt = "Open a PR with the generated tests."
+    }
+
+    task auto_remediate_1 {
+        prompt = "Auto-remediation attempt 1/3: fix CI failures."
+    }
+
+    task auto_remediate_2 {
+        prompt = "Auto-remediation attempt 2/3: fix remaining CI failures."
+    }
+
+    task auto_remediate_3 {
+        prompt = "Auto-remediation attempt 3/3: final fix attempt."
+    }
+
+    task escalate_to_adapt {
+        prompt = "Escalate to ADAPT — could not fix CI after 3 attempts."
+    }
+
+    task pr_ready {
+        prompt = "PR is ready for review."
+    }
+
+    task approve_and_merge {
+        prompt = "Developer approves and merges the PR."
+    }
+
+    exit ticket_closed {
+        prompt = "Ticket is closed. Write final SUMMARY.md."
+    }
+
+    // Flow edges
+    receive_ticket -> analyze_code
+
+    // Defect detection
+    analyze_code -> generate_tests when "no defects found"
+    analyze_code -> developer_decision when "defects found"
+
+    // Developer decision routing
+    developer_decision -> fix_defects when "fix first"
+    developer_decision -> skip_and_continue when "skip fixes"
+    developer_decision -> escalate_defects when "escalate"
+
+    // All defect paths merge to generate_tests
+    fix_defects -> generate_tests
+    skip_and_continue -> generate_tests
+    escalate_defects -> generate_tests
+
+    // Test generation -> PR
+    generate_tests -> open_pr
+
+    // PR checks
+    open_pr -> pr_ready when "checks pass"
+    open_pr -> auto_remediate_1 when "checks fail"
+
+    // Retry loop
+    auto_remediate_1 -> pr_ready when "fixed"
+    auto_remediate_1 -> auto_remediate_2 when "not fixed"
+
+    auto_remediate_2 -> pr_ready when "fixed"
+    auto_remediate_2 -> auto_remediate_3 when "not fixed"
+
+    auto_remediate_3 -> pr_ready when "fixed"
+    auto_remediate_3 -> escalate_to_adapt when "not fixed"
+
+    // Final steps
+    escalate_to_adapt -> approve_and_merge
+    pr_ready -> approve_and_merge
+    approve_and_merge -> ticket_closed
+}
