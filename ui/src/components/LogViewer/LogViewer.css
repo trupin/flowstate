@@ -51,6 +51,74 @@
   color: var(--accent);
 }
 
+.log-viewer-details-btn.active {
+  background: var(--bg-tertiary);
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+/* --- Node details panel --- */
+
+.log-viewer-details {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 12px;
+  background: var(--bg-tertiary);
+  border-bottom: 1px solid var(--border);
+  font-size: 12px;
+}
+
+.log-viewer-details-type-badge {
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.8px;
+  opacity: 0.7;
+  padding: 1px 6px;
+  border-radius: 4px;
+  background: rgba(255, 255, 255, 0.1);
+}
+
+.log-viewer-details-elapsed {
+  font-size: 12px;
+  color: var(--text-secondary);
+}
+
+.log-viewer-details-dirs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+}
+
+.log-viewer-details-dir {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 4px;
+  font-family: var(--font-mono);
+  font-size: 11px;
+}
+
+.log-viewer-details-dir-label {
+  font-size: 9px;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  opacity: 0.6;
+  flex-shrink: 0;
+}
+
+.log-viewer-details-not-executed {
+  font-size: 11px;
+  font-style: italic;
+  color: var(--text-secondary);
+}
+
+.log-viewer-details-countdown {
+  font-size: 11px;
+  color: var(--text-secondary);
+}
+
 .log-viewer-content {
   flex: 1;
   overflow-y: auto;

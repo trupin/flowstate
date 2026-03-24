@@ -3,6 +3,7 @@ import { useParams } from 'react-router-dom';
 import { useFlowRun } from '../hooks/useFlowRun';
 import { GraphView } from '../components/GraphView';
 import { LogViewer } from '../components/LogViewer';
+import type { TaskExecutionInfo } from '../components/LogViewer';
 import { ControlPanel } from '../components/ControlPanel';
 import { OrchestratorConsole } from '../components/OrchestratorConsole';
 import { expandEdges } from '../utils/edges';
@@ -92,6 +93,20 @@ export function RunDetail() {
   const selectedLogs = selectedTaskExecution
     ? (logs.get(selectedTaskExecution.id) ?? [])
     : [];
+
+  // Build task execution info for the log viewer details panel
+  const taskExecutionInfo: TaskExecutionInfo | null = useMemo(() => {
+    if (!selectedTaskExecution) return null;
+    return {
+      nodeType: selectedTaskExecution.node_type,
+      elapsedSeconds: selectedTaskExecution.elapsed_seconds ?? null,
+      cwd: selectedTaskExecution.cwd || null,
+      taskDir: selectedTaskExecution.task_dir ?? null,
+      worktreeDir: (run as FlowRunDetailType | null)?.worktree_path ?? null,
+      status: selectedTaskExecution.status,
+      waitUntil: selectedTaskExecution.wait_until ?? null,
+    };
+  }, [selectedTaskExecution, run]);
 
   // Graph node/edge definitions from the flow
   const detail = run as FlowRunDetailType | null;
@@ -258,7 +273,11 @@ export function RunDetail() {
               isActive={run.status === 'running' || run.status === 'paused'}
             />
           ) : (
-            <LogViewer logs={selectedLogs} taskName={selectedTask} />
+            <LogViewer
+              logs={selectedLogs}
+              taskName={selectedTask}
+              taskExecution={taskExecutionInfo}
+            />
           )}
         </div>
       </div>

@@ -1,7 +1,5 @@
-import { useState, useEffect } from 'react';
 import { Handle, Position, type NodeProps, type Node } from '@xyflow/react';
 import type { TaskStatus } from '../api/types';
-import { ClickablePath } from './ClickablePath';
 import './NodePill.css';
 
 // --- Public data interface ---
@@ -22,60 +20,23 @@ export interface NodePillData {
 
 // --- Helpers ---
 
-function formatElapsed(seconds: number): string {
-  if (seconds < 60) return `${Math.round(seconds)}s`;
-  const mins = Math.floor(seconds / 60);
-  const secs = Math.round(seconds % 60);
-  return `${mins}m ${secs}s`;
-}
-
 function truncateName(name: string, maxLen = 24): string {
   if (name.length <= maxLen) return name;
   return name.slice(0, maxLen - 1) + '\u2026';
 }
 
-// --- Countdown timer for waiting nodes ---
-
-function CountdownTimer({ until }: { until: string }) {
-  const [remaining, setRemaining] = useState('');
-
-  useEffect(() => {
-    function update() {
-      const diff = new Date(until).getTime() - Date.now();
-      if (diff <= 0) {
-        setRemaining('ready');
-      } else {
-        const secs = Math.floor(diff / 1000);
-        const mins = Math.floor(secs / 60);
-        setRemaining(mins > 0 ? `${mins}m ${secs % 60}s` : `${secs}s`);
-      }
-    }
-
-    update();
-    const interval = setInterval(update, 1000);
-    return () => clearInterval(interval);
-  }, [until]);
-
-  return <span>{remaining}</span>;
-}
-
 // --- Node component ---
 
 export function NodePill({ data }: NodeProps<Node<NodePillData>>) {
-  const [expanded, setExpanded] = useState(false);
-
   const statusClass = `status-${data.status}`;
   const typeClass = `type-${data.nodeType}`;
 
   return (
     <div
-      className={`node-pill ${statusClass} ${typeClass} ${expanded ? 'expanded' : ''}`}
+      className={`node-pill ${statusClass} ${typeClass}`}
       data-testid={`node-${data.label}`}
       data-status={data.status}
-      onClick={() => {
-        setExpanded(!expanded);
-      }}
-      title={!expanded ? `${data.label} (${data.status})` : undefined}
+      title={`${data.label} (${data.status})`}
     >
       <Handle
         type="target"
@@ -83,61 +44,17 @@ export function NodePill({ data }: NodeProps<Node<NodePillData>>) {
         className="node-pill-handle"
       />
 
-      {/* Compact view (always visible) */}
       <div className="node-pill-compact">
         {data.nodeType !== 'task' && (
           <span className="node-pill-type-indicator">
             {data.nodeType === 'entry' ? '\u25B6' : '\u25A0'}
           </span>
         )}
-        <span className="node-pill-name">
-          {expanded ? data.label : truncateName(data.label)}
-        </span>
+        <span className="node-pill-name">{truncateName(data.label)}</span>
         {(data.generation ?? 1) > 1 && (
           <span className="node-pill-generation">x{data.generation}</span>
         )}
       </div>
-
-      {/* Expanded view (visible when expanded) */}
-      {expanded && (
-        <div className="node-pill-details">
-          <span className="node-pill-type-badge">{data.nodeType}</span>
-          {data.elapsedSeconds != null && (
-            <span className="node-pill-elapsed">
-              {formatElapsed(data.elapsedSeconds)}
-            </span>
-          )}
-          {data.hasExecution ? (
-            <div className="node-pill-dirs">
-              {data.cwd && (
-                <span className="node-pill-dir">
-                  <span className="node-pill-dir-label">cwd</span>
-                  <ClickablePath path={data.cwd} truncate={28} />
-                </span>
-              )}
-              {data.taskDir && (
-                <span className="node-pill-dir">
-                  <span className="node-pill-dir-label">task</span>
-                  <ClickablePath path={data.taskDir} truncate={28} />
-                </span>
-              )}
-              {data.worktreeDir && (
-                <span className="node-pill-dir">
-                  <span className="node-pill-dir-label">worktree</span>
-                  <ClickablePath path={data.worktreeDir} truncate={28} />
-                </span>
-              )}
-            </div>
-          ) : (
-            <span className="node-pill-not-executed">Not yet executed</span>
-          )}
-          {data.status === 'waiting' && data.waitUntil && (
-            <span className="node-pill-countdown">
-              <CountdownTimer until={data.waitUntil} />
-            </span>
-          )}
-        </div>
-      )}
 
       <Handle
         type="source"

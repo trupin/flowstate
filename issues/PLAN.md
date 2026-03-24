@@ -224,7 +224,7 @@
 
 | Issue  | Title                                                          | Domain | Priority | Depends On | Status |
 | ------ | -------------------------------------------------------------- | ------ | -------- | ---------- | ------ |
-| UI-035 | Move node details from expanded node pill to log viewer header | ui     | P1       | —          | todo   |
+| UI-035 | Move node details from expanded node pill to log viewer header | ui     | P1       | —          | done   |
 
 
 ---

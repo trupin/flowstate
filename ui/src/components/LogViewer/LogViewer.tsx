@@ -1,14 +1,28 @@
 import { useRef, useEffect, useState, useMemo } from 'react';
 import Markdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
-import type { LogEntry } from '../../api/types';
+import type { LogEntry, NodeType, TaskStatus } from '../../api/types';
+import { ClickablePath } from '../ClickablePath';
 import { ToolCallBlock } from './ToolCallBlock';
 import { CollapsibleSection } from './CollapsibleSection';
 import './LogViewer.css';
 
+// --- Task execution metadata for the details panel ---
+
+export interface TaskExecutionInfo {
+  nodeType: NodeType;
+  elapsedSeconds: number | null;
+  cwd: string | null;
+  taskDir: string | null;
+  worktreeDir: string | null;
+  status: TaskStatus;
+  waitUntil: string | null;
+}
+
 export interface LogViewerProps {
   logs: LogEntry[];
   taskName?: string | null;
+  taskExecution?: TaskExecutionInfo | null;
   onClear?: () => void;
 }
 
@@ -20,6 +34,95 @@ function formatTimestamp(iso: string): string {
     minute: '2-digit',
     second: '2-digit',
   });
+}
+
+// --- Helpers for the details panel ---
+
+function formatElapsed(seconds: number): string {
+  if (seconds < 60) return `${Math.round(seconds)}s`;
+  const mins = Math.floor(seconds / 60);
+  const secs = Math.round(seconds % 60);
+  return `${mins}m ${secs}s`;
+}
+
+function CountdownTimer({ until }: { until: string }) {
+  const [remaining, setRemaining] = useState('');
+
+  useEffect(() => {
+    function update() {
+      const diff = new Date(until).getTime() - Date.now();
+      if (diff <= 0) {
+        setRemaining('ready');
+      } else {
+        const secs = Math.floor(diff / 1000);
+        const mins = Math.floor(secs / 60);
+        setRemaining(mins > 0 ? `${mins}m ${secs % 60}s` : `${secs}s`);
+      }
+    }
+
+    update();
+    const interval = setInterval(update, 1000);
+    return () => clearInterval(interval);
+  }, [until]);
+
+  return <span>{remaining}</span>;
+}
+
+// --- Node details panel ---
+
+interface NodeDetailsPanelProps {
+  execution: TaskExecutionInfo;
+}
+
+function NodeDetailsPanel({ execution }: NodeDetailsPanelProps) {
+  const hasExecution =
+    execution.status !== 'pending' ||
+    execution.cwd != null ||
+    execution.taskDir != null;
+
+  return (
+    <div className="log-viewer-details">
+      <span className="log-viewer-details-type-badge">
+        {execution.nodeType}
+      </span>
+      {execution.elapsedSeconds != null && (
+        <span className="log-viewer-details-elapsed">
+          {formatElapsed(execution.elapsedSeconds)}
+        </span>
+      )}
+      {hasExecution ? (
+        <div className="log-viewer-details-dirs">
+          {execution.cwd && (
+            <span className="log-viewer-details-dir">
+              <span className="log-viewer-details-dir-label">cwd</span>
+              <ClickablePath path={execution.cwd} truncate={50} />
+            </span>
+          )}
+          {execution.taskDir && (
+            <span className="log-viewer-details-dir">
+              <span className="log-viewer-details-dir-label">task</span>
+              <ClickablePath path={execution.taskDir} truncate={50} />
+            </span>
+          )}
+          {execution.worktreeDir && (
+            <span className="log-viewer-details-dir">
+              <span className="log-viewer-details-dir-label">worktree</span>
+              <ClickablePath path={execution.worktreeDir} truncate={50} />
+            </span>
+          )}
+        </div>
+      ) : (
+        <span className="log-viewer-details-not-executed">
+          Not yet executed
+        </span>
+      )}
+      {execution.status === 'waiting' && execution.waitUntil && (
+        <span className="log-viewer-details-countdown">
+          Wait: <CountdownTimer until={execution.waitUntil} />
+        </span>
+      )}
+    </div>
+  );
 }
 
 // --- Parsed log entry types ---
@@ -533,10 +636,16 @@ function groupLogEntries(logs: LogEntry[]): GroupedEntry[] {
   return result;
 }
 
-export function LogViewer({ logs, taskName, onClear }: LogViewerProps) {
+export function LogViewer({
+  logs,
+  taskName,
+  taskExecution,
+  onClear,
+}: LogViewerProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const [pinned, setPinned] = useState(true);
   const [showAll, setShowAll] = useState(false);
+  const [showDetails, setShowDetails] = useState(false);
 
   const { filteredLogs, noiseCount } = useMemo(() => {
     const filtered: LogEntry[] = [];
@@ -566,10 +675,11 @@ export function LogViewer({ logs, taskName, onClear }: LogViewerProps) {
     }
   }, [groupedEntries, pinned]);
 
-  // Reset pin state when task changes
+  // Reset pin state and details when task changes
   useEffect(() => {
     setPinned(true);
     setShowAll(false);
+    setShowDetails(false);
   }, [taskName]);
 
   // Detect manual scroll-up to auto-unpin
@@ -595,6 +705,15 @@ export function LogViewer({ logs, taskName, onClear }: LogViewerProps) {
       <div className="log-viewer-header">
         <span className="log-viewer-title">{taskName}</span>
         <div className="log-viewer-controls">
+          {taskExecution && (
+            <button
+              className={`log-viewer-details-btn ${showDetails ? 'active' : ''}`}
+              onClick={() => setShowDetails((prev) => !prev)}
+              title={showDetails ? 'Hide node details' : 'Show node details'}
+            >
+              Details
+            </button>
+          )}
           {noiseCount > 0 && (
             <button
               className={`log-viewer-show-all ${showAll ? 'active' : ''}`}
@@ -627,6 +746,9 @@ export function LogViewer({ logs, taskName, onClear }: LogViewerProps) {
           </button>
         </div>
       </div>
+      {showDetails && taskExecution && (
+        <NodeDetailsPanel execution={taskExecution} />
+      )}
       <div
         className="log-viewer-content"
         ref={containerRef}
