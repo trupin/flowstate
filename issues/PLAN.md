@@ -216,7 +216,7 @@
 | DSL-011    | Add `harness` attribute to grammar, parser, and AST           | dsl    | P1       | —           | done        |
 | ENGINE-033 | Harness Protocol + HarnessManager                             | engine | P1       | DSL-011     | done        |
 | ENGINE-034 | ACP harness implementation (AcpHarness)                       | engine | P1       | ENGINE-033  | in_progress |
-| SERVER-013 | Harness config + server wiring                                | server | P1       | ENGINE-033  | in_progress |
+| SERVER-013 | Harness config + server wiring                                | server | P1       | ENGINE-033  | done        |
 
 
 ---
