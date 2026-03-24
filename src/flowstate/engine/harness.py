@@ -15,6 +15,9 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Protocol
 
+#: Default harness name — the Claude Code CLI (native protocol, not ACP).
+DEFAULT_HARNESS: str = "claude"
+
 if TYPE_CHECKING:
     from collections.abc import AsyncGenerator
 
@@ -97,7 +100,7 @@ class HarnessManager:
         default_harness: Harness,
         configs: dict[str, HarnessConfig] | None = None,
     ) -> None:
-        self._registry: dict[str, Harness] = {"claude": default_harness}
+        self._registry: dict[str, Harness] = {DEFAULT_HARNESS: default_harness}
         self._configs = configs or {}
 
     def get(self, name: str) -> Harness:

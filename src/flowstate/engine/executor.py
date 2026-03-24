@@ -45,7 +45,7 @@ from flowstate.engine.context import (
     resolve_cwd,
 )
 from flowstate.engine.events import EventType, FlowEvent
-from flowstate.engine.harness import HarnessManager
+from flowstate.engine.harness import DEFAULT_HARNESS, HarnessManager
 from flowstate.engine.judge import JudgeContext, JudgeDecision, JudgePauseError, JudgeProtocol
 from flowstate.engine.subprocess_mgr import StreamEventType, SubprocessManager
 from flowstate.engine.worktree import (
@@ -1471,7 +1471,7 @@ class FlowExecutor:
             task_exec = self._db.get_task_execution(task_id)
             if task_exec and task_exec.claude_session_id:
                 sid = task_exec.claude_session_id
-                harness_name = self._session_harness.get(sid, "claude")
+                harness_name = self._session_harness.get(sid, DEFAULT_HARNESS)
                 harness = self._harness_mgr.get(harness_name)
                 await harness.kill(sid)
             atask = self._running_tasks.get(task_id)
@@ -1944,6 +1944,7 @@ class FlowExecutor:
             f"\u25b6 Dispatching node '{node.name}' (generation {task_exec.generation})",
         )
 
+        session_id: str | None = None
         try:
             skip_perms = flow.skip_permissions
             session_id = task_exec.claude_session_id or str(uuid.uuid4())
@@ -2119,6 +2120,9 @@ class FlowExecutor:
                     )
                 )
         finally:
+            # Clean up session→harness tracking to prevent unbounded growth
+            if session_id is not None:
+                self._session_harness.pop(session_id, None)
             await completed_queue.put(task_execution_id)
 
     # ------------------------------------------------------------------ #

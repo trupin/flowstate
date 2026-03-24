@@ -253,6 +253,11 @@ def _get_db(request: Request) -> FlowstateDB:
     return request.app.state.db  # type: ignore[no-any-return]
 
 
+def _get_harness_mgr(request: Request) -> Any:
+    """Get the HarnessManager from app state, or None if not configured."""
+    return getattr(request.app.state, "harness_manager", None)
+
+
 @router.post("/flows/{flow_id}/runs", status_code=202)
 async def start_run(
     request: Request,
@@ -286,7 +291,7 @@ async def start_run(
     config = request.app.state.config
     subprocess_mgr = request.app.state.subprocess_manager
     ws_hub = request.app.state.ws_hub
-    harness_mgr = getattr(request.app.state, "harness_manager", None)
+    harness_mgr = _get_harness_mgr(request)
 
     executor = FlowExecutor(
         db=db,
@@ -713,7 +718,7 @@ async def trigger_schedule(request: Request, schedule_id: str) -> dict[str, str]
     config = request.app.state.config
     subprocess_mgr = request.app.state.subprocess_manager
     ws_hub = request.app.state.ws_hub
-    harness_mgr = getattr(request.app.state, "harness_manager", None)
+    harness_mgr = _get_harness_mgr(request)
 
     executor = FlowExecutor(
         db=db,

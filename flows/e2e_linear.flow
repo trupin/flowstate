@@ -1,32 +1,24 @@
 flow e2e_linear {
-    budget = 5m
+    budget = 10m
     on_error = pause
     context = handoff
-    workspace = "/tmp/flowstate-e2e-linear"
     skip_permissions = true
+    workspace = "/tmp/flowstate-e2e-linear"
 
     input {
-        task_name: string = "default"
+        description: string = "E2E linear test"
     }
+
     entry start {
-        prompt = """
-        Create a file called hello.txt with the text "Hello from Flowstate E2E test".
-        That is the only thing you need to do.
-        """
+        prompt = "Create a file called HELLO.txt containing 'Hello from Flowstate'. Then write SUMMARY.md."
     }
 
     task process {
-        prompt = """
-        Read hello.txt and create a file called result.txt containing
-        the contents of hello.txt converted to uppercase.
-        """
+        prompt = "Read HELLO.txt and append ' - processed' to it. Then write SUMMARY.md."
     }
 
     exit done {
-        prompt = """
-        Read result.txt and verify it contains uppercase text.
-        Write SUMMARY.md confirming the test passed.
-        """
+        prompt = "Read HELLO.txt, confirm it contains 'processed', and write a final SUMMARY.md."
     }
 
     start -> process

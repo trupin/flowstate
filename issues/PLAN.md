@@ -215,8 +215,16 @@
 | ---------- | ------------------------------------------------------------- | ------ | -------- | ----------- | ------ |
 | DSL-011    | Add `harness` attribute to grammar, parser, and AST           | dsl    | P1       | —           | done        |
 | ENGINE-033 | Harness Protocol + HarnessManager                             | engine | P1       | DSL-011     | done        |
-| ENGINE-034 | ACP harness implementation (AcpHarness)                       | engine | P1       | ENGINE-033  | in_progress |
+| ENGINE-034 | ACP harness implementation (AcpHarness)                       | engine | P1       | ENGINE-033  | done        |
 | SERVER-013 | Harness config + server wiring                                | server | P1       | ENGINE-033  | done        |
+
+
+### Phase 12 — UI Improvements
+
+
+| Issue  | Title                                                          | Domain | Priority | Depends On | Status |
+| ------ | -------------------------------------------------------------- | ------ | -------- | ---------- | ------ |
+| UI-035 | Move node details from expanded node pill to log viewer header | ui     | P1       | —          | todo   |
 
 
 ---
