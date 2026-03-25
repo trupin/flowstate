@@ -24,6 +24,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import os
 from typing import TYPE_CHECKING, Any
 
 from flowstate.engine.subprocess_mgr import (
@@ -38,10 +39,79 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
+# Timeout for ACP connection initialization (subprocess startup + handshake)
+_ACP_INIT_TIMEOUT = 30.0
+# Timeout for session creation/load after connection is initialized
+_ACP_SESSION_TIMEOUT = 15.0
+
+# Environment variables that must be inherited by the subprocess.
+# The ACP library's default_environment() only passes HOME, PATH, SHELL, TERM,
+# USER, LOGNAME on POSIX — stripping ANTHROPIC_API_KEY and config paths.
+_REQUIRED_ENV_VARS = (
+    "ANTHROPIC_API_KEY",
+    "CLAUDE_CONFIG_DIR",
+    "XDG_CONFIG_HOME",
+)
+
+
+def _build_subprocess_env(extra_env: dict[str, str] | None = None) -> dict[str, str] | None:
+    """Build subprocess env that includes critical variables from os.environ.
+
+    Returns a dict to merge into ACP's default_environment(), or None if no
+    extra variables are needed (lets ACP use its defaults only).
+    """
+    env: dict[str, str] = {}
+    for key in _REQUIRED_ENV_VARS:
+        value = os.environ.get(key)
+        if value is not None:
+            env[key] = value
+    if extra_env:
+        env.update(extra_env)
+    return env or None
+
 
 # ---------------------------------------------------------------------------
 # ACP update -> StreamEvent mapping
 # ---------------------------------------------------------------------------
+
+
+def _extract_tool_call_content_text(content_list: list[Any] | None) -> str | None:
+    """Extract human-readable text from an ACP ToolCall content list.
+
+    Iterates over ``ContentToolCallContent``, ``FileEditToolCallContent``, and
+    ``TerminalToolCallContent`` items and returns a concatenated text summary.
+    Returns ``None`` if the content list is empty or contains no text.
+    """
+    if not content_list:
+        return None
+    parts: list[str] = []
+    for item in content_list:
+        # ContentToolCallContent wraps a content block (text, image, etc.)
+        if hasattr(item, "content") and hasattr(item.content, "text"):
+            parts.append(item.content.text)
+        elif hasattr(item, "new_text"):
+            # FileEditToolCallContent (Diff) -- show edited content
+            parts.append(item.new_text)
+        elif hasattr(item, "terminal_id"):
+            # TerminalToolCallContent -- just note the terminal
+            parts.append(f"[terminal:{item.terminal_id}]")
+    return "\n".join(parts) if parts else None
+
+
+def _serialize_raw_io(value: object) -> str | None:
+    """Best-effort serialization of raw_input / raw_output from ACP.
+
+    Returns a string representation, or ``None`` if the value is missing/empty.
+    """
+    if value is None:
+        return None
+    if isinstance(value, str):
+        return value if value else None
+    try:
+        serialized = json.dumps(value, default=str)
+        return serialized if serialized not in ("null", "{}") else None
+    except (TypeError, ValueError):
+        return str(value) or None
 
 
 def _map_acp_update_to_stream_event(update: object) -> StreamEvent | None:
@@ -85,41 +155,49 @@ def _map_acp_update_to_stream_event(update: object) -> StreamEvent | None:
         )
 
     if isinstance(update, ToolCallStart):
+        content_text = _extract_tool_call_content_text(getattr(update, "content", None))
+        raw_input = _serialize_raw_io(getattr(update, "raw_input", None))
+        kind = getattr(update, "kind", None)
+        payload: dict[str, Any] = {
+            "type": "tool_use",
+            "tool_call_id": update.tool_call_id,
+            "title": update.title,
+            "status": update.status,
+        }
+        if kind is not None:
+            payload["kind"] = kind
+        if raw_input is not None:
+            payload["raw_input"] = raw_input
+        if content_text is not None:
+            payload["content"] = content_text
         return StreamEvent(
             type=StreamEventType.TOOL_USE,
-            content={
-                "type": "tool_use",
-                "tool_call_id": update.tool_call_id,
-                "title": update.title,
-                "status": update.status,
-            },
-            raw=json.dumps(
-                {
-                    "type": "tool_use",
-                    "tool_call_id": update.tool_call_id,
-                    "title": update.title,
-                    "status": update.status,
-                }
-            ),
+            content=payload,
+            raw=json.dumps(payload),
         )
 
     if isinstance(update, ToolCallProgress):
+        content_text = _extract_tool_call_content_text(getattr(update, "content", None))
+        raw_output = _serialize_raw_io(getattr(update, "raw_output", None))
+        kind = getattr(update, "kind", None)
+        title = getattr(update, "title", None)
+        status = getattr(update, "status", None)
+        payload = {
+            "type": "tool_result",
+            "tool_call_id": update.tool_call_id,
+            "status": status,
+            "title": title,
+        }
+        if kind is not None:
+            payload["kind"] = kind
+        if raw_output is not None:
+            payload["raw_output"] = raw_output
+        if content_text is not None:
+            payload["content"] = content_text
         return StreamEvent(
             type=StreamEventType.TOOL_RESULT,
-            content={
-                "type": "tool_result",
-                "tool_call_id": update.tool_call_id,
-                "status": update.status,
-                "title": update.title,
-            },
-            raw=json.dumps(
-                {
-                    "type": "tool_result",
-                    "tool_call_id": update.tool_call_id,
-                    "status": update.status,
-                    "title": update.title,
-                }
-            ),
+            content=payload,
+            raw=json.dumps(payload),
         )
 
     if isinstance(update, AgentPlanUpdate):
@@ -162,10 +240,42 @@ class _AcpBridgeClient:
         update: Any,
         **kwargs: Any,
     ) -> None:
-        """Map an ACP session update to a StreamEvent and enqueue it."""
-        event = _map_acp_update_to_stream_event(update)
-        if event is not None:
-            self._queue.put_nowait(event)
+        """Map an ACP session update to a StreamEvent and enqueue it.
+
+        Wraps in try/except because the ACP library's notification dispatcher
+        uses ``contextlib.suppress(Exception)`` which silently swallows errors.
+        """
+        try:
+            update_type = type(update).__name__
+            # Log every event for debugging ACP bridge issues.  Include key
+            # fields that help diagnose missing-content problems.
+            if logger.isEnabledFor(logging.DEBUG):
+                detail_parts = [f"type={update_type}"]
+                if hasattr(update, "tool_call_id"):
+                    detail_parts.append(f"tool_call_id={update.tool_call_id}")
+                if hasattr(update, "title"):
+                    detail_parts.append(f"title={update.title!r}")
+                if hasattr(update, "status"):
+                    detail_parts.append(f"status={update.status}")
+                if hasattr(update, "kind"):
+                    detail_parts.append(f"kind={update.kind}")
+                has_content = hasattr(update, "content") and update.content is not None
+                detail_parts.append(f"has_content={has_content}")
+                has_raw_output = hasattr(update, "raw_output") and update.raw_output is not None
+                detail_parts.append(f"has_raw_output={has_raw_output}")
+                has_raw_input = hasattr(update, "raw_input") and update.raw_input is not None
+                detail_parts.append(f"has_raw_input={has_raw_input}")
+                logger.debug(
+                    "ACP session_update [%s]: %s",
+                    session_id,
+                    ", ".join(detail_parts),
+                )
+            event = _map_acp_update_to_stream_event(update)
+            if event is not None:
+                self._queue.put_nowait(event)
+        except Exception:
+            logger.exception("Error in session_update for session %s", session_id)
+            raise
 
     async def request_permission(
         self,
@@ -372,18 +482,43 @@ class AcpHarness:
             bridge,
             cmd_name,
             *cmd_args,
-            env=self._env,
+            env=_build_subprocess_env(self._env),
             cwd=workspace,
         )
         conn, process = await ctx.__aenter__()
         self._spawn_contexts[session_id] = ctx
 
         try:
-            # Initialize ACP connection
-            await conn.initialize(protocol_version=PROTOCOL_VERSION)
+            # Health check: verify subprocess didn't exit immediately
+            await asyncio.sleep(0.1)
+            if process.returncode is not None:
+                raise AcpSessionError(
+                    f"ACP subprocess exited immediately with code {process.returncode}. "
+                    f"Command: {self._command}"
+                )
 
-            # Create new session
-            new_resp = await conn.new_session(cwd=workspace)
+            # Initialize ACP connection (with timeout)
+            try:
+                await asyncio.wait_for(
+                    conn.initialize(protocol_version=PROTOCOL_VERSION),
+                    timeout=_ACP_INIT_TIMEOUT,
+                )
+            except TimeoutError:
+                raise AcpSessionError(
+                    f"ACP initialize timed out after {_ACP_INIT_TIMEOUT}s — "
+                    f"subprocess may not support ACP protocol"
+                ) from None
+
+            # Create new session (with timeout)
+            try:
+                new_resp = await asyncio.wait_for(
+                    conn.new_session(cwd=workspace),
+                    timeout=_ACP_SESSION_TIMEOUT,
+                )
+            except TimeoutError:
+                raise AcpSessionError(
+                    f"ACP new_session timed out after {_ACP_SESSION_TIMEOUT}s"
+                ) from None
             acp_session_id = new_resp.session_id
 
             session = _AcpSession(
@@ -642,7 +777,7 @@ class AcpHarness:
                 bridge,
                 cmd_name,
                 *cmd_args,
-                env=self._env,
+                env=_build_subprocess_env(self._env),
                 cwd=workspace,
             ) as (conn, process):
                 # Track for kill()
@@ -656,20 +791,43 @@ class AcpHarness:
                 self._sessions[session_id] = acp_session
 
                 try:
-                    # Initialize the connection
-                    await conn.initialize(protocol_version=PROTOCOL_VERSION)
+                    # Health check: verify subprocess didn't exit immediately
+                    await asyncio.sleep(0.1)
+                    if process.returncode is not None:
+                        raise AcpSessionError(
+                            f"ACP subprocess exited immediately with code "
+                            f"{process.returncode}. Command: {self._command}"
+                        )
+
+                    # Initialize the connection (with timeout)
+                    try:
+                        await asyncio.wait_for(
+                            conn.initialize(protocol_version=PROTOCOL_VERSION),
+                            timeout=_ACP_INIT_TIMEOUT,
+                        )
+                    except TimeoutError:
+                        raise AcpSessionError(
+                            f"ACP initialize timed out after {_ACP_INIT_TIMEOUT}s — "
+                            f"subprocess may not support ACP protocol"
+                        ) from None
 
                     # Create or load session
                     acp_session_id: str
                     if resume:
                         try:
-                            resp = await conn.load_session(cwd=workspace, session_id=session_id)
+                            resp = await asyncio.wait_for(
+                                conn.load_session(cwd=workspace, session_id=session_id),
+                                timeout=_ACP_SESSION_TIMEOUT,
+                            )
                             # load_session may return None on some agents
                             if resp is not None:
                                 acp_session_id = session_id
                             else:
                                 # Agent returned None -- fall back to new session
-                                new_resp = await conn.new_session(cwd=workspace)
+                                new_resp = await asyncio.wait_for(
+                                    conn.new_session(cwd=workspace),
+                                    timeout=_ACP_SESSION_TIMEOUT,
+                                )
                                 acp_session_id = new_resp.session_id
                         except RequestError as e:
                             if e.code == _METHOD_NOT_FOUND_CODE:
@@ -678,12 +836,27 @@ class AcpHarness:
                                     "Agent does not support session/load, "
                                     "falling back to new session"
                                 )
-                                new_resp = await conn.new_session(cwd=workspace)
+                                new_resp = await asyncio.wait_for(
+                                    conn.new_session(cwd=workspace),
+                                    timeout=_ACP_SESSION_TIMEOUT,
+                                )
                                 acp_session_id = new_resp.session_id
                             else:
                                 raise
+                        except TimeoutError:
+                            raise AcpSessionError(
+                                f"ACP session load/create timed out after {_ACP_SESSION_TIMEOUT}s"
+                            ) from None
                     else:
-                        new_resp = await conn.new_session(cwd=workspace)
+                        try:
+                            new_resp = await asyncio.wait_for(
+                                conn.new_session(cwd=workspace),
+                                timeout=_ACP_SESSION_TIMEOUT,
+                            )
+                        except TimeoutError:
+                            raise AcpSessionError(
+                                f"ACP new_session timed out after {_ACP_SESSION_TIMEOUT}s"
+                            ) from None
                         acp_session_id = new_resp.session_id
 
                     # Update the session's ACP session ID

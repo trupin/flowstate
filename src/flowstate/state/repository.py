@@ -1264,6 +1264,14 @@ class FlowstateDB:
         )
         return [AgentSubtaskRow(**dict(r)) for r in rows]
 
+    def count_agent_subtasks(self, task_execution_id: str) -> int:
+        """Return the number of subtasks for a task execution."""
+        row = self._fetchone(
+            "SELECT COUNT(*) AS cnt FROM agent_subtasks WHERE task_execution_id = ?",
+            (task_execution_id,),
+        )
+        return int(row["cnt"]) if row else 0
+
     def update_agent_subtask(self, subtask_id: str, status: str) -> AgentSubtaskRow | None:
         """Update the status of an agent subtask.
 

@@ -268,6 +268,19 @@
 | UI-041     | Display `subtasks` attribute in flow settings panel       | ui     | P1       | —          | done   |
 
 
+### Phase 16 — E2E Bug Fixes
+
+
+| Issue      | Title                                                     | Domain | Priority | Depends On  | Status |
+| ---------- | --------------------------------------------------------- | ------ | -------- | ----------- | ------ |
+| ENGINE-044 | AcpHarness silent stall — env, timeouts, logging          | engine | P1       | —           | done   |
+| ENGINE-045 | Default harness uses wrong command (needs claude-agent-acp)| engine | P0       | ENGINE-044  | done   |
+| ENGINE-046 | Cancel does not stop AcpHarness subprocess                | engine | P1       | ENGINE-045  | done   |
+| ENGINE-047 | judge=false not respected — judge still invoked            | engine | P2       | —           | done   |
+| ENGINE-048 | QueueManager missing server_base_url — subtasks not injected | engine | P1    | —           | done   |
+| ENGINE-049 | ACP bridge "Tool completed" instead of real log content   | engine | P1       | ENGINE-045  | done   |
+
+
 ---
 
 ## Cross-Domain Coordination

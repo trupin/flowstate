@@ -22,7 +22,9 @@ import pytest
 from flowstate.engine.acp_client import (
     AcpHarness,
     _AcpBridgeClient,
+    _extract_tool_call_content_text,
     _map_acp_update_to_stream_event,
+    _serialize_raw_io,
 )
 from flowstate.engine.subprocess_mgr import (
     JudgeError,
@@ -66,7 +68,14 @@ def _make_agent_thought_chunk(text: str) -> MagicMock:
     return chunk
 
 
-def _make_tool_call_start(tool_call_id: str, title: str) -> MagicMock:
+def _make_tool_call_start(
+    tool_call_id: str,
+    title: str,
+    *,
+    kind: str | None = None,
+    raw_input: object = None,
+    content: list[Any] | None = None,
+) -> MagicMock:
     """Create a mock ToolCallStart."""
     from acp.schema import ToolCallStart
 
@@ -75,12 +84,22 @@ def _make_tool_call_start(tool_call_id: str, title: str) -> MagicMock:
     update.title = title
     update.status = "in_progress"
     update.session_update = "tool_call"
+    update.kind = kind
+    update.raw_input = raw_input
+    update.raw_output = None
+    update.content = content
     update.__class__ = ToolCallStart
     return update
 
 
 def _make_tool_call_progress(
-    tool_call_id: str, title: str | None = None, status: str = "completed"
+    tool_call_id: str,
+    title: str | None = None,
+    status: str = "completed",
+    *,
+    kind: str | None = None,
+    raw_output: object = None,
+    content: list[Any] | None = None,
 ) -> MagicMock:
     """Create a mock ToolCallProgress (tool_call_update)."""
     from acp.schema import ToolCallProgress
@@ -90,6 +109,10 @@ def _make_tool_call_progress(
     update.title = title
     update.status = status
     update.session_update = "tool_call_update"
+    update.kind = kind
+    update.raw_input = None
+    update.raw_output = raw_output
+    update.content = content
     update.__class__ = ToolCallProgress
     return update
 
@@ -123,6 +146,70 @@ def _make_new_session_response(session_id: str = "acp-sess-1") -> MagicMock:
     resp = MagicMock()
     resp.session_id = session_id
     return resp
+
+
+# ---------------------------------------------------------------------------
+# Tests: Helper functions
+# ---------------------------------------------------------------------------
+
+
+class TestExtractToolCallContentText:
+    """Test _extract_tool_call_content_text for various content types."""
+
+    def test_none_returns_none(self) -> None:
+        assert _extract_tool_call_content_text(None) is None
+
+    def test_empty_list_returns_none(self) -> None:
+        assert _extract_tool_call_content_text([]) is None
+
+    def test_content_with_text(self) -> None:
+        item = MagicMock()
+        item.content = MagicMock()
+        item.content.text = "Hello world"
+        assert _extract_tool_call_content_text([item]) == "Hello world"
+
+    def test_multiple_content_items_joined(self) -> None:
+        item1 = MagicMock()
+        item1.content = MagicMock()
+        item1.content.text = "Line 1"
+        item2 = MagicMock()
+        item2.content = MagicMock()
+        item2.content.text = "Line 2"
+        assert _extract_tool_call_content_text([item1, item2]) == "Line 1\nLine 2"
+
+    def test_diff_item_uses_new_text(self) -> None:
+        item = MagicMock(spec=[])
+        item.new_text = "new content"
+        assert _extract_tool_call_content_text([item]) == "new content"
+
+    def test_terminal_item(self) -> None:
+        item = MagicMock(spec=[])
+        item.terminal_id = "term-123"
+        assert _extract_tool_call_content_text([item]) == "[terminal:term-123]"
+
+
+class TestSerializeRawIo:
+    """Test _serialize_raw_io for various input types."""
+
+    def test_none_returns_none(self) -> None:
+        assert _serialize_raw_io(None) is None
+
+    def test_empty_string_returns_none(self) -> None:
+        assert _serialize_raw_io("") is None
+
+    def test_nonempty_string_returns_string(self) -> None:
+        assert _serialize_raw_io("hello") == "hello"
+
+    def test_dict_returns_json(self) -> None:
+        result = _serialize_raw_io({"key": "value"})
+        assert result == '{"key": "value"}'
+
+    def test_empty_dict_returns_none(self) -> None:
+        assert _serialize_raw_io({}) is None
+
+    def test_list_returns_json(self) -> None:
+        result = _serialize_raw_io([1, 2, 3])
+        assert result == "[1, 2, 3]"
 
 
 # ---------------------------------------------------------------------------
@@ -206,6 +293,113 @@ class TestAcpEventMapping:
         event = _map_acp_update_to_stream_event(update)
         assert event is not None
         assert event.content["entries"] == []
+
+    def test_tool_call_start_includes_kind_and_raw_input(self) -> None:
+        """ToolCallStart includes kind and raw_input when present."""
+        update = _make_tool_call_start(
+            "tc-2",
+            "Bash: ls -la",
+            kind="execute",
+            raw_input={"command": "ls -la"},
+        )
+        event = _map_acp_update_to_stream_event(update)
+
+        assert event is not None
+        assert event.type == StreamEventType.TOOL_USE
+        assert event.content["kind"] == "execute"
+        assert event.content["raw_input"] == '{"command": "ls -la"}'
+
+    def test_tool_call_start_omits_none_optional_fields(self) -> None:
+        """ToolCallStart without kind/raw_input does not include those keys."""
+        update = _make_tool_call_start("tc-3", "Read file")
+        event = _map_acp_update_to_stream_event(update)
+
+        assert event is not None
+        assert "kind" not in event.content
+        assert "raw_input" not in event.content
+        assert "content" not in event.content
+
+    def test_tool_call_start_with_content(self) -> None:
+        """ToolCallStart includes text content when content blocks are present."""
+        content_item = MagicMock()
+        content_item.content = MagicMock()
+        content_item.content.text = "file contents here"
+        update = _make_tool_call_start("tc-4", "Read foo.py", content=[content_item])
+        event = _map_acp_update_to_stream_event(update)
+
+        assert event is not None
+        assert event.content["content"] == "file contents here"
+
+    def test_tool_call_progress_includes_content_text(self) -> None:
+        """ToolCallProgress includes extracted content text when present."""
+        content_item = MagicMock()
+        content_item.content = MagicMock()
+        content_item.content.text = "total 42\ndrwxr-xr-x 5 user staff 160 Jan 1 00:00 ."
+        update = _make_tool_call_progress(
+            "tc-1",
+            "Bash: ls -la",
+            "completed",
+            content=[content_item],
+        )
+        event = _map_acp_update_to_stream_event(update)
+
+        assert event is not None
+        assert event.type == StreamEventType.TOOL_RESULT
+        assert "total 42" in event.content["content"]
+
+    def test_tool_call_progress_includes_raw_output(self) -> None:
+        """ToolCallProgress includes raw_output when present."""
+        update = _make_tool_call_progress(
+            "tc-5",
+            "Bash: echo hello",
+            "completed",
+            raw_output="hello\n",
+        )
+        event = _map_acp_update_to_stream_event(update)
+
+        assert event is not None
+        assert event.content["raw_output"] == "hello\n"
+
+    def test_tool_call_progress_includes_kind(self) -> None:
+        """ToolCallProgress includes kind when present."""
+        update = _make_tool_call_progress(
+            "tc-6",
+            "Read main.py",
+            "completed",
+            kind="read",
+        )
+        event = _map_acp_update_to_stream_event(update)
+
+        assert event is not None
+        assert event.content["kind"] == "read"
+
+    def test_tool_call_progress_omits_none_optional_fields(self) -> None:
+        """ToolCallProgress without optional fields does not include them."""
+        update = _make_tool_call_progress("tc-7", "Edit file", "completed")
+        event = _map_acp_update_to_stream_event(update)
+
+        assert event is not None
+        assert "kind" not in event.content
+        assert "raw_output" not in event.content
+        assert "content" not in event.content
+
+    def test_tool_call_progress_with_diff_content(self) -> None:
+        """ToolCallProgress with FileEditToolCallContent extracts new_text."""
+        diff_item = MagicMock()
+        # Simulate a diff item that has new_text but NOT content.text
+        diff_item.content = None  # No nested text content
+        del diff_item.content  # Remove .content entirely
+        diff_item.new_text = "def hello():\n    return 'world'\n"
+        update = _make_tool_call_progress(
+            "tc-8",
+            "Edit main.py",
+            "completed",
+            content=[diff_item],
+        )
+        event = _map_acp_update_to_stream_event(update)
+
+        assert event is not None
+        assert "def hello():" in event.content["content"]
 
 
 # ---------------------------------------------------------------------------
@@ -316,7 +510,7 @@ def _make_mock_spawn_context(
     process.terminate = MagicMock()
     process.kill = MagicMock()
     process.wait = AsyncMock()
-    process.returncode = 0
+    process.returncode = None  # Process is alive (not yet exited)
 
     # The prompt() method will trigger session_update callbacks on the bridge
     # before returning.
@@ -1085,3 +1279,135 @@ class TestAcpHarnessRunTaskConvenience:
         assert events[0].type == StreamEventType.ASSISTANT
         assert events[1].type == StreamEventType.RESULT
         assert events[2].type == StreamEventType.SYSTEM
+
+
+# ---------------------------------------------------------------------------
+# ENGINE-044: Environment, timeouts, and health check tests
+# ---------------------------------------------------------------------------
+
+
+class TestAcpHarnessEnvironment:
+    """Verify subprocess environment includes critical variables."""
+
+    @pytest.mark.asyncio
+    async def test_env_includes_api_key(self) -> None:
+        """_build_subprocess_env includes ANTHROPIC_API_KEY from os.environ."""
+        from flowstate.engine.acp_client import _build_subprocess_env
+
+        with patch.dict("os.environ", {"ANTHROPIC_API_KEY": "sk-test-key"}, clear=False):
+            env = _build_subprocess_env(None)
+        assert env is not None
+        assert env["ANTHROPIC_API_KEY"] == "sk-test-key"
+
+    @pytest.mark.asyncio
+    async def test_env_merges_with_harness_env(self) -> None:
+        """_build_subprocess_env merges harness-provided env with required vars."""
+        from flowstate.engine.acp_client import _build_subprocess_env
+
+        with patch.dict("os.environ", {"ANTHROPIC_API_KEY": "sk-test-key"}, clear=False):
+            env = _build_subprocess_env({"CUSTOM_VAR": "custom"})
+        assert env is not None
+        assert env["ANTHROPIC_API_KEY"] == "sk-test-key"
+        assert env["CUSTOM_VAR"] == "custom"
+
+    @pytest.mark.asyncio
+    async def test_env_returns_none_when_no_vars(self) -> None:
+        """_build_subprocess_env returns None when no vars are present."""
+        from flowstate.engine.acp_client import _build_subprocess_env
+
+        with patch.dict(
+            "os.environ",
+            {},
+            clear=True,
+        ):
+            # Restore PATH to avoid breaking things
+            env = _build_subprocess_env(None)
+        assert env is None
+
+
+class TestAcpHarnessHealthCheck:
+    """Verify subprocess health checks detect immediate exits."""
+
+    @pytest.mark.asyncio
+    async def test_start_session_immediate_exit(self) -> None:
+        """start_session raises AcpSessionError if subprocess exits immediately."""
+        from flowstate.engine.acp_client import AcpSessionError
+
+        mock_ctx, _conn, process, _bridge = _make_mock_spawn_for_session()
+        # Simulate immediate exit
+        process.returncode = 1
+
+        harness = AcpHarness(command=["bad-agent"])
+
+        with (
+            patch("acp.spawn_agent_process", mock_ctx),
+            pytest.raises(AcpSessionError, match="exited immediately"),
+        ):
+            await harness.start_session("/workspace", "sess-dead")
+
+    @pytest.mark.asyncio
+    async def test_run_task_immediate_exit(self) -> None:
+        """run_task yields error events if subprocess exits immediately."""
+        mock_ctx, _conn, process = _make_mock_spawn_context()
+        # Simulate immediate exit
+        process.returncode = 1
+
+        harness = AcpHarness(command=["bad-agent"])
+
+        with patch("acp.spawn_agent_process", mock_ctx):
+            events = []
+            async for event in harness.run_task("Test", "/workspace", "sess-dead"):
+                events.append(event)
+
+        # Should get an ERROR event and a SYSTEM exit event
+        assert any(e.type == StreamEventType.ERROR for e in events)
+
+
+class TestAcpHarnessTimeouts:
+    """Verify timeouts prevent infinite hangs on ACP RPC calls."""
+
+    @pytest.mark.asyncio
+    async def test_start_session_initialize_timeout(self) -> None:
+        """start_session raises AcpSessionError when initialize() hangs."""
+        from flowstate.engine.acp_client import AcpSessionError
+
+        mock_ctx, conn, _process, _bridge = _make_mock_spawn_for_session()
+
+        # Make initialize() hang forever
+        async def hang_forever(**kw: Any) -> None:
+            await asyncio.Event().wait()
+
+        conn.initialize = AsyncMock(side_effect=hang_forever)
+
+        harness = AcpHarness(command=["slow-agent"])
+
+        with (
+            patch("acp.spawn_agent_process", mock_ctx),
+            patch("flowstate.engine.acp_client._ACP_INIT_TIMEOUT", 0.1),
+            pytest.raises(AcpSessionError, match="initialize timed out"),
+        ):
+            await harness.start_session("/workspace", "sess-timeout")
+
+    @pytest.mark.asyncio
+    async def test_run_task_initialize_timeout(self) -> None:
+        """run_task yields error when initialize() hangs."""
+        mock_ctx, conn, _process = _make_mock_spawn_context()
+
+        # Make initialize() hang forever
+        async def hang_forever(**kw: Any) -> None:
+            await asyncio.Event().wait()
+
+        conn.initialize = AsyncMock(side_effect=hang_forever)
+
+        harness = AcpHarness(command=["slow-agent"])
+
+        with (
+            patch("acp.spawn_agent_process", mock_ctx),
+            patch("flowstate.engine.acp_client._ACP_INIT_TIMEOUT", 0.1),
+        ):
+            events = []
+            async for event in harness.run_task("Test", "/workspace", "sess-timeout"):
+                events.append(event)
+
+        # Should get an ERROR event
+        assert any(e.type == StreamEventType.ERROR for e in events)

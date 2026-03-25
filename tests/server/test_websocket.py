@@ -255,6 +255,7 @@ class TestPauseAction:
         """Mock RunManager with an executor. Send pause. Verify executor.pause() called."""
         mock_executor = MagicMock()
         mock_executor.pause = AsyncMock()
+        mock_executor._flow_run_id = "run-1"
 
         run_manager = RunManager()
         run_manager._executors["run-1"] = mock_executor
@@ -274,6 +275,7 @@ class TestCancelAction:
         """Send cancel. Verify executor.cancel() called."""
         mock_executor = MagicMock()
         mock_executor.cancel = AsyncMock()
+        mock_executor._flow_run_id = "run-1"
 
         run_manager = RunManager()
         run_manager._executors["run-1"] = mock_executor
@@ -395,6 +397,7 @@ class TestAbortAction:
         """Send abort. Verify executor.cancel() called (abort maps to cancel)."""
         mock_executor = MagicMock()
         mock_executor.cancel = AsyncMock()
+        mock_executor._flow_run_id = "run-1"
 
         run_manager = RunManager()
         run_manager._executors["run-1"] = mock_executor

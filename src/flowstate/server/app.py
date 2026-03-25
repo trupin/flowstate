@@ -85,6 +85,8 @@ def mount_static_files(app: FastAPI, dist_dir: Path | None = None) -> None:
 
     # SPA fallback: any GET request not matching /api/* or /ws returns index.html
     # This must be registered AFTER all API routes
+    index_content = index_html.read_text()
+
     @app.get("/{full_path:path}", response_model=None, include_in_schema=False)
     async def spa_fallback(full_path: str) -> Response:
         # Never intercept API or WebSocket paths
@@ -98,7 +100,7 @@ def mount_static_files(app: FastAPI, dist_dir: Path | None = None) -> None:
         if static_file.exists() and static_file.is_file() and dist in static_file.resolve().parents:
             return FileResponse(str(static_file))
         # Otherwise serve index.html for client-side routing
-        return HTMLResponse(content=index_html.read_text())
+        return HTMLResponse(content=index_content)
 
 
 @asynccontextmanager
@@ -242,7 +244,7 @@ def create_app(
     if harness is None:
         from flowstate.engine.acp_client import AcpHarness
 
-        harness = AcpHarness(command=["claude"])
+        harness = AcpHarness(command=["claude-agent-acp"])
     app.state.config = config
     app.state.harness = harness
 

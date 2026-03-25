@@ -27,7 +27,7 @@ from flowstate.dsl.ast import (
 )
 from flowstate.engine.context import build_task_management_instructions
 from flowstate.engine.events import EventType, FlowEvent
-from flowstate.engine.executor import FlowExecutor, _use_tasks
+from flowstate.engine.executor import FlowExecutor, _use_subtasks
 from flowstate.engine.judge import JudgeContext, JudgeDecision, JudgePauseError, JudgeProtocol
 from flowstate.engine.subprocess_mgr import StreamEvent, StreamEventType
 from flowstate.engine.worktree import WorktreeInfo
@@ -3130,6 +3130,229 @@ class TestActivityLogsConditional:
         assert "0.95" in judge_logs[0]
 
 
+class TestSelfReportRouting:
+    """Tests for judge=False self-report routing (ENGINE-047).
+
+    When judge=False, the executor should read DECISION.json from the task directory
+    instead of invoking a judge subprocess. Activity logs should say 'Self-report routed'
+    instead of 'Judge decided', and no judge.started/judge.decided events should be emitted.
+    """
+
+    async def test_self_report_conditional_no_judge_events(self) -> None:
+        """judge=False conditional: no JUDGE_STARTED/JUDGE_DECIDED events."""
+        db = _make_db()
+        events, callback = _collect_events()
+        mock_mgr = MockSubprocessManager()
+
+        # Build conditional flow with judge=False
+        flow = _make_conditional_flow()
+        flow = Flow(
+            name=flow.name,
+            budget_seconds=flow.budget_seconds,
+            on_error=flow.on_error,
+            context=flow.context,
+            workspace=flow.workspace,
+            judge=False,
+            nodes=flow.nodes,
+            edges=flow.edges,
+        )
+
+        mock_decision = JudgeDecision(target="done", reasoning="Approved", confidence=0.95)
+
+        with patch("flowstate.engine.judge.read_judge_decision", return_value=mock_decision):
+            executor = FlowExecutor(db, callback, mock_mgr, max_concurrent=4)
+            await executor.execute(flow, {}, "/workspace")
+
+        # No judge events should be emitted
+        judge_started = [e for e in events if e.type == EventType.JUDGE_STARTED]
+        assert (
+            len(judge_started) == 0
+        ), "judge.started events should not be emitted with judge=False"
+
+        judge_decided = [e for e in events if e.type == EventType.JUDGE_DECIDED]
+        assert (
+            len(judge_decided) == 0
+        ), "judge.decided events should not be emitted with judge=False"
+
+        # Flow should still complete (edge transition should occur)
+        edge_transitions = [e for e in events if e.type == EventType.EDGE_TRANSITION]
+        assert len(edge_transitions) >= 1
+
+    async def test_self_report_conditional_activity_log(self) -> None:
+        """judge=False conditional: activity log says 'Self-report routed', not 'Judge decided'."""
+        db = _make_db()
+        events, callback = _collect_events()
+        mock_mgr = MockSubprocessManager()
+
+        flow = _make_conditional_flow()
+        flow = Flow(
+            name=flow.name,
+            budget_seconds=flow.budget_seconds,
+            on_error=flow.on_error,
+            context=flow.context,
+            workspace=flow.workspace,
+            judge=False,
+            nodes=flow.nodes,
+            edges=flow.edges,
+        )
+
+        mock_decision = JudgeDecision(target="done", reasoning="Approved", confidence=0.95)
+
+        with patch("flowstate.engine.judge.read_judge_decision", return_value=mock_decision):
+            executor = FlowExecutor(db, callback, mock_mgr, max_concurrent=4)
+            await executor.execute(flow, {}, "/workspace")
+
+        activities = _extract_activity_logs(events)
+
+        # No "Judge decided" messages
+        judge_logs = [m for m in activities if "Judge decided" in m]
+        assert len(judge_logs) == 0, f"Should have no 'Judge decided' logs, got: {judge_logs}"
+
+        # Should have "Self-report routed" messages instead
+        self_report_logs = [m for m in activities if "Self-report routed" in m]
+        assert (
+            len(self_report_logs) == 1
+        ), f"Should have exactly 1 'Self-report routed' log, got: {self_report_logs}"
+        assert "done" in self_report_logs[0]
+        assert "0.95" in self_report_logs[0]
+
+    async def test_self_report_default_edge_no_judge_events(self) -> None:
+        """judge=False default-edge: no JUDGE_STARTED/JUDGE_DECIDED events."""
+        db = _make_db()
+        events, callback = _collect_events()
+        mock_mgr = MockSubprocessManager()
+
+        base_flow = _make_default_edge_flow()
+        flow = Flow(
+            name=base_flow.name,
+            budget_seconds=base_flow.budget_seconds,
+            on_error=base_flow.on_error,
+            context=base_flow.context,
+            workspace=base_flow.workspace,
+            judge=False,
+            nodes=base_flow.nodes,
+            edges=base_flow.edges,
+        )
+
+        # First call: __none__ (fallback to default edge -> alice -> bob -> moderator)
+        # Second call: match "all tasks complete" -> done
+        decisions = [
+            JudgeDecision(target="__none__", reasoning="", confidence=0.0),
+            JudgeDecision(target="done", reasoning="All complete", confidence=0.95),
+        ]
+        call_count = {"n": 0}
+
+        def mock_read(_task_dir: str) -> JudgeDecision:
+            idx = call_count["n"]
+            call_count["n"] += 1
+            return decisions[idx]
+
+        with patch("flowstate.engine.judge.read_judge_decision", side_effect=mock_read):
+            executor = FlowExecutor(db, callback, mock_mgr, max_concurrent=4)
+            await executor.execute(flow, {}, "/workspace")
+
+        judge_started = [e for e in events if e.type == EventType.JUDGE_STARTED]
+        assert len(judge_started) == 0
+
+        judge_decided = [e for e in events if e.type == EventType.JUDGE_DECIDED]
+        assert len(judge_decided) == 0
+
+        # Flow should complete
+        completed_events = [e for e in events if e.type == EventType.FLOW_COMPLETED]
+        assert len(completed_events) == 1
+
+        # Activity logs should have self-report, not judge
+        activities = _extract_activity_logs(events)
+        judge_logs = [m for m in activities if "Judge decided" in m]
+        assert len(judge_logs) == 0
+        self_report_logs = [m for m in activities if "Self-report routed" in m]
+        assert len(self_report_logs) >= 1
+
+    async def test_self_report_failure_pauses_flow(self) -> None:
+        """judge=False: when DECISION.json is missing, flow pauses."""
+        db = _make_db()
+        events, callback = _collect_events()
+        mock_mgr = MockSubprocessManager()
+
+        flow = _make_conditional_flow(with_cycle=True)
+        flow = Flow(
+            name=flow.name,
+            budget_seconds=flow.budget_seconds,
+            on_error=flow.on_error,
+            context=flow.context,
+            workspace=flow.workspace,
+            judge=False,
+            nodes=flow.nodes,
+            edges=flow.edges,
+        )
+
+        with patch(
+            "flowstate.engine.judge.read_judge_decision",
+            side_effect=FileNotFoundError("DECISION.json not found"),
+        ):
+            executor = FlowExecutor(db, callback, mock_mgr, max_concurrent=4)
+            flow_run_id, execute_task = await _execute_until_paused(
+                executor, flow, {}, "/workspace", db
+            )
+
+        # Flow should be paused
+        run = db.get_flow_run(flow_run_id)
+        assert run is not None
+        assert run.status == "paused"
+
+        status_events = [e for e in events if e.type == EventType.FLOW_STATUS_CHANGED]
+        paused = [e for e in status_events if e.payload.get("new_status") == "paused"]
+        assert len(paused) >= 1, "Flow should pause when self-report fails"
+        assert any("self-report" in str(e.payload.get("reason", "")).lower() for e in paused)
+
+        await executor.cancel(flow_run_id)
+        await execute_task
+
+    async def test_node_level_judge_override(self) -> None:
+        """Node-level judge=True overrides flow-level judge=False: judge events emitted."""
+        db = _make_db()
+        events, callback = _collect_events()
+        mock_mgr = MockSubprocessManager()
+
+        # Build conditional flow with judge=False at flow level, but judge=True on review node
+        base_flow = _make_conditional_flow()
+        nodes = dict(base_flow.nodes)
+        nodes["review"] = Node(
+            name="review",
+            node_type=NodeType.TASK,
+            prompt="Do the review step",
+            judge=True,
+        )
+
+        flow = Flow(
+            name=base_flow.name,
+            budget_seconds=base_flow.budget_seconds,
+            on_error=base_flow.on_error,
+            context=base_flow.context,
+            workspace=base_flow.workspace,
+            judge=False,
+            nodes=nodes,
+            edges=base_flow.edges,
+        )
+
+        mock_judge = MockJudgeProtocol()
+        mock_judge.add_decision(JudgeDecision(target="done", reasoning="Approved", confidence=0.95))
+
+        executor = FlowExecutor(db, callback, mock_mgr, judge=mock_judge, max_concurrent=4)
+        await executor.execute(flow, {}, "/workspace")
+
+        # Judge events SHOULD be emitted since node-level judge=True overrides
+        judge_started = [e for e in events if e.type == EventType.JUDGE_STARTED]
+        assert len(judge_started) == 1
+
+        judge_decided = [e for e in events if e.type == EventType.JUDGE_DECIDED]
+        assert len(judge_decided) == 1
+
+        activities = _extract_activity_logs(events)
+        judge_logs = [m for m in activities if "Judge decided" in m]
+        assert len(judge_logs) == 1
+
+
 class TestActivityLogsPause:
     """Activity log emissions for flow pausing."""
 
@@ -5530,7 +5753,7 @@ class TestTaskInterruptedEventType:
 
 
 class TestUseTasks:
-    """Tests for _use_tasks() inheritance logic."""
+    """Tests for _use_subtasks() inheritance logic."""
 
     def test_inherits_from_flow_when_node_is_none(self) -> None:
         """When node.tasks is None, inherit from flow.tasks."""
@@ -5543,7 +5766,7 @@ class TestUseTasks:
             subtasks=True,
         )
         node = Node(name="work", node_type=NodeType.TASK, prompt="Do work", subtasks=None)
-        assert _use_tasks(flow, node) is True
+        assert _use_subtasks(flow, node) is True
 
     def test_inherits_false_from_flow(self) -> None:
         """When flow.tasks is False and node.tasks is None, result is False."""
@@ -5556,7 +5779,7 @@ class TestUseTasks:
             subtasks=False,
         )
         node = Node(name="work", node_type=NodeType.TASK, prompt="Do work", subtasks=None)
-        assert _use_tasks(flow, node) is False
+        assert _use_subtasks(flow, node) is False
 
     def test_node_override_true(self) -> None:
         """Node-level tasks=True overrides flow-level tasks=False."""
@@ -5569,7 +5792,7 @@ class TestUseTasks:
             subtasks=False,
         )
         node = Node(name="work", node_type=NodeType.TASK, prompt="Do work", subtasks=True)
-        assert _use_tasks(flow, node) is True
+        assert _use_subtasks(flow, node) is True
 
     def test_node_override_false(self) -> None:
         """Node-level subtasks=False overrides flow-level subtasks=True."""
@@ -5582,7 +5805,7 @@ class TestUseTasks:
             subtasks=True,
         )
         node = Node(name="work", node_type=NodeType.TASK, prompt="Do work", subtasks=False)
-        assert _use_tasks(flow, node) is False
+        assert _use_subtasks(flow, node) is False
 
 
 class TestBuildTaskManagementInstructions:
@@ -5840,3 +6063,104 @@ class TestTaskManagementInjection:
         # in the predecessor subtasks section
         assert "predecessor" in work_exec.prompt_text.lower()
         assert f"/tasks/{start_exec.id}/subtasks" in work_exec.prompt_text
+
+
+# ---------------------------------------------------------------------------
+# Tests: ENGINE-046 — Cancel kills ACP subprocess via in-memory session map
+# ---------------------------------------------------------------------------
+
+
+class TestCancelKillsHarness:
+    """ENGINE-046: Cancel must call harness.kill() for running tasks.
+
+    The bug was that cancel() looked up the session ID from the DB
+    (claude_session_id), which is only set on task *completion*. For
+    running tasks, the DB field is None, so harness.kill() was never
+    called. The fix uses the in-memory _task_session dict instead.
+    """
+
+    async def test_cancel_calls_kill_on_harness(self) -> None:
+        """Cancel a flow while a task is running and verify kill() is called."""
+        db = _make_db()
+        _events, callback = _collect_events()
+        mock_mgr = MockSubprocessManager()
+        # Delay so we can cancel while the task is in-flight
+        mock_mgr.task_delays["work"] = 2.0
+        executor = FlowExecutor(db, callback, mock_mgr)
+
+        flow = _make_linear_flow()
+
+        async def run_and_cancel() -> str:
+            execute_task = asyncio.create_task(executor.execute(flow, {}, "/workspace"))
+            await asyncio.sleep(0.15)
+            runs = db.list_flow_runs()
+            assert runs, "Expected at least one flow run"
+            await executor.cancel(runs[0].id)
+            return await execute_task
+
+        await run_and_cancel()
+
+        # The harness should have received at least one kill() call for the
+        # work task's session ID.
+        assert len(mock_mgr.kill_calls) > 0, (
+            "Expected harness.kill() to be called during cancel, "
+            "but kill_calls is empty. This means the session ID "
+            "was not resolved from the in-memory _task_session map."
+        )
+
+    async def test_cancel_kills_correct_session_id(self) -> None:
+        """The session ID passed to kill() must match the one used by run_task."""
+        db = _make_db()
+        _events, callback = _collect_events()
+        mock_mgr = MockSubprocessManager()
+        mock_mgr.task_delays["work"] = 2.0
+        executor = FlowExecutor(db, callback, mock_mgr)
+
+        flow = _make_linear_flow()
+
+        async def run_and_cancel() -> str:
+            execute_task = asyncio.create_task(executor.execute(flow, {}, "/workspace"))
+            await asyncio.sleep(0.15)
+            runs = db.list_flow_runs()
+            assert runs
+            await executor.cancel(runs[0].id)
+            return await execute_task
+
+        await run_and_cancel()
+
+        # The session ID passed to kill() should match one of the session IDs
+        # used during run_task calls.
+        run_task_session_ids = {sid for (_prompt, _ws, sid) in mock_mgr.calls}
+        for killed_sid in mock_mgr.kill_calls:
+            assert killed_sid in run_task_session_ids, (
+                f"kill() was called with session_id '{killed_sid}' which was not "
+                f"used in any run_task call. run_task session IDs: {run_task_session_ids}"
+            )
+
+    async def test_cancel_status_is_cancelled(self) -> None:
+        """After cancel, the flow run status must be 'cancelled'."""
+        db = _make_db()
+        events, callback = _collect_events()
+        mock_mgr = MockSubprocessManager()
+        mock_mgr.task_delays["work"] = 2.0
+        executor = FlowExecutor(db, callback, mock_mgr)
+
+        flow = _make_linear_flow()
+
+        async def run_and_cancel() -> str:
+            execute_task = asyncio.create_task(executor.execute(flow, {}, "/workspace"))
+            await asyncio.sleep(0.15)
+            runs = db.list_flow_runs()
+            assert runs
+            await executor.cancel(runs[0].id)
+            return await execute_task
+
+        flow_run_id = await run_and_cancel()
+
+        run = db.get_flow_run(flow_run_id)
+        assert run is not None
+        assert run.status == "cancelled"
+
+        # Verify a cancelled status event was emitted
+        status_events = [e for e in events if e.type == EventType.FLOW_STATUS_CHANGED]
+        assert any(e.payload.get("new_status") == "cancelled" for e in status_events)

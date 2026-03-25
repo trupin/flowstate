@@ -141,11 +141,11 @@ def _use_judge(flow: Flow, node: Node) -> bool:
     return flow.judge
 
 
-def _use_tasks(flow: Flow, node: Node) -> bool:
-    """Determine if task management instructions should be injected.
+def _use_subtasks(flow: Flow, node: Node) -> bool:
+    """Determine if subtask management instructions should be injected.
 
-    Node-level ``tasks`` overrides flow-level. ``None`` at node level means
-    inherit from flow. Default is ``False`` (no task management).
+    Node-level ``subtasks`` overrides flow-level. ``None`` at node level means
+    inherit from flow. Default is ``False`` (no subtask management).
     """
     if node.subtasks is not None:
         return node.subtasks
@@ -944,26 +944,30 @@ class FlowExecutor:
         node = flow.nodes[task_exec.node_name]
         cond_edges = _conditional_edge_pairs(outgoing)
 
+        used_judge = _use_judge(flow, node)
         decision = await self._acquire_routing_decision(
             flow, node, task_exec, cond_edges, flow_run_id
         )
         if decision is None:
             return
 
-        self._emit(
-            FlowEvent(
-                type=EventType.JUDGE_DECIDED,
-                flow_run_id=flow_run_id,
-                timestamp=_now_iso(),
-                payload={
-                    "from_node": task_exec.node_name,
-                    "to_node": decision.target,
-                    "reasoning": decision.reasoning,
-                    "confidence": decision.confidence,
-                },
+        if used_judge:
+            self._emit(
+                FlowEvent(
+                    type=EventType.JUDGE_DECIDED,
+                    flow_run_id=flow_run_id,
+                    timestamp=_now_iso(),
+                    payload={
+                        "from_node": task_exec.node_name,
+                        "to_node": decision.target,
+                        "reasoning": decision.reasoning,
+                        "confidence": decision.confidence,
+                    },
+                )
             )
-        )
-        self._emit_judge_activity(flow_run_id, completed_id, task_exec, decision)
+            self._emit_judge_activity(flow_run_id, completed_id, task_exec, decision)
+        else:
+            self._emit_self_report_activity(flow_run_id, completed_id, task_exec, decision)
 
         # Handle special cases
         if decision.is_none:
@@ -1055,26 +1059,30 @@ class FlowExecutor:
         default_edge = next(e for e in outgoing if e.edge_type == EdgeType.UNCONDITIONAL)
         cond_edges = _conditional_edge_pairs(outgoing)
 
+        used_judge = _use_judge(flow, node)
         decision = await self._acquire_routing_decision(
             flow, node, task_exec, cond_edges, flow_run_id
         )
         if decision is None:
             return
 
-        self._emit(
-            FlowEvent(
-                type=EventType.JUDGE_DECIDED,
-                flow_run_id=flow_run_id,
-                timestamp=_now_iso(),
-                payload={
-                    "from_node": task_exec.node_name,
-                    "to_node": decision.target,
-                    "reasoning": decision.reasoning,
-                    "confidence": decision.confidence,
-                },
+        if used_judge:
+            self._emit(
+                FlowEvent(
+                    type=EventType.JUDGE_DECIDED,
+                    flow_run_id=flow_run_id,
+                    timestamp=_now_iso(),
+                    payload={
+                        "from_node": task_exec.node_name,
+                        "to_node": decision.target,
+                        "reasoning": decision.reasoning,
+                        "confidence": decision.confidence,
+                    },
+                )
             )
-        )
-        self._emit_judge_activity(flow_run_id, completed_id, task_exec, decision)
+            self._emit_judge_activity(flow_run_id, completed_id, task_exec, decision)
+        else:
+            self._emit_self_report_activity(flow_run_id, completed_id, task_exec, decision)
 
         # On __none__ or low confidence, follow the DEFAULT edge instead of pausing
         if decision.is_none or decision.is_low_confidence:
@@ -1501,11 +1509,18 @@ class FlowExecutor:
         for resume_event in self._task_resume_events.values():
             resume_event.set()
 
-        # Kill all running subprocesses via their respective harnesses
+        # Kill all running subprocesses via their respective harnesses.
+        # Use _task_session (set by _execute_single_task) because the DB's
+        # claude_session_id is only populated on task completion -- it will be
+        # None for tasks that are still running.
         for task_id in list(self._running_tasks):
-            task_exec = self._db.get_task_execution(task_id)
-            if task_exec and task_exec.claude_session_id:
-                sid = task_exec.claude_session_id
+            sid = self._task_session.get(task_id)
+            if sid is None:
+                # Fallback to DB in case _task_session was not populated
+                task_exec = self._db.get_task_execution(task_id)
+                if task_exec:
+                    sid = task_exec.claude_session_id
+            if sid:
                 harness_name = self._session_harness.get(sid, DEFAULT_HARNESS)
                 harness = self._harness_mgr.get(harness_name)
                 await harness.kill(sid)
@@ -2032,7 +2047,7 @@ class FlowExecutor:
 
         if task.status not in ("running", "interrupted"):
             raise RuntimeError(
-                f"Cannot send message to task {task_execution_id} " f"with status '{task.status}'"
+                f"Cannot send message to task {task_execution_id} with status '{task.status}'"
             )
 
         # Enqueue the message in the DB
@@ -2475,7 +2490,7 @@ class FlowExecutor:
         Only injects instructions when tasks are enabled for this node,
         the server_base_url is configured, and the flow_run_id is available.
         """
-        if not _use_tasks(flow, node):
+        if not _use_subtasks(flow, node):
             return
         if self._server_base_url is None:
             return
@@ -2625,6 +2640,21 @@ class FlowExecutor:
             flow_run_id,
             task_id,
             f"\u2696 Judge decided: {task_exec.node_name} \u2192 {decision.target}"
+            f" (confidence: {decision.confidence:.2f})",
+        )
+
+    def _emit_self_report_activity(
+        self,
+        flow_run_id: str,
+        task_id: str,
+        task_exec: TaskExecutionRow,
+        decision: JudgeDecision,
+    ) -> None:
+        """Emit activity log for a self-report routing decision."""
+        self._emit_activity(
+            flow_run_id,
+            task_id,
+            f"\U0001f4cb Self-report routed: {task_exec.node_name} \u2192 {decision.target}"
             f" (confidence: {decision.confidence:.2f})",
         )
 

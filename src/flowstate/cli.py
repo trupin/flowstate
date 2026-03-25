@@ -52,12 +52,20 @@ def server(
     config: Annotated[str | None, typer.Option("--config", help="Path to config file")] = None,
 ) -> None:
     """Start the Flowstate web server."""
+    import logging
+
     import uvicorn
 
     from flowstate.config import load_config
     from flowstate.server.app import create_app
 
     cfg = load_config(path=config)
+
+    # Configure Python logging so flowstate.* loggers produce visible output
+    logging.basicConfig(
+        level=getattr(logging, cfg.log_level.upper(), logging.INFO),
+        format="%(asctime)s %(levelname)s %(name)s: %(message)s",
+    )
 
     # CLI flags override config file values
     final_host = host or cfg.server_host

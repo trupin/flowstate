@@ -142,6 +142,14 @@ class QueueManager:
         # Determine event callback -- ws_hub.on_flow_event if available
         event_callback = getattr(self._ws_hub, "on_flow_event", lambda _e: None)
 
+        # Build server base URL for subtask API instructions
+        host = getattr(self._config, "server_host", "127.0.0.1")
+        # Agents need 127.0.0.1 to reach the server, not 0.0.0.0
+        if host == "0.0.0.0":
+            host = "127.0.0.1"
+        port = getattr(self._config, "server_port", 9090)
+        server_base_url = f"http://{host}:{port}"
+
         # Create executor
         executor = FlowExecutor(
             db=self._db,
@@ -150,6 +158,7 @@ class QueueManager:
             max_concurrent=getattr(self._config, "max_concurrent_tasks", 4),
             worktree_cleanup=getattr(self._config, "worktree_cleanup", True),
             harness_mgr=self._harness_mgr,
+            server_base_url=server_base_url,
         )
 
         # Generate run ID and workspace

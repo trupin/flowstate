@@ -100,6 +100,7 @@ class TestCreateSubtask:
     def test_create_subtask_returns_201(self) -> None:
         mock_db = MagicMock()
         mock_db.get_task_execution.return_value = _make_task_execution_row()
+        mock_db.count_agent_subtasks.return_value = 0
         subtask = _make_subtask_row()
         mock_db.create_agent_subtask.return_value = subtask
 
@@ -121,6 +122,7 @@ class TestCreateSubtask:
     def test_create_subtask_calls_db(self) -> None:
         mock_db = MagicMock()
         mock_db.get_task_execution.return_value = _make_task_execution_row()
+        mock_db.count_agent_subtasks.return_value = 0
         mock_db.create_agent_subtask.return_value = _make_subtask_row()
 
         client = _make_test_client(db_mock=mock_db)
@@ -134,6 +136,7 @@ class TestCreateSubtask:
     def test_create_subtask_emits_websocket_event(self) -> None:
         mock_db = MagicMock()
         mock_db.get_task_execution.return_value = _make_task_execution_row()
+        mock_db.count_agent_subtasks.return_value = 0
         mock_db.create_agent_subtask.return_value = _make_subtask_row()
 
         client = _make_test_client(db_mock=mock_db)
@@ -206,7 +209,7 @@ class TestCreateSubtask:
         """Title exactly at 200 characters is accepted."""
         mock_db = MagicMock()
         mock_db.get_task_execution.return_value = _make_task_execution_row()
-        mock_db.list_agent_subtasks.return_value = []
+        mock_db.count_agent_subtasks.return_value = 0
         mock_db.create_agent_subtask.return_value = _make_subtask_row(title="x" * 200)
 
         client = _make_test_client(db_mock=mock_db)
@@ -221,10 +224,7 @@ class TestCreateSubtask:
         """Creating the 51st subtask returns 400 with a clear message."""
         mock_db = MagicMock()
         mock_db.get_task_execution.return_value = _make_task_execution_row()
-        # Simulate 50 existing subtasks
-        mock_db.list_agent_subtasks.return_value = [
-            _make_subtask_row(subtask_id=f"sub-{i}") for i in range(50)
-        ]
+        mock_db.count_agent_subtasks.return_value = 50
 
         client = _make_test_client(db_mock=mock_db)
         response = client.post(
@@ -241,9 +241,7 @@ class TestCreateSubtask:
         """Creating the 50th subtask (exactly at limit) succeeds."""
         mock_db = MagicMock()
         mock_db.get_task_execution.return_value = _make_task_execution_row()
-        mock_db.list_agent_subtasks.return_value = [
-            _make_subtask_row(subtask_id=f"sub-{i}") for i in range(49)
-        ]
+        mock_db.count_agent_subtasks.return_value = 49
         mock_db.create_agent_subtask.return_value = _make_subtask_row(subtask_id="sub-49")
 
         client = _make_test_client(db_mock=mock_db)
@@ -301,9 +299,7 @@ class TestSubtaskErrorFormat:
         """400 error from subtask limit includes 'detail' in JSON."""
         mock_db = MagicMock()
         mock_db.get_task_execution.return_value = _make_task_execution_row()
-        mock_db.list_agent_subtasks.return_value = [
-            _make_subtask_row(subtask_id=f"sub-{i}") for i in range(50)
-        ]
+        mock_db.count_agent_subtasks.return_value = 50
 
         client = _make_test_client(db_mock=mock_db)
         response = client.post(

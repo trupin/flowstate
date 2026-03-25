@@ -230,13 +230,16 @@ class WebSocketHub:
         executor = self._run_manager.get_executor(flow_run_id)
         if not executor:
             return
+        # Use the executor's internal flow_run_id (the DB-generated ID) when
+        # available, matching the REST endpoint behavior.
+        actual_run_id = getattr(executor, "_flow_run_id", None) or flow_run_id
         if action == "pause":
-            await executor.pause(flow_run_id)
+            await executor.pause(actual_run_id)
         elif action == "cancel":
-            await executor.cancel(flow_run_id)
+            await executor.cancel(actual_run_id)
         elif action == "abort":
             # abort maps to cancel -- there is no separate abort method on FlowExecutor
-            await executor.cancel(flow_run_id)
+            await executor.cancel(actual_run_id)
 
     async def _handle_task_control(
         self, action: str, flow_run_id: str, task_id: str | None

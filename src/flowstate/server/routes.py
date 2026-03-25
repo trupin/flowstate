@@ -1098,8 +1098,7 @@ async def create_subtask(
     """
     _validate_task_in_run(request, run_id, task_execution_id)
     db = _get_db(request)
-    existing = db.list_agent_subtasks(task_execution_id)
-    if len(existing) >= _MAX_SUBTASKS_PER_TASK:
+    if db.count_agent_subtasks(task_execution_id) >= _MAX_SUBTASKS_PER_TASK:
         raise FlowstateError(
             f"Subtask limit reached: maximum {_MAX_SUBTASKS_PER_TASK} subtasks per task execution",
             status_code=400,

@@ -194,7 +194,7 @@ export function FlowDetailPanel({ flow, isEnabled }: FlowDetailPanelProps) {
 
             <span className="flow-settings-key">Subtasks</span>
             <span className="flow-settings-value">
-              {(ast.subtasks ?? ast.tasks ?? false) ? 'enabled' : 'disabled'}
+              {ast.subtasks ? 'enabled' : 'disabled'}
             </span>
 
             <span className="flow-settings-key">Harness</span>

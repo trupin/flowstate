@@ -66,8 +66,7 @@ export interface FlowAstJson {
   skip_permissions: boolean;
   judge: boolean;
   worktree: boolean;
-  tasks?: boolean; // pre-rename field (will be removed after DSL-013)
-  subtasks?: boolean; // post-rename field
+  subtasks: boolean;
   harness: string;
   max_parallel: number;
   params: Array<{ name: string; type: string; default: unknown }>;

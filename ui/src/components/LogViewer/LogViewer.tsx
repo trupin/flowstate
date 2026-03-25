@@ -325,6 +325,7 @@ function parseLogContent(
   }
 
   if (eventType === 'tool_use') {
+    // Try nested message.content first (Claude Code stream-json format)
     const message = obj.message as Record<string, unknown> | undefined;
     if (message && Array.isArray(message.content)) {
       for (const block of message.content) {
@@ -349,10 +350,40 @@ function parseLogContent(
         }
       }
     }
+    // ACP-style tool_use: title and tool_call_id at top level
+    if (typeof obj.title === 'string' && obj.title.length > 0) {
+      const toolId =
+        typeof obj.tool_call_id === 'string' ? obj.tool_call_id : '';
+      // Parse raw_input if present (may be JSON string or object)
+      let input: Record<string, unknown> = {};
+      if (typeof obj.raw_input === 'string') {
+        try {
+          const parsed = JSON.parse(obj.raw_input) as unknown;
+          if (parsed != null && typeof parsed === 'object') {
+            input = parsed as Record<string, unknown>;
+          }
+        } catch {
+          // raw_input is not JSON -- ignore
+        }
+      } else if (obj.raw_input != null && typeof obj.raw_input === 'object') {
+        input = obj.raw_input as Record<string, unknown>;
+      }
+      const keys = Object.keys(input);
+      let inputSummary = keys.slice(0, 3).join(', ');
+      if (keys.length > 3) inputSummary += ', ...';
+      return {
+        kind: 'tool_use',
+        toolName: obj.title,
+        toolId,
+        input,
+        inputSummary,
+      };
+    }
     return { kind: 'raw', text: '' };
   }
 
   if (eventType === 'tool_result') {
+    // Try nested message.content first (Claude Code stream-json format)
     const message = obj.message as Record<string, unknown> | undefined;
     if (message && Array.isArray(message.content)) {
       const text = extractTextFromContent(message.content);
@@ -364,17 +395,43 @@ function parseLogContent(
         };
       }
     }
-    if (typeof obj.content === 'string') {
+    // Try top-level content string (ACP bridge extracts tool call content)
+    if (typeof obj.content === 'string' && obj.content.length > 0) {
       return {
         kind: 'tool_result',
         content: obj.content,
         summary: getFirstMeaningfulLine(obj.content),
       };
     }
+    // Try raw_output from ACP (may be a string or serialized JSON)
+    if (typeof obj.raw_output === 'string' && obj.raw_output.length > 0) {
+      return {
+        kind: 'tool_result',
+        content: obj.raw_output,
+        summary: getFirstMeaningfulLine(obj.raw_output),
+      };
+    }
+    // Fall back to title and status metadata from ACP events
+    const title =
+      typeof obj.title === 'string' && obj.title.length > 0 ? obj.title : null;
+    const status =
+      typeof obj.status === 'string' && obj.status.length > 0
+        ? obj.status
+        : null;
+    if (title) {
+      const fallbackText = status ? `${title}: ${status}` : title;
+      return {
+        kind: 'tool_result',
+        content: fallbackText,
+        summary: fallbackText,
+      };
+    }
+    // Last resort: show status if available, otherwise generic message
+    const lastResort = status ?? 'Tool completed';
     return {
       kind: 'tool_result',
-      content: 'Tool completed',
-      summary: 'Tool completed',
+      content: lastResort,
+      summary: lastResort,
     };
   }
 
