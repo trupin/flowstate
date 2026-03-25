@@ -13,6 +13,7 @@ from datetime import UTC, datetime
 
 from flowstate.state.database import FlowstateDB as _DatabaseBase
 from flowstate.state.models import (
+    AgentSubtaskRow,
     EdgeTransitionRow,
     FlowDefinitionRow,
     FlowRunRow,
@@ -104,6 +105,7 @@ class FlowstateDB:
         tables = [
             "task_messages",
             "task_logs",
+            "agent_subtasks",
             "edge_transitions",
             "fork_group_members",
             "fork_groups",
@@ -1210,3 +1212,72 @@ class FlowstateDB:
         """
         row = self._fetchone("SELECT enabled FROM flow_enabled WHERE flow_name = ?", (flow_name,))
         return bool(row["enabled"]) if row else True
+
+    # ================================================================== #
+    # Agent Subtasks
+    # ================================================================== #
+
+    def create_agent_subtask(self, task_execution_id: str, title: str) -> AgentSubtaskRow:
+        """Create a new agent subtask with status 'todo'.
+
+        Args:
+            task_execution_id: The parent task execution ID.
+            title: Short description of the subtask.
+
+        Returns:
+            The newly created subtask row.
+        """
+        subtask_id = str(uuid.uuid4())
+        now = datetime.now(UTC).isoformat()
+        self._execute(
+            "INSERT INTO agent_subtasks (id, task_execution_id, title, status, created_at, updated_at)"
+            " VALUES (?, ?, ?, 'todo', ?, ?)",
+            (subtask_id, task_execution_id, title, now, now),
+        )
+        self._commit()
+        return AgentSubtaskRow(
+            id=subtask_id,
+            task_execution_id=task_execution_id,
+            title=title,
+            status="todo",
+            created_at=now,
+            updated_at=now,
+        )
+
+    def get_agent_subtask(self, subtask_id: str) -> AgentSubtaskRow | None:
+        """Retrieve a single agent subtask by ID, or None if not found."""
+        row = self._fetchone("SELECT * FROM agent_subtasks WHERE id = ?", (subtask_id,))
+        return AgentSubtaskRow(**dict(row)) if row else None
+
+    def list_agent_subtasks(self, task_execution_id: str) -> list[AgentSubtaskRow]:
+        """List all subtasks for a task execution, ordered by creation time.
+
+        Args:
+            task_execution_id: The parent task execution ID.
+
+        Returns:
+            List of subtask rows, ordered by created_at ascending.
+        """
+        rows = self._fetchall(
+            "SELECT * FROM agent_subtasks WHERE task_execution_id = ? ORDER BY created_at ASC",
+            (task_execution_id,),
+        )
+        return [AgentSubtaskRow(**dict(r)) for r in rows]
+
+    def update_agent_subtask(self, subtask_id: str, status: str) -> AgentSubtaskRow | None:
+        """Update the status of an agent subtask.
+
+        Args:
+            subtask_id: The subtask ID.
+            status: New status ('todo', 'in_progress', or 'done').
+
+        Returns:
+            The updated subtask row, or None if the subtask was not found.
+        """
+        now = datetime.now(UTC).isoformat()
+        self._execute(
+            "UPDATE agent_subtasks SET status = ?, updated_at = ? WHERE id = ?",
+            (status, now, subtask_id),
+        )
+        self._commit()
+        return self.get_agent_subtask(subtask_id)

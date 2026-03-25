@@ -2144,3 +2144,124 @@ class TestInterruptedStatusAndUserInputLogType:
         task_id = self._create_task(db, flow_run_id)
         with pytest.raises(sqlite3.IntegrityError):
             db.insert_task_log(task_id, "bogus_type", "content")
+
+
+# ================================================================== #
+# Agent Subtask Tests (STATE-010)
+# ================================================================== #
+
+
+class TestAgentSubtasks:
+    """Tests for agent subtask CRUD operations."""
+
+    def _create_task(self, db: FlowstateDB, flow_run_id: str, name: str = "a") -> str:
+        """Helper to create a task execution and return its ID."""
+        return db.create_task_execution(
+            flow_run_id, name, "task", 1, "handoff", "/tmp", f"/tmp/{name}-1", f"do {name}"
+        )
+
+    def test_create_agent_subtask(self, db: FlowstateDB, flow_run_id: str) -> None:
+        """Create a subtask, verify all fields and defaults."""
+        task_id = self._create_task(db, flow_run_id)
+        subtask = db.create_agent_subtask(task_id, "Write unit tests")
+
+        assert subtask.id is not None
+        assert len(subtask.id) == 36  # UUID format
+        assert subtask.task_execution_id == task_id
+        assert subtask.title == "Write unit tests"
+        assert subtask.status == "todo"
+        assert subtask.created_at is not None
+        assert subtask.updated_at is not None
+        assert subtask.created_at == subtask.updated_at
+
+    def test_get_agent_subtask(self, db: FlowstateDB, flow_run_id: str) -> None:
+        """Get a subtask by ID returns the correct row."""
+        task_id = self._create_task(db, flow_run_id)
+        created = db.create_agent_subtask(task_id, "Implement feature")
+
+        result = db.get_agent_subtask(created.id)
+        assert result is not None
+        assert result.id == created.id
+        assert result.task_execution_id == task_id
+        assert result.title == "Implement feature"
+        assert result.status == "todo"
+
+    def test_get_agent_subtask_not_found(self, db: FlowstateDB) -> None:
+        """Get a non-existent subtask returns None."""
+        result = db.get_agent_subtask("nonexistent-id")
+        assert result is None
+
+    def test_list_agent_subtasks(self, db: FlowstateDB, flow_run_id: str) -> None:
+        """List subtasks returns all subtasks for a task in creation order."""
+        task_id = self._create_task(db, flow_run_id)
+        sub1 = db.create_agent_subtask(task_id, "First subtask")
+        sub2 = db.create_agent_subtask(task_id, "Second subtask")
+        sub3 = db.create_agent_subtask(task_id, "Third subtask")
+
+        results = db.list_agent_subtasks(task_id)
+        assert len(results) == 3
+        assert results[0].id == sub1.id
+        assert results[1].id == sub2.id
+        assert results[2].id == sub3.id
+        assert results[0].title == "First subtask"
+        assert results[1].title == "Second subtask"
+        assert results[2].title == "Third subtask"
+
+    def test_list_agent_subtasks_empty(self, db: FlowstateDB, flow_run_id: str) -> None:
+        """List subtasks for a task with no subtasks returns empty list."""
+        task_id = self._create_task(db, flow_run_id)
+        results = db.list_agent_subtasks(task_id)
+        assert results == []
+
+    def test_list_agent_subtasks_unknown_task(self, db: FlowstateDB) -> None:
+        """List subtasks for a non-existent task_execution_id returns empty list."""
+        results = db.list_agent_subtasks("nonexistent-task-id")
+        assert results == []
+
+    def test_update_agent_subtask_status(self, db: FlowstateDB, flow_run_id: str) -> None:
+        """Update subtask status changes status and updates updated_at."""
+        task_id = self._create_task(db, flow_run_id)
+        created = db.create_agent_subtask(task_id, "Do something")
+        original_updated_at = created.updated_at
+
+        updated = db.update_agent_subtask(created.id, "in_progress")
+        assert updated is not None
+        assert updated.status == "in_progress"
+        assert updated.updated_at >= original_updated_at
+        assert updated.title == "Do something"
+
+        # Update again to done
+        done = db.update_agent_subtask(created.id, "done")
+        assert done is not None
+        assert done.status == "done"
+        assert done.updated_at >= updated.updated_at
+
+    def test_update_agent_subtask_not_found(self, db: FlowstateDB) -> None:
+        """Update a non-existent subtask returns None."""
+        result = db.update_agent_subtask("nonexistent-id", "done")
+        assert result is None
+
+    def test_invalid_subtask_status_rejected(self, db: FlowstateDB, flow_run_id: str) -> None:
+        """Setting subtask status to an invalid value raises IntegrityError."""
+        task_id = self._create_task(db, flow_run_id)
+        created = db.create_agent_subtask(task_id, "Do something")
+        with pytest.raises(sqlite3.IntegrityError):
+            db.update_agent_subtask(created.id, "bogus_status")
+
+    def test_subtasks_isolated_between_tasks(self, db: FlowstateDB, flow_run_id: str) -> None:
+        """Subtasks for different tasks don't interfere with each other."""
+        task1 = self._create_task(db, flow_run_id, "task1")
+        task2 = self._create_task(db, flow_run_id, "task2")
+
+        db.create_agent_subtask(task1, "Task 1 subtask A")
+        db.create_agent_subtask(task1, "Task 1 subtask B")
+        db.create_agent_subtask(task2, "Task 2 subtask A")
+
+        results1 = db.list_agent_subtasks(task1)
+        results2 = db.list_agent_subtasks(task2)
+
+        assert len(results1) == 2
+        assert len(results2) == 1
+        assert results1[0].title == "Task 1 subtask A"
+        assert results1[1].title == "Task 1 subtask B"
+        assert results2[0].title == "Task 2 subtask A"

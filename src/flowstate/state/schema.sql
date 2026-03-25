@@ -163,6 +163,17 @@ CREATE TABLE IF NOT EXISTS flow_enabled (
     enabled INTEGER DEFAULT 1
 );
 
+-- Agent subtasks (subtasks created by agents during node execution)
+CREATE TABLE IF NOT EXISTS agent_subtasks (
+    id TEXT PRIMARY KEY,
+    task_execution_id TEXT NOT NULL,
+    title TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'todo' CHECK(status IN ('todo', 'in_progress', 'done')),
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    FOREIGN KEY (task_execution_id) REFERENCES task_executions(id)
+);
+
 -- Indexes
 CREATE INDEX IF NOT EXISTS idx_flow_runs_status ON flow_runs(status);
 CREATE INDEX IF NOT EXISTS idx_task_executions_flow_run ON task_executions(flow_run_id);
@@ -184,3 +195,4 @@ CREATE INDEX IF NOT EXISTS idx_tasks_parent ON tasks(parent_task_id);
 CREATE INDEX IF NOT EXISTS idx_tasks_scheduled ON tasks(status, scheduled_at)
     WHERE status = 'scheduled';
 CREATE INDEX IF NOT EXISTS idx_task_node_history_task ON task_node_history(task_id);
+CREATE INDEX IF NOT EXISTS idx_agent_subtasks_task ON agent_subtasks(task_execution_id);

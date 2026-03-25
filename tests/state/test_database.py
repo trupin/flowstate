@@ -22,6 +22,7 @@ EXPECTED_TABLES = {
     "tasks",
     "task_node_history",
     "flow_enabled",
+    "agent_subtasks",
 }
 
 EXPECTED_INDEXES = {
@@ -40,6 +41,7 @@ EXPECTED_INDEXES = {
     "idx_tasks_queue",
     "idx_tasks_parent",
     "idx_task_node_history_task",
+    "idx_agent_subtasks_task",
 }
 
 

@@ -164,3 +164,14 @@ class TaskNodeHistoryRow(BaseModel):
     flow_run_id: str | None = None
     started_at: str | None = None
     completed_at: str | None = None
+
+
+class AgentSubtaskRow(BaseModel):
+    """Row model for the agent_subtasks table."""
+
+    id: str
+    task_execution_id: str
+    title: str
+    status: str  # "todo", "in_progress", "done"
+    created_at: str
+    updated_at: str
