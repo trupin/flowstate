@@ -249,12 +249,12 @@
 
 | Issue      | Title                                                     | Domain | Priority | Depends On            | Status |
 | ---------- | --------------------------------------------------------- | ------ | -------- | --------------------- | ------ |
-| DSL-012    | Add `tasks` boolean attribute to grammar, parser, AST     | dsl    | P1       | —                     | todo   |
-| STATE-010  | Agent subtask table, model, and repository CRUD           | state  | P1       | —                     | todo   |
-| ENGINE-038 | Inject task management instructions when `tasks=true`     | engine | P1       | DSL-012               | todo   |
+| DSL-012    | Add `tasks` boolean attribute to grammar, parser, AST     | dsl    | P1       | —                     | done   |
+| STATE-010  | Agent subtask table, model, and repository CRUD           | state  | P1       | —                     | in_progress |
+| ENGINE-040 | Inject task management instructions when `tasks=true`     | engine | P1       | DSL-012               | todo   |
 | SERVER-015 | Subtask REST API endpoints + WebSocket events             | server | P1       | STATE-010             | todo   |
 | UI-040     | Subtask progress display in node details                  | ui     | P1       | SERVER-015            | todo   |
-| ENGINE-039 | Harden: Subtask API error handling and validation         | engine | P2       | ENGINE-038, SERVER-015 | todo   |
+| ENGINE-041 | Harden: Subtask API error handling and validation         | engine | P2       | ENGINE-040, SERVER-015 | todo   |
 
 
 ---

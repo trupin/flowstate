@@ -138,6 +138,9 @@ class _FlowTransformer(Transformer[Token, Flow]):
     def node_harness(self, items: list[Token]) -> tuple[str, str]:
         return ("harness", _strip_string(items[0]))
 
+    def node_tasks(self, items: list[Token]) -> tuple[str, bool]:
+        return ("tasks", str(items[0]) == "true")
+
     def node_body(self, items: list[tuple[str, str | bool]]) -> dict[str, str | bool]:
         result: dict[str, str | bool] = {}
         for key, value in items:
@@ -156,6 +159,7 @@ class _FlowTransformer(Transformer[Token, Flow]):
         cwd = body.get("cwd")
         judge = body.get("judge")
         harness = body.get("harness")
+        tasks = body.get("tasks")
         return Node(
             name=name,
             node_type=NodeType.ENTRY,
@@ -163,6 +167,7 @@ class _FlowTransformer(Transformer[Token, Flow]):
             cwd=str(cwd) if cwd is not None else None,
             judge=bool(judge) if judge is not None else None,
             harness=str(harness) if harness is not None else None,
+            tasks=bool(tasks) if tasks is not None else None,
             line=_meta_line(meta),
             column=_meta_column(meta),
         )
@@ -177,6 +182,7 @@ class _FlowTransformer(Transformer[Token, Flow]):
         cwd = body.get("cwd")
         judge = body.get("judge")
         harness = body.get("harness")
+        tasks = body.get("tasks")
         return Node(
             name=name,
             node_type=NodeType.TASK,
@@ -184,6 +190,7 @@ class _FlowTransformer(Transformer[Token, Flow]):
             cwd=str(cwd) if cwd is not None else None,
             judge=bool(judge) if judge is not None else None,
             harness=str(harness) if harness is not None else None,
+            tasks=bool(tasks) if tasks is not None else None,
             line=_meta_line(meta),
             column=_meta_column(meta),
         )
@@ -198,6 +205,7 @@ class _FlowTransformer(Transformer[Token, Flow]):
         cwd = body.get("cwd")
         judge = body.get("judge")
         harness = body.get("harness")
+        tasks = body.get("tasks")
         return Node(
             name=name,
             node_type=NodeType.EXIT,
@@ -205,6 +213,7 @@ class _FlowTransformer(Transformer[Token, Flow]):
             cwd=str(cwd) if cwd is not None else None,
             judge=bool(judge) if judge is not None else None,
             harness=str(harness) if harness is not None else None,
+            tasks=bool(tasks) if tasks is not None else None,
             line=_meta_line(meta),
             column=_meta_column(meta),
         )
@@ -264,6 +273,7 @@ class _FlowTransformer(Transformer[Token, Flow]):
         cwd = body.get("cwd")
         judge = body.get("judge")
         harness = body.get("harness")
+        tasks = body.get("tasks")
         return Node(
             name=name,
             node_type=NodeType.ATOMIC,
@@ -271,6 +281,7 @@ class _FlowTransformer(Transformer[Token, Flow]):
             cwd=str(cwd) if cwd is not None else None,
             judge=bool(judge) if judge is not None else None,
             harness=str(harness) if harness is not None else None,
+            tasks=bool(tasks) if tasks is not None else None,
             line=_meta_line(meta),
             column=_meta_column(meta),
         )
@@ -463,6 +474,9 @@ class _FlowTransformer(Transformer[Token, Flow]):
     def flow_worktree(self, items: list[Token]) -> tuple[str, bool]:
         return ("worktree", str(items[0]) == "true")
 
+    def flow_tasks(self, items: list[Token]) -> tuple[str, bool]:
+        return ("tasks", str(items[0]) == "true")
+
     def flow_max_parallel(self, items: list[Token]) -> tuple[str, int]:
         text = str(items[0])
         return ("max_parallel", int(text) if "." not in text else int(float(text)))
@@ -524,6 +538,7 @@ class _FlowTransformer(Transformer[Token, Flow]):
             judge=bool(attrs.get("judge", False)),
             harness=str(attrs["harness"]) if "harness" in attrs else "claude",
             worktree=bool(attrs.get("worktree", True)),
+            tasks=bool(attrs.get("tasks", False)),
             max_parallel=int(attrs.get("max_parallel", 1)),
             input_fields=input_fields,
             output_fields=output_fields,

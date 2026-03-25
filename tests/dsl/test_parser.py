@@ -1599,3 +1599,116 @@ class TestHarness:
         )
         flow = parse_flow(source)
         assert flow.nodes["d"].harness == "gpt4"
+
+
+# ---------------------------------------------------------------------------
+# Additional: tasks boolean parameter
+# ---------------------------------------------------------------------------
+
+
+class TestTasksParameter:
+    """Test tasks boolean parameter at flow level and node level."""
+
+    def test_flow_tasks_true(self):
+        source = (
+            "flow f { budget = 1h on_error = pause context = handoff tasks = true "
+            'entry a { prompt = "x" } exit b { prompt = "y" } a -> b }'
+        )
+        flow = parse_flow(source)
+        assert flow.tasks is True
+
+    def test_flow_tasks_false(self):
+        source = (
+            "flow f { budget = 1h on_error = pause context = handoff tasks = false "
+            'entry a { prompt = "x" } exit b { prompt = "y" } a -> b }'
+        )
+        flow = parse_flow(source)
+        assert flow.tasks is False
+
+    def test_flow_tasks_default_is_false(self):
+        source = (
+            "flow f { budget = 1h on_error = pause context = handoff "
+            'entry a { prompt = "x" } exit b { prompt = "y" } a -> b }'
+        )
+        flow = parse_flow(source)
+        assert flow.tasks is False
+
+    def test_node_tasks_true(self):
+        source = (
+            "flow f { budget = 1h on_error = pause context = handoff "
+            'entry a { prompt = "x" tasks = true } exit b { prompt = "y" } a -> b }'
+        )
+        flow = parse_flow(source)
+        assert flow.nodes["a"].tasks is True
+
+    def test_node_tasks_false(self):
+        source = (
+            "flow f { budget = 1h on_error = pause context = handoff "
+            'entry a { prompt = "x" tasks = false } exit b { prompt = "y" } a -> b }'
+        )
+        flow = parse_flow(source)
+        assert flow.nodes["a"].tasks is False
+
+    def test_node_tasks_default_is_none(self):
+        source = (
+            "flow f { budget = 1h on_error = pause context = handoff "
+            'entry a { prompt = "x" } exit b { prompt = "y" } a -> b }'
+        )
+        flow = parse_flow(source)
+        assert flow.nodes["a"].tasks is None
+        assert flow.nodes["b"].tasks is None
+
+    def test_flow_and_node_tasks_together(self):
+        source = (
+            "flow f { budget = 1h on_error = pause context = handoff tasks = true "
+            'entry a { prompt = "x" tasks = false } '
+            'task b { prompt = "y" } '
+            'exit c { prompt = "z" } a -> b b -> c }'
+        )
+        flow = parse_flow(source)
+        assert flow.tasks is True
+        assert flow.nodes["a"].tasks is False
+        assert flow.nodes["b"].tasks is None  # inherits from flow
+        assert flow.nodes["c"].tasks is None
+
+    def test_task_node_tasks(self):
+        source = (
+            "flow f { budget = 1h on_error = pause context = handoff "
+            'entry a { prompt = "x" } '
+            'task t { prompt = "work" tasks = true } '
+            'exit b { prompt = "y" } a -> t t -> b }'
+        )
+        flow = parse_flow(source)
+        assert flow.nodes["t"].tasks is True
+
+    def test_atomic_node_tasks(self):
+        source = (
+            "flow f { budget = 1h on_error = pause context = handoff "
+            'entry a { prompt = "x" } '
+            'atomic d { prompt = "deploy" tasks = true } '
+            'exit b { prompt = "y" } a -> d d -> b }'
+        )
+        flow = parse_flow(source)
+        assert flow.nodes["d"].tasks is True
+
+    def test_wait_node_cannot_have_tasks(self):
+        """wait nodes use wait_body, not node_body, so tasks is not accepted."""
+        source = (
+            "flow f { budget = 1h on_error = pause context = handoff "
+            'entry a { prompt = "x" } '
+            "wait w { delay = 5s tasks = true } "
+            'exit b { prompt = "y" } a -> w w -> b }'
+        )
+        with pytest.raises(FlowParseError):
+            parse_flow(source)
+
+    def test_fence_node_cannot_have_tasks(self):
+        """fence nodes have empty body, so tasks is not accepted."""
+        source = (
+            "flow f { budget = 1h on_error = pause context = handoff "
+            'entry a { prompt = "x" } '
+            "fence g { tasks = true } "
+            'exit b { prompt = "y" } a -> g g -> b }'
+        )
+        with pytest.raises(FlowParseError):
+            parse_flow(source)
