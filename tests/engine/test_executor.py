@@ -5328,6 +5328,177 @@ class TestCancelInterruptedTask:
         assert run.status == "cancelled"
 
 
+# ---------------------------------------------------------------------------
+# Tests: ENGINE-038 — retry_task / skip_task resume paused executor loop
+# ---------------------------------------------------------------------------
+
+
+class TestRetryTaskResumesPausedFlow:
+    """retry_task() on a paused flow should unpause and wake the executor loop,
+    without requiring a separate resume() call."""
+
+    async def test_retry_task_resumes_and_completes(self) -> None:
+        """Retry a failed task on a paused flow. Flow should complete without resume()."""
+        db = _make_db()
+        _events, callback = _collect_events()
+        mock_mgr = MockSubprocessManager()
+        # "work" fails the first time
+        mock_mgr.task_responses["work"] = (1, [])
+        executor = FlowExecutor(db, callback, mock_mgr)
+
+        flow = _make_linear_flow(on_error=ErrorPolicy.PAUSE)
+        flow_run_id, execute_task = await _execute_until_paused(
+            executor, flow, {}, "/workspace", db
+        )
+
+        run = db.get_flow_run(flow_run_id)
+        assert run is not None
+        assert run.status == "paused"
+
+        # Make "work" succeed on retry
+        del mock_mgr.task_responses["work"]
+
+        # Retry the failed task -- this should unpause the flow automatically
+        tasks = db.list_task_executions(flow_run_id)
+        failed_task = next(t for t in tasks if t.status == "failed")
+        await executor.retry_task(flow_run_id, failed_task.id)
+
+        # Flow should complete without calling resume()
+        await execute_task
+
+        run = db.get_flow_run(flow_run_id)
+        assert run is not None
+        assert run.status == "completed"
+
+    async def test_retry_task_emits_flow_status_changed(self) -> None:
+        """retry_task() should emit FLOW_STATUS_CHANGED (paused -> running)."""
+        db = _make_db()
+        events, callback = _collect_events()
+        mock_mgr = MockSubprocessManager()
+        mock_mgr.task_responses["work"] = (1, [])
+        executor = FlowExecutor(db, callback, mock_mgr)
+
+        flow = _make_linear_flow(on_error=ErrorPolicy.PAUSE)
+        flow_run_id, execute_task = await _execute_until_paused(
+            executor, flow, {}, "/workspace", db
+        )
+
+        # Clear events captured so far to isolate the retry event
+        events.clear()
+
+        tasks = db.list_task_executions(flow_run_id)
+        failed_task = next(t for t in tasks if t.status == "failed")
+
+        # Make "work" succeed on retry
+        del mock_mgr.task_responses["work"]
+        await executor.retry_task(flow_run_id, failed_task.id)
+
+        # Should have emitted FLOW_STATUS_CHANGED
+        status_events = [e for e in events if e.type == EventType.FLOW_STATUS_CHANGED]
+        assert len(status_events) >= 1
+        evt = status_events[0]
+        assert evt.payload["old_status"] == "paused"
+        assert evt.payload["new_status"] == "running"
+        assert evt.payload["reason"] == "Task retried"
+
+        # Clean up
+        await execute_task
+
+    async def test_retry_task_updates_db_status_to_running(self) -> None:
+        """retry_task() on a paused flow should update DB flow status to running."""
+        db = _make_db()
+        _events, callback = _collect_events()
+        mock_mgr = MockSubprocessManager()
+        mock_mgr.task_responses["work"] = (1, [])
+        executor = FlowExecutor(db, callback, mock_mgr)
+
+        flow = _make_linear_flow(on_error=ErrorPolicy.PAUSE)
+        flow_run_id, execute_task = await _execute_until_paused(
+            executor, flow, {}, "/workspace", db
+        )
+
+        run = db.get_flow_run(flow_run_id)
+        assert run is not None
+        assert run.status == "paused"
+
+        # Make "work" succeed on retry
+        del mock_mgr.task_responses["work"]
+
+        tasks = db.list_task_executions(flow_run_id)
+        failed_task = next(t for t in tasks if t.status == "failed")
+        await executor.retry_task(flow_run_id, failed_task.id)
+
+        # DB status should be running now (before the flow even finishes)
+        run = db.get_flow_run(flow_run_id)
+        assert run is not None
+        assert run.status == "running"
+
+        await execute_task
+
+
+class TestSkipTaskResumesPausedFlow:
+    """skip_task() on a paused flow should unpause and wake the executor loop."""
+
+    async def test_skip_task_resumes_and_completes(self) -> None:
+        """Skip a failed task on a paused flow. Flow should complete without resume()."""
+        db = _make_db()
+        _events, callback = _collect_events()
+        mock_mgr = MockSubprocessManager()
+        mock_mgr.task_responses["work"] = (1, [])
+        executor = FlowExecutor(db, callback, mock_mgr)
+
+        flow = _make_linear_flow(on_error=ErrorPolicy.PAUSE)
+        flow_run_id, execute_task = await _execute_until_paused(
+            executor, flow, {}, "/workspace", db
+        )
+
+        run = db.get_flow_run(flow_run_id)
+        assert run is not None
+        assert run.status == "paused"
+
+        # Skip the failed task -- this should unpause the flow automatically
+        tasks = db.list_task_executions(flow_run_id)
+        failed_task = next(t for t in tasks if t.status == "failed")
+        await executor.skip_task(flow_run_id, failed_task.id)
+
+        # Flow should complete without calling resume()
+        await execute_task
+
+        run = db.get_flow_run(flow_run_id)
+        assert run is not None
+        assert run.status == "completed"
+
+    async def test_skip_task_emits_flow_status_changed(self) -> None:
+        """skip_task() should emit FLOW_STATUS_CHANGED (paused -> running)."""
+        db = _make_db()
+        events, callback = _collect_events()
+        mock_mgr = MockSubprocessManager()
+        mock_mgr.task_responses["work"] = (1, [])
+        executor = FlowExecutor(db, callback, mock_mgr)
+
+        flow = _make_linear_flow(on_error=ErrorPolicy.PAUSE)
+        flow_run_id, execute_task = await _execute_until_paused(
+            executor, flow, {}, "/workspace", db
+        )
+
+        events.clear()
+
+        tasks = db.list_task_executions(flow_run_id)
+        failed_task = next(t for t in tasks if t.status == "failed")
+        await executor.skip_task(flow_run_id, failed_task.id)
+
+        # Should have emitted FLOW_STATUS_CHANGED
+        status_events = [e for e in events if e.type == EventType.FLOW_STATUS_CHANGED]
+        assert len(status_events) >= 1
+        evt = status_events[0]
+        assert evt.payload["old_status"] == "paused"
+        assert evt.payload["new_status"] == "running"
+        assert evt.payload["reason"] == "Task skipped"
+
+        # Clean up
+        await execute_task
+
+
 class TestTaskInterruptedEventType:
     """Test that the TASK_INTERRUPTED event type exists and works."""
 

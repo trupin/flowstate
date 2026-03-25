@@ -335,6 +335,61 @@ class TestSkipTaskAction:
         mock_executor.skip_task.assert_called_once_with("run-1", "task-1")
 
 
+class TestTaskControlErrorHandling:
+    """ENGINE-038: WebSocket _handle_task_control catches executor errors."""
+
+    def test_retry_task_value_error_does_not_kill_connection(self) -> None:
+        """If retry_task raises ValueError, the WS connection stays alive."""
+        mock_executor = MagicMock()
+        mock_executor.retry_task = AsyncMock(
+            side_effect=ValueError("Can only retry failed tasks, got status: completed")
+        )
+
+        run_manager = RunManager()
+        run_manager._executors["run-1"] = mock_executor
+
+        ws_hub = WebSocketHub()
+        client = _make_test_client(ws_hub=ws_hub, run_manager=run_manager)
+
+        with client.websocket_connect("/ws") as ws:
+            # Send retry that will raise ValueError
+            ws.send_json(
+                {
+                    "action": "retry_task",
+                    "flow_run_id": "run-1",
+                    "payload": {"task_execution_id": "task-1"},
+                }
+            )
+            # Connection should still be alive -- send another action to verify
+            ws.send_json({"action": "subscribe", "flow_run_id": "run-1"})
+
+        mock_executor.retry_task.assert_called_once_with("run-1", "task-1")
+
+    def test_skip_task_runtime_error_does_not_kill_connection(self) -> None:
+        """If skip_task raises RuntimeError, the WS connection stays alive."""
+        mock_executor = MagicMock()
+        mock_executor.skip_task = AsyncMock(side_effect=RuntimeError("Flow run not found"))
+
+        run_manager = RunManager()
+        run_manager._executors["run-1"] = mock_executor
+
+        ws_hub = WebSocketHub()
+        client = _make_test_client(ws_hub=ws_hub, run_manager=run_manager)
+
+        with client.websocket_connect("/ws") as ws:
+            ws.send_json(
+                {
+                    "action": "skip_task",
+                    "flow_run_id": "run-1",
+                    "payload": {"task_execution_id": "task-1"},
+                }
+            )
+            # Connection should still be alive
+            ws.send_json({"action": "subscribe", "flow_run_id": "run-1"})
+
+        mock_executor.skip_task.assert_called_once_with("run-1", "task-1")
+
+
 class TestAbortAction:
     def test_abort_action(self) -> None:
         """Send abort. Verify executor.cancel() called (abort maps to cancel)."""

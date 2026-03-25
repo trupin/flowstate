@@ -247,10 +247,13 @@ class WebSocketHub:
         executor = self._run_manager.get_executor(flow_run_id)
         if not executor:
             return
-        if action == "retry_task":
-            await executor.retry_task(flow_run_id, task_id)
-        elif action == "skip_task":
-            await executor.skip_task(flow_run_id, task_id)
+        try:
+            if action == "retry_task":
+                await executor.retry_task(flow_run_id, task_id)
+            elif action == "skip_task":
+                await executor.skip_task(flow_run_id, task_id)
+        except (ValueError, RuntimeError) as e:
+            logger.warning("Task control failed: %s", e)
 
     async def _replay_events(
         self, websocket: WebSocket, flow_run_id: str, after_timestamp: str

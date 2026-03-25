@@ -1564,6 +1564,25 @@ class FlowExecutor:
         # Add to pending set so it gets picked up
         self._pending_tasks.add(new_task_id)
 
+        # If the flow is paused (e.g., on_error=pause), resume it so the main
+        # loop wakes up and executes the retried task.
+        if self._paused:
+            self._paused = False
+            self._db.update_flow_run_status(flow_run_id, "running")
+            self._emit(
+                FlowEvent(
+                    type=EventType.FLOW_STATUS_CHANGED,
+                    flow_run_id=flow_run_id,
+                    timestamp=_now_iso(),
+                    payload={
+                        "old_status": "paused",
+                        "new_status": "running",
+                        "reason": "Task retried",
+                    },
+                )
+            )
+            self._resume_event.set()
+
     async def skip_task(self, flow_run_id: str, task_execution_id: str) -> None:
         """Skip a failed task and continue via first outgoing edge."""
         task = self._db.get_task_execution(task_execution_id)
@@ -1607,6 +1626,25 @@ class FlowExecutor:
                 self._budget or BudgetGuard(3600),
                 self._pending_tasks,
             )
+
+        # If the flow is paused (e.g., on_error=pause), resume it so the main
+        # loop wakes up and processes the next task(s).
+        if self._paused:
+            self._paused = False
+            self._db.update_flow_run_status(flow_run_id, "running")
+            self._emit(
+                FlowEvent(
+                    type=EventType.FLOW_STATUS_CHANGED,
+                    flow_run_id=flow_run_id,
+                    timestamp=_now_iso(),
+                    payload={
+                        "old_status": "paused",
+                        "new_status": "running",
+                        "reason": "Task skipped",
+                    },
+                )
+            )
+            self._resume_event.set()
 
     # ------------------------------------------------------------------ #
     # Wait node execution

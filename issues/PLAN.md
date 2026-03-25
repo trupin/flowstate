@@ -241,7 +241,7 @@
 | SERVER-014 | Message + interrupt API endpoints                         | server | P1       | ENGINE-036, STATE-009 | done   |
 | UI-037     | Always-visible input box + interrupt button               | ui     | P1       | SERVER-014            | done   |
 | ENGINE-037 | Harden: Remove SubprocessManager from task execution      | engine | P2       | ENGINE-035            | todo   |
-| ENGINE-038 | Fix retry_task not waking paused executor loop             | engine | P0       | —                     | todo   |
+| ENGINE-038 | Fix retry_task not waking paused executor loop             | engine | P0       | —                     | done   |
 
 
 ### Phase 14 — Agent Subtask Management
