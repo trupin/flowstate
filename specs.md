@@ -278,7 +278,7 @@ Keywords:       flow, entry, task, exit, wait, fence, atomic,
                 when, input, output, budget, workspace, on_error,
                 context, prompt, cwd, judge, worktree, max_parallel,
                 skip_permissions, harness, schedule, on_overlap, delay,
-                files, awaits, after, at
+                files, awaits, after, at, subtasks
 Operators:      ->  =  [  ]  {  }  ,  :
 Template vars:  {{identifier}}
 ```
@@ -295,6 +295,7 @@ flow <name> {
     worktree = true | false               // optional — default: true (git worktree isolation)
     max_parallel = <number>               // optional — default: 1 (serial processing)
     harness = <string>                    // optional — default: "claude" (agent runtime)
+    subtasks = true | false               // optional — default: false (agent subtask management)
     skip_permissions = true | false       // optional — default: false
     schedule = <cron_expression>          // optional — recurring flow
     on_overlap = skip | queue | parallel  // optional — default: skip
@@ -354,6 +355,7 @@ entry <name> {
     cwd = <path>           // optional — overrides flow-level workspace
     judge = true | false   // optional — overrides flow-level judge setting
     harness = <string>     // optional — overrides flow-level harness
+    subtasks = true | false   // optional — overrides flow-level subtasks setting
 }
 
 task <name> {
@@ -361,11 +363,13 @@ task <name> {
     cwd = <path>           // optional — overrides flow-level workspace
     judge = true | false   // optional — overrides flow-level judge setting
     harness = <string>     // optional — overrides flow-level harness
+    subtasks = true | false   // optional — overrides flow-level subtasks setting
 }
 
 exit <name> {
     prompt = <string>
     cwd = <path>           // optional — overrides flow-level workspace
+    subtasks = true | false   // optional — overrides flow-level subtasks setting
 }
 
 wait <name> {
@@ -380,6 +384,7 @@ atomic <name> {
     prompt = <string>
     cwd = <path>           // optional
     harness = <string>     // optional — overrides flow-level harness
+    subtasks = true | false   // optional — overrides flow-level subtasks setting
 }
 ```
 
@@ -1562,9 +1567,9 @@ The sidebar provides navigation across all three sections of the app:
 See `src/flowstate/dsl/grammar.lark` for the authoritative grammar. Key additions beyond the original MVP:
 
 - **`input {}` / `output {}` blocks** replace `param` declarations
-- **`judge = true|false`**, **`worktree = true|false`**, **`skip_permissions = true|false`**, **`max_parallel = N`**, **`harness = "<name>"`** flow attributes
+- **`judge = true|false`**, **`worktree = true|false`**, **`skip_permissions = true|false`**, **`max_parallel = N`**, **`harness = "<name>"`**, **`subtasks = true|false`** flow attributes
 - **`wait`**, **`fence`**, **`atomic`** node types
-- **`judge = true|false`** and **`harness = "<name>"`** per-node overrides
+- **`judge = true|false`**, **`harness = "<name>"`**, and **`subtasks = true|false`** per-node overrides
 - **`files`** and **`awaits`** edge types with timing variants (`after`, `at`)
 - **`BOOL_LIT`** token for boolean attributes
 
@@ -1577,10 +1582,10 @@ See `src/flowstate/dsl/ast.py` for the authoritative definitions. All dataclasse
 - **`ContextMode`**: HANDOFF, SESSION, NONE
 - **`ErrorPolicy`**: PAUSE, ABORT, SKIP
 - **`TaskTypeField`**: Represents a single field in `input {}` or `output {}` (name, type, optional default)
-- **`Node`**: name, node_type, prompt, cwd, judge (per-node override), harness (per-node override), wait_delay_seconds, wait_until_cron
+- **`Node`**: name, node_type, prompt, cwd, judge (per-node override), harness (per-node override), subtasks (per-node override), wait_delay_seconds, wait_until_cron
 - **`EdgeConfig`**: context override, delay_seconds, schedule (cron)
 - **`Edge`**: edge_type, source, target, fork_targets (tuple), join_sources (tuple), condition, config
-- **`Flow`**: name, budget_seconds, on_error, context, workspace, schedule, on_overlap, skip_permissions, judge (default False), harness (default "claude"), worktree (default True), input_fields (tuple of TaskTypeField), output_fields, max_parallel (default 1), nodes (dict), edges (tuple)
+- **`Flow`**: name, budget_seconds, on_error, context, workspace, schedule, on_overlap, skip_permissions, judge (default False), harness (default "claude"), subtasks (default False), worktree (default True), input_fields (tuple of TaskTypeField), output_fields, max_parallel (default 1), nodes (dict), edges (tuple)
 
 ---
 
@@ -1683,7 +1688,75 @@ flowstate trigger <flow-name>
 
 ---
 
-## 14. Appendices
+## 14. Agent Subtask Management
+
+### 14.1 Overview
+
+Agents executing in nodes can optionally have access to a **subtask management system**. When enabled, the engine injects API instructions into the agent's prompt so it can create, list, and update subtasks tracked in the Flowstate database. Subtasks are visible in the UI for real-time progress monitoring.
+
+This is an opt-in feature controlled by the `subtasks` attribute at the flow and node level.
+
+### 14.2 DSL Attribute
+
+```
+flow my_flow {
+    subtasks = true | false    // optional — default: false
+    ...
+
+    task my_task {
+        subtasks = true | false  // optional — overrides flow-level default
+        ...
+    }
+}
+```
+
+Inheritance: `node.subtasks → flow.subtasks → false`. Same pattern as `judge`.
+
+Only entry, task, exit, and atomic nodes can have `subtasks` (they spawn subprocesses). Wait and fence nodes cannot.
+
+### 14.3 Subtask Data Model
+
+Each subtask belongs to a `task_execution` and has:
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `id` | UUID | Unique identifier |
+| `task_execution_id` | UUID | Parent task execution |
+| `title` | string | Human-readable description |
+| `status` | enum | `todo`, `in_progress`, `done` |
+| `created_at` | ISO 8601 | Creation timestamp |
+| `updated_at` | ISO 8601 | Last update timestamp |
+
+Subtasks persist after the parent task completes. They are available for auditing and can be queried by downstream agents.
+
+### 14.4 REST API Endpoints
+
+| Method | Path | Description |
+|--------|------|-------------|
+| `POST` | `/api/runs/{run_id}/tasks/{task_execution_id}/subtasks` | Create a subtask. Body: `{"title": "..."}`. Returns 201. |
+| `GET` | `/api/runs/{run_id}/tasks/{task_execution_id}/subtasks` | List subtasks for a task execution. Returns array. |
+| `PATCH` | `/api/runs/{run_id}/tasks/{task_execution_id}/subtasks/{subtask_id}` | Update subtask status. Body: `{"status": "done"}`. Returns 200. |
+
+### 14.5 Prompt Injection
+
+When `subtasks` is enabled for a node, the engine appends a "Task Management" section to the agent's prompt containing:
+
+1. The Flowstate server base URL
+2. The current task execution ID and run ID
+3. Curl examples for creating, listing, and updating subtasks
+4. In handoff mode: the predecessor's task execution ID for introspection
+
+### 14.6 Context Passing
+
+Subtask data is **not** included in SUMMARY.md or passed automatically to successor nodes. Instead, the handoff prompt includes the predecessor's `task_execution_id`, allowing downstream agents to query the predecessor's subtasks via the API if needed.
+
+### 14.7 WebSocket Events
+
+A `SUBTASK_UPDATED` event is emitted when a subtask is created or updated. Payload includes the full subtask data and `flow_run_id` for client-side filtering.
+
+---
+
+## 15. Appendices
 
 ### Appendix A: Example Flows
 

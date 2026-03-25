@@ -7,7 +7,7 @@ engine
 todo
 
 ## Priority
-P2 (nice-to-have)
+P0 (critical path)
 
 ## Dependencies
 - Depends on: ENGINE-035
