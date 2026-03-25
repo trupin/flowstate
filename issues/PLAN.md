@@ -233,7 +233,7 @@
 
 | Issue      | Title                                                     | Domain | Priority | Depends On            | Status |
 | ---------- | --------------------------------------------------------- | ------ | -------- | --------------------- | ------ |
-| ENGINE-035 | ACP-only agent execution + long-lived session lifecycle   | engine | P0       | —                     | in_progress |
+| ENGINE-035 | ACP-only agent execution + long-lived session lifecycle   | engine | P0       | —                     | done   |
 | STATE-009  | Task message queue + interrupted status + user_input log  | state  | P1       | —                     | done   |
 | ENGINE-036 | Message queue + re-invocation loop + interrupt in executor| engine | P1       | ENGINE-035, STATE-009 | todo   |
 | SERVER-014 | Message + interrupt API endpoints                         | server | P1       | ENGINE-036, STATE-009 | todo   |

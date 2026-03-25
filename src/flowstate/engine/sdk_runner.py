@@ -272,3 +272,17 @@ class SDKRunner:
 
     async def kill(self, session_id: str) -> None:
         """No-op — SDK manages session lifecycle via async generator."""
+
+    async def start_session(self, workspace: str, session_id: str) -> None:
+        """No-op for SDKRunner -- each run_task call manages its own lifecycle."""
+
+    async def prompt(self, session_id: str, message: str) -> AsyncGenerator[StreamEvent, None]:
+        """Not supported by SDKRunner -- use run_task() instead.
+
+        Yields nothing. SDKRunner does not support long-lived sessions.
+        """
+        return  # pragma: no cover
+        yield  # type: ignore[misc]  # make this an async generator
+
+    async def interrupt(self, session_id: str) -> None:
+        """No-op — SDK manages session lifecycle via async generator."""

@@ -1,6 +1,6 @@
 """Harness protocol -- structural typing for task execution backends.
 
-Defines the ``Harness`` Protocol that formalizes the 4-method interface
+Defines the ``Harness`` Protocol that formalizes the 7-method interface
 shared by ``SubprocessManager``, ``SDKRunner``, ``AcpHarness``, and test
 doubles.  ``HarnessManager`` is a registry that resolves harness names
 (e.g. "claude") to concrete instances, lazily instantiating ``AcpHarness``
@@ -15,7 +15,9 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Protocol
 
-#: Default harness name — the Claude Code CLI (native protocol, not ACP).
+#: Default harness name — used as the registry key for the default backend.
+#: The actual backend (SubprocessManager or AcpHarness) is determined by the
+#: HarnessManager configuration. ACP is the preferred default.
 DEFAULT_HARNESS: str = "claude"
 
 if TYPE_CHECKING:
@@ -27,14 +29,24 @@ if TYPE_CHECKING:
 class Harness(Protocol):
     """Structural protocol for task execution backends.
 
-    Any object with these four async methods satisfies the protocol.
-    ``SubprocessManager``, ``SDKRunner``, and ``MockSubprocessManager`` all
-    match this shape without inheriting from ``Harness``.
+    Any object with these seven methods satisfies the protocol.
+    ``SubprocessManager``, ``SDKRunner``, ``AcpHarness``, and
+    ``MockSubprocessManager`` all match this shape without inheriting
+    from ``Harness``.
 
-    Note: ``run_task`` and ``run_task_resume`` are declared without ``async``
-    because the implementations are async generators (they ``yield``), whose
-    type is ``AsyncGenerator[StreamEvent, None]`` directly — not
-    ``Coroutine[..., AsyncGenerator[...]]``.
+    The protocol supports two usage patterns:
+
+    1. **Convenience wrappers** (``run_task`` / ``run_task_resume``):
+       One-shot lifecycle — spawn subprocess, send prompt, stream events,
+       clean up. Backward-compatible with existing executor code.
+
+    2. **Long-lived sessions** (``start_session`` / ``prompt`` / ``interrupt``):
+       Subprocess survives between ``prompt()`` calls, enabling multi-turn
+       interaction and interrupt-without-kill.
+
+    Note: ``run_task``, ``run_task_resume``, and ``prompt`` are declared
+    without ``async`` because the implementations are async generators (they
+    ``yield``), whose type is ``AsyncGenerator[StreamEvent, None]`` directly.
     """
 
     def run_task(
@@ -60,6 +72,12 @@ class Harness(Protocol):
     ) -> JudgeResult: ...
 
     async def kill(self, session_id: str) -> None: ...
+
+    async def start_session(self, workspace: str, session_id: str) -> None: ...
+
+    def prompt(self, session_id: str, message: str) -> AsyncGenerator[StreamEvent, None]: ...
+
+    async def interrupt(self, session_id: str) -> None: ...
 
 
 class HarnessNotFoundError(Exception):

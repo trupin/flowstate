@@ -206,8 +206,7 @@ class JudgeProtocol:
 
         if result.decision not in valid_targets:
             raise ValueError(
-                f"Judge returned invalid target '{result.decision}'. "
-                f"Valid targets: {valid_targets}"
+                f"Judge returned invalid target '{result.decision}'. Valid targets: {valid_targets}"
             )
 
         if not (0.0 <= result.confidence <= 1.0):

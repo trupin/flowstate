@@ -216,8 +216,7 @@ class FlowScheduler:
             )
         except (ValueError, KeyError):
             logger.exception(
-                f"Invalid cron expression '{schedule.cron_expression}' "
-                f"for schedule {schedule.id}"
+                f"Invalid cron expression '{schedule.cron_expression}' for schedule {schedule.id}"
             )
             # Disable the schedule to prevent repeated errors
             self._db.update_flow_schedule(schedule.id, enabled=0)

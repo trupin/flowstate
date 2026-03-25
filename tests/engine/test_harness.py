@@ -36,6 +36,9 @@ class FakeHarness:
     def __init__(self) -> None:
         self.calls: list[tuple[str, str, str]] = []
         self.kill_calls: list[str] = []
+        self.started_sessions: list[tuple[str, str]] = []
+        self.prompt_calls: list[tuple[str, str]] = []
+        self.interrupt_calls: list[str] = []
 
     async def run_task(
         self,
@@ -73,6 +76,25 @@ class FakeHarness:
 
     async def kill(self, session_id: str) -> None:
         self.kill_calls.append(session_id)
+
+    async def start_session(self, workspace: str, session_id: str) -> None:
+        self.started_sessions.append((workspace, session_id))
+
+    async def prompt(self, session_id: str, message: str) -> AsyncGenerator[StreamEvent, None]:
+        self.prompt_calls.append((session_id, message))
+        yield StreamEvent(
+            type=StreamEventType.RESULT,
+            content={"type": "result", "result": "", "stop_reason": "end_turn"},
+            raw='{"type": "result", "result": "", "stop_reason": "end_turn"}',
+        )
+        yield StreamEvent(
+            type=StreamEventType.SYSTEM,
+            content={"event": "process_exit", "exit_code": 0, "stderr": ""},
+            raw="Process exited with code 0",
+        )
+
+    async def interrupt(self, session_id: str) -> None:
+        self.interrupt_calls.append(session_id)
 
 
 # ---------------------------------------------------------------------------
@@ -165,6 +187,9 @@ class TestHarnessProtocolSatisfaction:
         assert callable(getattr(fake, "run_task_resume", None))
         assert callable(getattr(fake, "run_judge", None))
         assert callable(getattr(fake, "kill", None))
+        assert callable(getattr(fake, "start_session", None))
+        assert callable(getattr(fake, "prompt", None))
+        assert callable(getattr(fake, "interrupt", None))
 
     def test_harness_manager_accepts_subprocess_manager(self) -> None:
         """HarnessManager constructor accepts SubprocessManager as default_harness."""

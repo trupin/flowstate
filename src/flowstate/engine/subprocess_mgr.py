@@ -242,6 +242,21 @@ class SubprocessManager:
             except TimeoutError:
                 proc.kill()
 
+    async def start_session(self, workspace: str, session_id: str) -> None:
+        """No-op for SubprocessManager -- each run_task spawns its own process."""
+
+    async def prompt(self, session_id: str, message: str) -> AsyncGenerator[StreamEvent, None]:
+        """Not supported by SubprocessManager -- use run_task() instead.
+
+        Yields nothing. SubprocessManager does not support long-lived sessions.
+        """
+        return  # pragma: no cover
+        yield  # type: ignore[misc]  # make this an async generator
+
+    async def interrupt(self, session_id: str) -> None:
+        """Interrupt by killing the subprocess (no graceful cancel support)."""
+        await self.kill(session_id)
+
     async def _run_streaming(
         self, cmd: list[str], workspace: str, session_id: str
     ) -> AsyncGenerator[StreamEvent, None]:

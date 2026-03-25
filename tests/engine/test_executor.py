@@ -123,6 +123,22 @@ class MockSubprocessManager(SubprocessManager):
     async def kill(self, session_id: str) -> None:
         self.kill_calls.append(session_id)
 
+    async def start_session(self, workspace: str, session_id: str) -> None:
+        pass
+
+    async def prompt(self, session_id: str, message: str) -> AsyncGenerator[StreamEvent, None]:
+        exit_code, extra_events = self._find_response(message)
+        for evt in extra_events:
+            yield evt
+        yield StreamEvent(
+            type=StreamEventType.SYSTEM,
+            content={"event": "process_exit", "exit_code": exit_code, "stderr": ""},
+            raw=f"Process exited with code {exit_code}",
+        )
+
+    async def interrupt(self, session_id: str) -> None:
+        pass
+
     def _find_response(self, prompt: str) -> tuple[int, list[StreamEvent]]:
         """Match a prompt against configured responses.
 

@@ -184,8 +184,7 @@ def resolve_cwd(node: Node, flow: Flow) -> str:
     if flow.workspace is not None:
         return flow.workspace
     raise CwdResolutionError(
-        f"No working directory for node '{node.name}': "
-        f"neither node.cwd nor flow.workspace is set"
+        f"No working directory for node '{node.name}': neither node.cwd nor flow.workspace is set"
     )
 
 

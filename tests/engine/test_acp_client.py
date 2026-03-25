@@ -787,6 +787,9 @@ class TestAcpHarnessProtocolSatisfaction:
         assert callable(getattr(harness, "run_task_resume", None))
         assert callable(getattr(harness, "run_judge", None))
         assert callable(getattr(harness, "kill", None))
+        assert callable(getattr(harness, "start_session", None))
+        assert callable(getattr(harness, "prompt", None))
+        assert callable(getattr(harness, "interrupt", None))
 
     def test_harness_manager_accepts_acp_harness(self) -> None:
         """HarnessManager accepts AcpHarness via register."""
@@ -796,3 +799,289 @@ class TestAcpHarnessProtocolSatisfaction:
         mgr = HarnessManager(default_harness=MagicMock())
         mgr.register("custom", harness)
         assert mgr.get("custom") is harness
+
+
+# ---------------------------------------------------------------------------
+# Tests: AcpHarness long-lived session API
+# ---------------------------------------------------------------------------
+
+
+def _make_mock_spawn_for_session(
+    session_id: str = "acp-sess-1",
+    stop_reason: str = "end_turn",
+    updates: list[Any] | None = None,
+) -> tuple[Any, Any, Any, list[Any]]:
+    """Create mocks for the long-lived session API tests.
+
+    Returns (mock_spawn_ctx_class, conn, process, captured_bridge).
+    The mock spawn context is designed to be used with manual __aenter__/__aexit__.
+    """
+    conn = AsyncMock()
+    conn.initialize = AsyncMock()
+    conn.new_session = AsyncMock(return_value=_make_new_session_response(session_id))
+    conn.load_session = AsyncMock(return_value=MagicMock(session_id=session_id))
+    conn.cancel = AsyncMock()
+
+    process = MagicMock()
+    process.terminate = MagicMock()
+    process.kill = MagicMock()
+    process.wait = AsyncMock()
+    process.returncode = None  # Process is alive
+
+    # The prompt() method will trigger session_update callbacks on the bridge
+    _captured_bridge: list[Any] = [None]
+
+    async def prompt_side_effect(prompt: Any, session_id: str, **kwargs: Any) -> MagicMock:
+        bridge = _captured_bridge[0]
+        if updates:
+            for update in updates:
+                await bridge.session_update(session_id, update)
+        return _make_prompt_response(stop_reason)
+
+    conn.prompt = AsyncMock(side_effect=prompt_side_effect)
+
+    class _MockContextManager:
+        def __init__(self, to_client: Any, *args: Any, **kwargs: Any) -> None:
+            if callable(to_client):
+                _captured_bridge[0] = to_client(conn)
+            else:
+                _captured_bridge[0] = to_client
+
+        async def __aenter__(self) -> tuple[Any, Any]:
+            return (conn, process)
+
+        async def __aexit__(self, *args: Any) -> None:
+            pass
+
+    return _MockContextManager, conn, process, _captured_bridge
+
+
+class TestAcpHarnessStartSession:
+    """Test AcpHarness.start_session for long-lived session creation."""
+
+    @pytest.mark.asyncio
+    async def test_start_session_creates_session(self) -> None:
+        """start_session spawns subprocess and initializes ACP."""
+        mock_ctx, conn, _process, _bridge = _make_mock_spawn_for_session()
+
+        harness = AcpHarness(command=["test-agent"])
+
+        with patch("acp.spawn_agent_process", mock_ctx):
+            await harness.start_session("/workspace", "sess-1")
+
+        conn.initialize.assert_called_once()
+        conn.new_session.assert_called_once_with(cwd="/workspace")
+        assert "sess-1" in harness._sessions
+
+    @pytest.mark.asyncio
+    async def test_start_session_kills_existing(self) -> None:
+        """start_session kills existing session with same ID before creating new one."""
+        mock_ctx, _conn, process, _bridge = _make_mock_spawn_for_session()
+        process.returncode = None
+
+        harness = AcpHarness(command=["test-agent"])
+
+        with patch("acp.spawn_agent_process", mock_ctx):
+            # Start first session
+            await harness.start_session("/workspace", "sess-dup")
+            first_session = harness._sessions.get("sess-dup")
+            assert first_session is not None
+
+            # Start another with same ID -- should kill the first
+            await harness.start_session("/workspace", "sess-dup")
+            # A new session should exist
+            assert "sess-dup" in harness._sessions
+
+
+class TestAcpHarnessPrompt:
+    """Test AcpHarness.prompt for sending messages to existing sessions."""
+
+    @pytest.mark.asyncio
+    async def test_prompt_yields_events(self) -> None:
+        """prompt() sends message and yields ASSISTANT + RESULT + SYSTEM events."""
+        updates = [_make_agent_message_chunk("Response text")]
+        mock_ctx, _conn, _process, _bridge = _make_mock_spawn_for_session(updates=updates)
+
+        harness = AcpHarness(command=["test-agent"])
+
+        with patch("acp.spawn_agent_process", mock_ctx):
+            await harness.start_session("/workspace", "sess-p1")
+            events = []
+            async for event in harness.prompt("sess-p1", "Do something"):
+                events.append(event)
+
+        assert len(events) == 3
+        assert events[0].type == StreamEventType.ASSISTANT
+        assert events[0].content["message"]["content"][0]["text"] == "Response text"
+        assert events[1].type == StreamEventType.RESULT
+        assert events[2].type == StreamEventType.SYSTEM
+        assert events[2].content["exit_code"] == 0
+
+    @pytest.mark.asyncio
+    async def test_prompt_nonexistent_session_raises(self) -> None:
+        """prompt() raises AcpSessionError for unknown session ID."""
+        from flowstate.engine.acp_client import AcpSessionError
+
+        harness = AcpHarness(command=["test-agent"])
+
+        with pytest.raises(AcpSessionError, match="No active session"):
+            async for _ in harness.prompt("nonexistent", "hello"):
+                pass
+
+    @pytest.mark.asyncio
+    async def test_prompt_dead_process_raises(self) -> None:
+        """prompt() raises AcpSessionError if subprocess has exited."""
+        from flowstate.engine.acp_client import AcpSessionError
+
+        mock_ctx, _conn, process, _bridge = _make_mock_spawn_for_session()
+
+        harness = AcpHarness(command=["test-agent"])
+
+        with patch("acp.spawn_agent_process", mock_ctx):
+            await harness.start_session("/workspace", "sess-dead")
+            # Simulate process death
+            process.returncode = 1
+
+            with pytest.raises(AcpSessionError, match="subprocess has exited"):
+                async for _ in harness.prompt("sess-dead", "hello"):
+                    pass
+
+    @pytest.mark.asyncio
+    async def test_prompt_multiple_turns(self) -> None:
+        """Multiple prompt() calls work against the same session."""
+        updates1 = [_make_agent_message_chunk("Turn 1")]
+        updates2 = [_make_agent_message_chunk("Turn 2")]
+
+        mock_ctx, conn, _process, captured_bridge = _make_mock_spawn_for_session(
+            updates=updates1,
+        )
+
+        harness = AcpHarness(command=["test-agent"])
+
+        with patch("acp.spawn_agent_process", mock_ctx):
+            await harness.start_session("/workspace", "sess-multi")
+
+            # First turn
+            events1 = []
+            async for event in harness.prompt("sess-multi", "First prompt"):
+                events1.append(event)
+            assert any(
+                e.type == StreamEventType.ASSISTANT
+                and e.content["message"]["content"][0]["text"] == "Turn 1"
+                for e in events1
+            )
+
+            # Set up for second turn -- change the side effect
+            async def second_prompt(prompt: Any, session_id: str, **kwargs: Any) -> MagicMock:
+                bridge = captured_bridge[0]
+                for update in updates2:
+                    await bridge.session_update(session_id, update)
+                return _make_prompt_response("end_turn")
+
+            conn.prompt = AsyncMock(side_effect=second_prompt)
+
+            # Second turn on same session
+            events2 = []
+            async for event in harness.prompt("sess-multi", "Second prompt"):
+                events2.append(event)
+            assert any(
+                e.type == StreamEventType.ASSISTANT
+                and e.content["message"]["content"][0]["text"] == "Turn 2"
+                for e in events2
+            )
+
+
+class TestAcpHarnessInterrupt:
+    """Test AcpHarness.interrupt for cancelling without killing."""
+
+    @pytest.mark.asyncio
+    async def test_interrupt_calls_cancel(self) -> None:
+        """interrupt() calls conn.cancel() without terminating subprocess."""
+        mock_ctx, conn, process, _bridge = _make_mock_spawn_for_session()
+
+        harness = AcpHarness(command=["test-agent"])
+
+        with patch("acp.spawn_agent_process", mock_ctx):
+            await harness.start_session("/workspace", "sess-int")
+            await harness.interrupt("sess-int")
+
+        conn.cancel.assert_called_once()
+        # Process should NOT be terminated
+        process.terminate.assert_not_called()
+        # Session should still be alive
+        assert "sess-int" in harness._sessions
+
+    @pytest.mark.asyncio
+    async def test_interrupt_nonexistent_is_noop(self) -> None:
+        """interrupt() with unknown session_id does nothing."""
+        harness = AcpHarness(command=["test-agent"])
+        # Should not raise
+        await harness.interrupt("nonexistent")
+
+    @pytest.mark.asyncio
+    async def test_prompt_after_interrupt(self) -> None:
+        """prompt() works after interrupt() (re-invocation)."""
+        updates = [_make_agent_message_chunk("After interrupt")]
+        mock_ctx, _conn, _process, _bridge = _make_mock_spawn_for_session(updates=updates)
+
+        harness = AcpHarness(command=["test-agent"])
+
+        with patch("acp.spawn_agent_process", mock_ctx):
+            await harness.start_session("/workspace", "sess-reuse")
+            # Interrupt
+            await harness.interrupt("sess-reuse")
+            # Then prompt again
+            events = []
+            async for event in harness.prompt("sess-reuse", "Continue work"):
+                events.append(event)
+
+        assert any(e.type == StreamEventType.ASSISTANT for e in events)
+        assert any(e.type == StreamEventType.RESULT for e in events)
+
+
+class TestAcpHarnessKillSession:
+    """Test AcpHarness.kill for long-lived sessions."""
+
+    @pytest.mark.asyncio
+    async def test_kill_terminates_and_removes_session(self) -> None:
+        """kill() terminates subprocess and removes session from tracking."""
+        mock_ctx, _conn, process, _bridge = _make_mock_spawn_for_session()
+
+        harness = AcpHarness(command=["test-agent"])
+
+        with patch("acp.spawn_agent_process", mock_ctx):
+            await harness.start_session("/workspace", "sess-kill")
+            assert "sess-kill" in harness._sessions
+
+            await harness.kill("sess-kill")
+
+        assert "sess-kill" not in harness._sessions
+        process.terminate.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_kill_nonexistent_is_noop(self) -> None:
+        """kill() with unknown session_id does nothing."""
+        harness = AcpHarness(command=["test-agent"])
+        await harness.kill("nonexistent")
+
+
+class TestAcpHarnessRunTaskConvenience:
+    """Test that run_task() still works as a convenience wrapper."""
+
+    @pytest.mark.asyncio
+    async def test_run_task_convenience(self) -> None:
+        """run_task() works end-to-end (backward compat)."""
+        updates = [_make_agent_message_chunk("Hello")]
+        mock_ctx, _conn, _process = _make_mock_spawn_context(updates=updates)
+
+        harness = AcpHarness(command=["test-agent"])
+
+        with patch("acp.spawn_agent_process", mock_ctx):
+            events = []
+            async for event in harness.run_task("Test", "/workspace", "sess-conv"):
+                events.append(event)
+
+        assert len(events) == 3
+        assert events[0].type == StreamEventType.ASSISTANT
+        assert events[1].type == StreamEventType.RESULT
+        assert events[2].type == StreamEventType.SYSTEM
