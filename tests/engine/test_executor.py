@@ -5662,6 +5662,28 @@ class TestBuildTaskManagementInstructions:
         )
         assert "curl -s http://localhost:9000/api/runs/r1/tasks/t1/subtasks" in result
 
+    def test_error_handling_guidance_present(self) -> None:
+        """Instructions include error handling guidance telling agent to continue on failure."""
+        result = build_task_management_instructions(
+            server_base_url="http://localhost:9000",
+            run_id="r1",
+            task_execution_id="t1",
+        )
+        assert "optional" in result.lower()
+        assert "continue" in result.lower()
+        assert "do not retry" in result.lower()
+
+    def test_error_handling_guidance_with_predecessor(self) -> None:
+        """Error handling guidance is present even when predecessor section is included."""
+        result = build_task_management_instructions(
+            server_base_url="http://localhost:9000",
+            run_id="r1",
+            task_execution_id="t1",
+            predecessor_task_execution_id="t0",
+        )
+        assert "optional" in result.lower()
+        assert "continue" in result.lower()
+
 
 def _make_tasks_flow(
     subtasks: bool = True,

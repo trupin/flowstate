@@ -273,6 +273,14 @@ def build_task_management_instructions(
             ]
         )
 
+    lines.extend(
+        [
+            "",
+            "Note: Subtask tracking is optional. If any API call fails, "
+            "continue your main work — do not retry or debug the subtask API.",
+        ]
+    )
+
     return "\n".join(lines)
 
 

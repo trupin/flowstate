@@ -1033,6 +1033,7 @@ async def reorder_tasks(
 # ---------------------------------------------------------------------------
 
 _VALID_SUBTASK_STATUSES = frozenset({"todo", "in_progress", "done"})
+_MAX_SUBTASKS_PER_TASK = 50
 
 
 def _subtask_to_response(row: AgentSubtaskRow) -> SubtaskResponse:
@@ -1097,6 +1098,12 @@ async def create_subtask(
     """
     _validate_task_in_run(request, run_id, task_execution_id)
     db = _get_db(request)
+    existing = db.list_agent_subtasks(task_execution_id)
+    if len(existing) >= _MAX_SUBTASKS_PER_TASK:
+        raise FlowstateError(
+            f"Subtask limit reached: maximum {_MAX_SUBTASKS_PER_TASK} subtasks per task execution",
+            status_code=400,
+        )
     row = db.create_agent_subtask(task_execution_id, body.title)
     _emit_subtask_event(request, run_id, row)
     return _subtask_to_response(row)

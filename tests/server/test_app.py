@@ -324,7 +324,11 @@ class TestErrorHandler:
         response = client.get("/api/_test/error")
         assert response.status_code == 400
         body = response.json()
-        assert body == {"error": "test error", "details": ["detail1", "detail2"]}
+        assert body == {
+            "error": "test error",
+            "detail": "test error",
+            "details": ["detail1", "detail2"],
+        }
 
     def test_flowstate_error_custom_status_code(self) -> None:
         """FlowstateError respects custom status_code."""
@@ -338,7 +342,7 @@ class TestErrorHandler:
         response = client.get("/api/_test/notfound")
         assert response.status_code == 404
         body = response.json()
-        assert body == {"error": "not found", "details": []}
+        assert body == {"error": "not found", "detail": "not found", "details": []}
 
     def test_flowstate_error_empty_details(self) -> None:
         """FlowstateError with no details returns empty list."""

@@ -271,7 +271,7 @@ def create_app(
     async def flowstate_error_handler(request: Request, exc: FlowstateError) -> JSONResponse:
         return JSONResponse(
             status_code=exc.status_code,
-            content={"error": exc.message, "details": exc.details},
+            content={"error": exc.message, "detail": exc.message, "details": exc.details},
         )
 
     # Include REST API routes

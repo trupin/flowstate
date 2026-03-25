@@ -162,7 +162,7 @@ class UserMessageRequest(BaseModel):
 class CreateSubtaskRequest(BaseModel):
     """Request body for POST /api/runs/:run_id/tasks/:task_execution_id/subtasks."""
 
-    title: str = Field(..., min_length=1)
+    title: str = Field(..., min_length=1, max_length=200)
 
 
 class UpdateSubtaskRequest(BaseModel):

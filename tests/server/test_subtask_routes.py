@@ -189,6 +189,133 @@ class TestCreateSubtask:
 
         assert response.status_code == 422
 
+    def test_create_subtask_title_too_long_returns_422(self) -> None:
+        """Title exceeding 200 characters fails Pydantic validation (422)."""
+        mock_db = MagicMock()
+        mock_db.get_task_execution.return_value = _make_task_execution_row()
+
+        client = _make_test_client(db_mock=mock_db)
+        response = client.post(
+            "/api/runs/run-1/tasks/task-1/subtasks",
+            json={"title": "x" * 201},
+        )
+
+        assert response.status_code == 422
+
+    def test_create_subtask_title_at_max_length_succeeds(self) -> None:
+        """Title exactly at 200 characters is accepted."""
+        mock_db = MagicMock()
+        mock_db.get_task_execution.return_value = _make_task_execution_row()
+        mock_db.list_agent_subtasks.return_value = []
+        mock_db.create_agent_subtask.return_value = _make_subtask_row(title="x" * 200)
+
+        client = _make_test_client(db_mock=mock_db)
+        response = client.post(
+            "/api/runs/run-1/tasks/task-1/subtasks",
+            json={"title": "x" * 200},
+        )
+
+        assert response.status_code == 201
+
+    def test_create_subtask_exceeds_limit_returns_400(self) -> None:
+        """Creating the 51st subtask returns 400 with a clear message."""
+        mock_db = MagicMock()
+        mock_db.get_task_execution.return_value = _make_task_execution_row()
+        # Simulate 50 existing subtasks
+        mock_db.list_agent_subtasks.return_value = [
+            _make_subtask_row(subtask_id=f"sub-{i}") for i in range(50)
+        ]
+
+        client = _make_test_client(db_mock=mock_db)
+        response = client.post(
+            "/api/runs/run-1/tasks/task-1/subtasks",
+            json={"title": "One too many"},
+        )
+
+        assert response.status_code == 400
+        data = response.json()
+        assert "limit" in data["error"].lower() or "50" in data["error"]
+        assert "detail" in data
+
+    def test_create_subtask_at_limit_succeeds(self) -> None:
+        """Creating the 50th subtask (exactly at limit) succeeds."""
+        mock_db = MagicMock()
+        mock_db.get_task_execution.return_value = _make_task_execution_row()
+        mock_db.list_agent_subtasks.return_value = [
+            _make_subtask_row(subtask_id=f"sub-{i}") for i in range(49)
+        ]
+        mock_db.create_agent_subtask.return_value = _make_subtask_row(subtask_id="sub-49")
+
+        client = _make_test_client(db_mock=mock_db)
+        response = client.post(
+            "/api/runs/run-1/tasks/task-1/subtasks",
+            json={"title": "Just under the wire"},
+        )
+
+        assert response.status_code == 201
+
+
+# ---------------------------------------------------------------------------
+# Error response format
+# ---------------------------------------------------------------------------
+
+
+class TestSubtaskErrorFormat:
+    """Verify error responses include a 'detail' field for consistent parsing."""
+
+    def test_invalid_status_error_has_detail_field(self) -> None:
+        """400 error from invalid status includes 'detail' in JSON."""
+        mock_db = MagicMock()
+        mock_db.get_task_execution.return_value = _make_task_execution_row()
+
+        client = _make_test_client(db_mock=mock_db)
+        response = client.patch(
+            "/api/runs/run-1/tasks/task-1/subtasks/sub-1",
+            json={"status": "bogus"},
+        )
+
+        assert response.status_code == 400
+        data = response.json()
+        assert "detail" in data
+        assert isinstance(data["detail"], str)
+        assert "bogus" in data["detail"]
+
+    def test_subtask_not_found_error_has_detail_field(self) -> None:
+        """404 error from missing subtask includes 'detail' in JSON."""
+        mock_db = MagicMock()
+        mock_db.get_task_execution.return_value = _make_task_execution_row()
+        mock_db.update_agent_subtask.return_value = None
+
+        client = _make_test_client(db_mock=mock_db)
+        response = client.patch(
+            "/api/runs/run-1/tasks/task-1/subtasks/no-such-id",
+            json={"status": "done"},
+        )
+
+        assert response.status_code == 404
+        data = response.json()
+        assert "detail" in data
+        assert isinstance(data["detail"], str)
+
+    def test_subtask_limit_error_has_detail_field(self) -> None:
+        """400 error from subtask limit includes 'detail' in JSON."""
+        mock_db = MagicMock()
+        mock_db.get_task_execution.return_value = _make_task_execution_row()
+        mock_db.list_agent_subtasks.return_value = [
+            _make_subtask_row(subtask_id=f"sub-{i}") for i in range(50)
+        ]
+
+        client = _make_test_client(db_mock=mock_db)
+        response = client.post(
+            "/api/runs/run-1/tasks/task-1/subtasks",
+            json={"title": "Overflow"},
+        )
+
+        assert response.status_code == 400
+        data = response.json()
+        assert "detail" in data
+        assert "50" in data["detail"]
+
 
 # ---------------------------------------------------------------------------
 # GET /api/runs/{run_id}/tasks/{task_execution_id}/subtasks
