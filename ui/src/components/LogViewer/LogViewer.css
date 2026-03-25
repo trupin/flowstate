@@ -51,6 +51,16 @@
   color: var(--accent);
 }
 
+.log-viewer-follow-btn {
+  background: rgba(99, 102, 241, 0.15);
+  border-color: rgba(99, 102, 241, 0.4);
+  color: #818cf8;
+}
+
+.log-viewer-follow-btn:hover {
+  background: rgba(99, 102, 241, 0.25);
+}
+
 .log-viewer-details-btn.active {
   background: var(--bg-tertiary);
   border-color: var(--accent);

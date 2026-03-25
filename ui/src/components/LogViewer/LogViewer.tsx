@@ -25,6 +25,8 @@ export interface LogViewerProps {
   taskName?: string | null;
   taskExecution?: TaskExecutionInfo | null;
   isAutoFollow?: boolean;
+  showFollowButton?: boolean;
+  onFollowClick?: () => void;
   onClear?: () => void;
   runId?: string;
   taskExecutionId?: string;
@@ -680,6 +682,8 @@ export function LogViewer({
   taskName,
   taskExecution,
   isAutoFollow = false,
+  showFollowButton = false,
+  onFollowClick,
   onClear,
   runId,
   taskExecutionId,
@@ -814,6 +818,15 @@ export function LogViewer({
       <div className="log-viewer-header">
         <span className="log-viewer-title">{taskName}</span>
         <div className="log-viewer-controls">
+          {showFollowButton && onFollowClick && (
+            <button
+              className="log-viewer-follow-btn"
+              onClick={onFollowClick}
+              title="Resume auto-follow to track the running task"
+            >
+              Follow
+            </button>
+          )}
           {taskExecution && (
             <button
               className={`log-viewer-details-btn ${showDetails ? 'active' : ''}`}

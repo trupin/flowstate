@@ -15,8 +15,10 @@ interface UseFlowRunReturn {
   edges: EdgeTransition[];
   selectedTask: string | null;
   selectTask: (nodeName: string | null) => void;
+  clearManualSelection: () => void;
   autoSelectedTask: string | null;
   isManualSelection: boolean;
+  runningTaskNames: string[];
   logs: Map<string, LogEntry[]>;
   isConnected: boolean;
   send: (data: unknown) => void;
@@ -362,14 +364,21 @@ export function useFlowRun(runId: string): UseFlowRunReturn {
     }
   }, []);
 
+  const clearManualSelection = useCallback(() => {
+    setSelectedTask(null);
+    setIsManualSelection(false);
+  }, []);
+
   return {
     run,
     tasks,
     edges,
     selectedTask,
     selectTask,
+    clearManualSelection,
     autoSelectedTask,
     isManualSelection,
+    runningTaskNames,
     logs,
     isConnected,
     send,

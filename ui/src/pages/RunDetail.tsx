@@ -23,8 +23,10 @@ export function RunDetail() {
     edges,
     selectedTask,
     selectTask,
+    clearManualSelection,
     autoSelectedTask,
     isManualSelection,
+    runningTaskNames,
     logs,
     isConnected,
     send,
@@ -34,6 +36,7 @@ export function RunDetail() {
   // manual selection takes priority, then auto-follow.
   const effectiveTask = selectedTask ?? autoSelectedTask;
   const isAutoFollow = !isManualSelection && effectiveTask !== null;
+  const showFollowButton = isManualSelection && runningTaskNames.length > 0;
 
   const [showOrchestrator, setShowOrchestrator] = useState(false);
   const [orchestrators, setOrchestrators] = useState<OrchestratorInfo[]>([]);
@@ -287,6 +290,8 @@ export function RunDetail() {
               taskName={effectiveTask}
               taskExecution={taskExecutionInfo}
               isAutoFollow={isAutoFollow}
+              showFollowButton={showFollowButton}
+              onFollowClick={clearManualSelection}
               runId={id}
               taskExecutionId={selectedTaskExecution?.id}
             />
