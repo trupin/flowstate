@@ -225,6 +225,20 @@
 | Issue  | Title                                                          | Domain | Priority | Depends On | Status |
 | ------ | -------------------------------------------------------------- | ------ | -------- | ---------- | ------ |
 | UI-035 | Move node details from expanded node pill to log viewer header | ui     | P1       | —          | done   |
+| UI-036 | Auto-follow running node in log viewer when no manual selection | ui     | P1       | —          | todo   |
+
+
+### Phase 13 — Interactive Agent Messaging
+
+
+| Issue      | Title                                                     | Domain | Priority | Depends On            | Status |
+| ---------- | --------------------------------------------------------- | ------ | -------- | --------------------- | ------ |
+| ENGINE-035 | ACP-only agent execution + long-lived session lifecycle   | engine | P0       | —                     | todo   |
+| STATE-009  | Task message queue + interrupted status + user_input log  | state  | P1       | —                     | todo   |
+| ENGINE-036 | Message queue + re-invocation loop + interrupt in executor| engine | P1       | ENGINE-035, STATE-009 | todo   |
+| SERVER-014 | Message + interrupt API endpoints                         | server | P1       | ENGINE-036, STATE-009 | todo   |
+| UI-037     | Always-visible input box + interrupt button               | ui     | P1       | SERVER-014            | todo   |
+| ENGINE-037 | Harden: Remove SubprocessManager from task execution      | engine | P2       | ENGINE-035            | todo   |
 
 
 ---

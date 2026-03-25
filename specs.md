@@ -747,8 +747,10 @@ Created ──► Running ┼──► Failed
 
 ```
 Pending ──► Waiting ──► Running ──► Completed
-               │              │
-               │              └──► Failed ──► [User Decision]
+               │           │  ▲
+               │           │  └── Interrupted ──► (user sends message)
+               │           │
+               │           └──► Failed ──► [User Decision]
                │                                    │
                └─ (delay/schedule elapsed)    ┌─────┼──────┐
                                               ▼     ▼      ▼
@@ -759,10 +761,13 @@ Pending ──► Waiting ──► Running ──► Completed
 |--------|---------|
 | `pending` | Dependencies met, ready to run (or waiting for semaphore) |
 | `waiting` | Delayed — a `delay` or `schedule` hasn't elapsed yet; or blocked at a fence/atomic mutex |
-| `running` | Claude Code subprocess is executing (or wait node timer active) |
+| `running` | Agent is executing via ACP (or wait node timer active) |
+| `interrupted` | User interrupted the agent to interact — waiting for user message to resume |
 | `completed` | Task finished successfully |
 | `failed` | Task errored |
 | `skipped` | User chose to skip a failed task |
+
+**Interactive messaging**: While a task is `running`, users can queue messages via the API. When the agent finishes its current turn, the executor checks for unprocessed messages and re-invokes the agent with a structured prompt containing them. Users can also interrupt a running task (cancels current agent turn, sets status to `interrupted`). Resumption requires a user message. The agent cannot complete a task while unprocessed messages exist.
 
 **Special node types**: Wait nodes go directly from `pending` → `waiting` → `completed` (no subprocess). Fence nodes go from `pending` → `waiting` (at barrier) → `completed` (when all arrive). Atomic nodes may go from `pending` → `waiting` (mutex held) → `running` → `completed`.
 
@@ -1133,24 +1138,20 @@ On process restart:
 
 ## 9. Claude Code Integration
 
-### 9.1 Task Subprocess Invocation
+### 9.1 Task Agent Invocation
 
-Two invocation patterns depending on context mode:
+All agent communication uses the **Agent Client Protocol (ACP)**. Flowstate connects to ACP-compatible agents as a client — no direct CLI subprocess spawning. Agents are configured in `flowstate.toml` as harnesses with a command and optional environment variables (see Section 9.8).
 
-**`handoff` or `none` mode** (fresh session):
-```bash
-claude -p "<composed_prompt>" \
-    --output-format stream-json
-```
+**Session lifecycle**:
+1. **Start session**: Spawn agent subprocess, initialize ACP connection, create/load session
+2. **Prompt**: Send prompt via `conn.prompt()`, stream events back to the executor
+3. **Re-invoke** (optional): If user messages are queued, send another `prompt()` with the messages
+4. **Interrupt** (optional): Cancel current prompt via `conn.cancel()` without killing the subprocess
+5. **Kill**: Terminate the agent subprocess when the task is fully complete
 
-**`session` mode** (resume previous session):
-```bash
-claude -p "<followup_prompt>" \
-    --output-format stream-json \
-    --resume <previous_session_id>
-```
+Sessions are **long-lived** — the agent subprocess stays alive between `prompt()` calls, enabling multiple prompt rounds per task (for user message re-invocation) and interrupt-without-kill (for the interrupt button).
 
-The subprocess is started from the task's resolved cwd (from node `cwd` attribute, or flow-level `workspace`).
+The agent is started from the task's resolved cwd (from node `cwd` attribute, or flow-level `workspace`).
 
 **Prompt construction for `handoff` mode**:
 
@@ -1405,6 +1406,7 @@ Flows are discovered from the filesystem (watched directory), not created manual
 | `POST` | `/api/schedules/:id/pause` | Pause a recurring schedule |
 | `POST` | `/api/schedules/:id/resume` | Resume a paused schedule |
 | `POST` | `/api/schedules/:id/trigger` | Manually trigger a scheduled flow |
+| `POST` | `/api/runs/:id/tasks/:task_execution_id/input` | Send user input to a running task's subprocess |
 | `POST` | `/api/open` | Open a file/directory in the user's IDE |
 
 ### 10.3 WebSocket Protocol
@@ -1437,6 +1439,7 @@ Flows are discovered from the filesystem (watched directory), not created manual
 | `fork.joined` | `{fork_group_id, join_node}` | All fork members done |
 | `judge.started` | `{from_node, conditions: [...]}` | Judge evaluation begins |
 | `judge.decided` | `{from_node, to_node, reasoning, confidence}` | Judge made decision |
+| `task.interrupted` | `{task_execution_id, node_name}` | User interrupted the agent |
 | `task.waiting` | `{task_execution_id, node_name, wait_until, reason}` | Task is delayed |
 | `task.wait_elapsed` | `{task_execution_id, node_name}` | Delay elapsed, task now pending |
 | `schedule.triggered` | `{flow_definition_id, flow_run_id, cron_expression}` | Recurring flow triggered |
@@ -1464,6 +1467,8 @@ Flows are discovered from the filesystem (watched directory), not created manual
 | `retry_task` | `{task_execution_id}` | Retry a failed task |
 | `skip_task` | `{task_execution_id}` | Skip and continue |
 | `abort` | `{}` | Immediately kill all subprocesses and cancel |
+| `interrupt_task` | `{task_execution_id}` | Interrupt a running task for user interaction |
+| `send_message` | `{task_execution_id, message}` | Send a user message to a running or interrupted task |
 
 **Reconnection**: On WebSocket reconnect, client sends `subscribe` with `last_event_timestamp`. Server replays all events after that timestamp from the database.
 
@@ -1489,9 +1494,11 @@ Flows are discovered from the filesystem (watched directory), not created manual
 
 ### 10.5 Log Viewer
 
+- **Auto-follow**: When no node is manually selected, the log viewer automatically follows the currently executing node. In parallel execution (fork-join), the first running node alphabetically is selected. Manual node clicks override auto-follow; deselecting resumes it. The auto-selected node is visually highlighted in the graph.
 - Click a node in the graph → log viewer shows that task's logs
 - Displays both streaming Claude output AND executor activity logs (dispatch, transition, exit events)
 - Rich rendering: thinking blocks (collapsible), assistant messages (markdown), tool call blocks (expandable with input/output)
+- **User input**: When a task is running, an input box at the bottom of the log viewer allows sending messages to the agent mid-execution. Sent messages appear in the log stream with a distinct "You" style. Messages are delivered via `POST /api/runs/:id/tasks/:task_execution_id/input` and stored as `task.log` events with `log_type: "user_input"`.
 - "Noise" filter hides system init messages; toggle to show all
 - Monospace font, dark background
 - Real-time auto-scroll with pin-to-bottom toggle
