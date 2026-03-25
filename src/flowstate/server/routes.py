@@ -293,14 +293,14 @@ async def start_run(
     # Create executor
     db = _get_db(request)
     config = request.app.state.config
-    subprocess_mgr = request.app.state.subprocess_manager
+    harness = request.app.state.harness
     ws_hub = request.app.state.ws_hub
     harness_mgr = _get_harness_mgr(request)
 
     executor = FlowExecutor(
         db=db,
         event_callback=ws_hub.on_flow_event,
-        subprocess_mgr=subprocess_mgr,
+        harness=harness,
         max_concurrent=config.max_concurrent_tasks,
         worktree_cleanup=config.worktree_cleanup,
         harness_mgr=harness_mgr,
@@ -829,14 +829,14 @@ async def trigger_schedule(request: Request, schedule_id: str) -> dict[str, str]
 
     # Create executor and start run
     config = request.app.state.config
-    subprocess_mgr = request.app.state.subprocess_manager
+    harness = request.app.state.harness
     ws_hub = request.app.state.ws_hub
     harness_mgr = _get_harness_mgr(request)
 
     executor = FlowExecutor(
         db=db,
         event_callback=ws_hub.on_flow_event,
-        subprocess_mgr=subprocess_mgr,
+        harness=harness,
         max_concurrent=config.max_concurrent_tasks,
         worktree_cleanup=config.worktree_cleanup,
         harness_mgr=harness_mgr,

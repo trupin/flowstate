@@ -29,7 +29,7 @@ from flowstate.engine.context import build_task_management_instructions
 from flowstate.engine.events import EventType, FlowEvent
 from flowstate.engine.executor import FlowExecutor, _use_tasks
 from flowstate.engine.judge import JudgeContext, JudgeDecision, JudgePauseError, JudgeProtocol
-from flowstate.engine.subprocess_mgr import StreamEvent, StreamEventType, SubprocessManager
+from flowstate.engine.subprocess_mgr import StreamEvent, StreamEventType
 from flowstate.engine.worktree import WorktreeInfo
 from flowstate.state.repository import FlowstateDB
 
@@ -41,8 +41,8 @@ if TYPE_CHECKING:
 # ---------------------------------------------------------------------------
 
 
-class MockSubprocessManager(SubprocessManager):
-    """A test double for SubprocessManager that returns configurable events.
+class MockSubprocessManager:
+    """A test double satisfying the Harness protocol with configurable events.
 
     Configure per-node responses via task_responses dict.  Keys are node name
     markers of the form "Do the <name> step" (matching the prompt pattern from
@@ -52,7 +52,6 @@ class MockSubprocessManager(SubprocessManager):
     """
 
     def __init__(self) -> None:
-        super().__init__()
         # Map of prompt-substring -> (exit_code, list of extra events before exit)
         # Keys are matched using "Do the <key> step" pattern for safety
         self.task_responses: dict[str, tuple[int, list[StreamEvent]]] = {}
@@ -120,6 +119,11 @@ class MockSubprocessManager(SubprocessManager):
             content={"event": "process_exit", "exit_code": exit_code, "stderr": ""},
             raw=f"Process exited with code {exit_code}",
         )
+
+    async def run_judge(
+        self, prompt: str, workspace: str, *, skip_permissions: bool = False
+    ) -> Any:
+        raise NotImplementedError("Judge not mocked in MockSubprocessManager")
 
     async def kill(self, session_id: str) -> None:
         self.kill_calls.append(session_id)
@@ -3212,7 +3216,7 @@ class TestTaskAwareExecution:
         executor = FlowExecutor(
             db=db,
             event_callback=events.append,
-            subprocess_mgr=subprocess_mgr,
+            harness=subprocess_mgr,
         )
 
         # Create a task in the DB
@@ -3240,7 +3244,7 @@ class TestTaskAwareExecution:
         executor = FlowExecutor(
             db=db,
             event_callback=events.append,
-            subprocess_mgr=subprocess_mgr,
+            harness=subprocess_mgr,
         )
 
         task_id = db.create_task("test-flow", "No description task")
@@ -3262,7 +3266,7 @@ class TestTaskAwareExecution:
         executor = FlowExecutor(
             db=db,
             event_callback=events.append,
-            subprocess_mgr=subprocess_mgr,
+            harness=subprocess_mgr,
         )
 
         await executor.execute(flow, {}, "/workspace")
@@ -3280,7 +3284,7 @@ class TestTaskAwareExecution:
         executor = FlowExecutor(
             db=db,
             event_callback=events.append,
-            subprocess_mgr=subprocess_mgr,
+            harness=subprocess_mgr,
         )
 
         task_id = db.create_task("test-flow", "History test")
@@ -3307,7 +3311,7 @@ class TestTaskAwareExecution:
         executor = FlowExecutor(
             db=db,
             event_callback=events.append,
-            subprocess_mgr=subprocess_mgr,
+            harness=subprocess_mgr,
         )
 
         task_id = db.create_task("test-flow", "Track current node")
@@ -3329,7 +3333,7 @@ class TestTaskAwareExecution:
         executor = FlowExecutor(
             db=db,
             event_callback=events.append,
-            subprocess_mgr=subprocess_mgr,
+            harness=subprocess_mgr,
         )
 
         task_id = db.create_task("test-flow", "Complete me")
@@ -3352,7 +3356,7 @@ class TestTaskAwareExecution:
         executor = FlowExecutor(
             db=db,
             event_callback=events.append,
-            subprocess_mgr=subprocess_mgr,
+            harness=subprocess_mgr,
         )
 
         task_id = db.create_task("test-flow", "Cancel me")
@@ -3387,7 +3391,7 @@ class TestTaskAwareExecution:
         executor = FlowExecutor(
             db=db,
             event_callback=events.append,
-            subprocess_mgr=subprocess_mgr,
+            harness=subprocess_mgr,
         )
 
         task_id = db.create_task("test-flow", "Pause me")
@@ -3431,7 +3435,7 @@ class TestTaskAwareExecution:
         executor = FlowExecutor(
             db=db,
             event_callback=events.append,
-            subprocess_mgr=subprocess_mgr,
+            harness=subprocess_mgr,
         )
 
         task_id = db.create_task("test-flow", "Link to run")
@@ -3543,7 +3547,7 @@ class TestFileEdgeCreatesChildTask:
         executor = FlowExecutor(
             db=db,
             event_callback=events.append,
-            subprocess_mgr=subprocess_mgr,
+            harness=subprocess_mgr,
         )
 
         flow_run_id = await executor.execute(flow, {}, "/workspace", task_id=task_id)
@@ -3578,7 +3582,7 @@ class TestFileEdgeChildTaskMetadata:
         executor = FlowExecutor(
             db=db,
             event_callback=events.append,
-            subprocess_mgr=subprocess_mgr,
+            harness=subprocess_mgr,
         )
 
         await executor.execute(flow, {}, "/workspace", task_id=task_id)
@@ -3608,7 +3612,7 @@ class TestFileEdgeChildTaskMetadata:
         executor = FlowExecutor(
             db=db,
             event_callback=events.append,
-            subprocess_mgr=subprocess_mgr,
+            harness=subprocess_mgr,
         )
 
         # Patch read_output_json to simulate the work node writing OUTPUT.json
@@ -3645,7 +3649,7 @@ class TestCrossFlowInputMapping:
         executor = FlowExecutor(
             db=db,
             event_callback=events.append,
-            subprocess_mgr=subprocess_mgr,
+            harness=subprocess_mgr,
         )
 
         output_data = {"repo": "my-app", "branch": "main", "deploy": True}
@@ -3674,7 +3678,7 @@ class TestCrossFlowInputMapping:
         executor = FlowExecutor(
             db=db,
             event_callback=events.append,
-            subprocess_mgr=subprocess_mgr,
+            harness=subprocess_mgr,
         )
 
         # No OUTPUT.json, but SUMMARY.md exists
@@ -3706,7 +3710,7 @@ class TestCrossFlowInputMapping:
         executor = FlowExecutor(
             db=db,
             event_callback=events.append,
-            subprocess_mgr=subprocess_mgr,
+            harness=subprocess_mgr,
         )
 
         # No OUTPUT.json, no SUMMARY.md
@@ -3734,7 +3738,7 @@ class TestCrossFlowInputMapping:
         executor = FlowExecutor(
             db=db,
             event_callback=events.append,
-            subprocess_mgr=subprocess_mgr,
+            harness=subprocess_mgr,
         )
 
         output_data = {"issue_id": "BUG-42", "severity": "high"}
@@ -3780,7 +3784,7 @@ class TestCrossFlowInputMapping:
         executor = FlowExecutor(
             db=db,
             event_callback=events.append,
-            subprocess_mgr=subprocess_mgr,
+            harness=subprocess_mgr,
         )
 
         await executor.execute(flow, {}, "/workspace", task_id=task_id)
@@ -3820,7 +3824,7 @@ class TestFileEdgeDoesNotBlockFlow:
         executor = FlowExecutor(
             db=db,
             event_callback=events.append,
-            subprocess_mgr=subprocess_mgr,
+            harness=subprocess_mgr,
         )
 
         flow_run_id = await executor.execute(flow, {}, "/workspace", task_id=task_id)
@@ -3862,7 +3866,7 @@ class TestFileEdgeDepthLimit:
         executor = FlowExecutor(
             db=db,
             event_callback=events.append,
-            subprocess_mgr=subprocess_mgr,
+            harness=subprocess_mgr,
         )
 
         await executor.execute(flow, {}, "/workspace", task_id=deepest_task_id)
@@ -3890,7 +3894,7 @@ class TestFileEdgeDepthLimit:
         executor = FlowExecutor(
             db=db,
             event_callback=events.append,
-            subprocess_mgr=subprocess_mgr,
+            harness=subprocess_mgr,
         )
 
         await executor.execute(flow, {}, "/workspace", task_id=prev_id)
@@ -3915,7 +3919,7 @@ class TestFileEdgeActivityLog:
         executor = FlowExecutor(
             db=db,
             event_callback=events.append,
-            subprocess_mgr=subprocess_mgr,
+            harness=subprocess_mgr,
         )
 
         await executor.execute(flow, {}, "/workspace", task_id=task_id)
@@ -3952,7 +3956,7 @@ class TestFileEdgeWithoutTaskId:
         executor = FlowExecutor(
             db=db,
             event_callback=events.append,
-            subprocess_mgr=subprocess_mgr,
+            harness=subprocess_mgr,
         )
 
         # Execute without task_id
@@ -3985,7 +3989,7 @@ class TestAwaitEdgeCreatesChildTask:
         executor = FlowExecutor(
             db=db,
             event_callback=events.append,
-            subprocess_mgr=subprocess_mgr,
+            harness=subprocess_mgr,
         )
 
         # Run in background since AWAIT blocks. Complete the child after
@@ -4038,7 +4042,7 @@ class TestAwaitEdgeSetsWaitingStatus:
         executor = FlowExecutor(
             db=db,
             event_callback=events.append,
-            subprocess_mgr=subprocess_mgr,
+            harness=subprocess_mgr,
         )
 
         waiting_observed = False
@@ -4588,8 +4592,8 @@ class TestAtomicNodeWithContention:
 # ---------------------------------------------------------------------------
 
 
-class InterruptableMockManager(SubprocessManager):
-    """A mock SubprocessManager that supports interrupt-aware execution.
+class InterruptableMockManager:
+    """A Harness-protocol test double that supports interrupt-aware execution.
 
     - ``run_task`` supports delays that can be cut short by ``interrupt()``.
     - ``prompt()`` tracks calls for assertion.
@@ -4598,7 +4602,6 @@ class InterruptableMockManager(SubprocessManager):
     """
 
     def __init__(self) -> None:
-        super().__init__()
         self.calls: list[tuple[str, str, str]] = []
         self.prompt_calls: list[tuple[str, str]] = []
         self.interrupt_calls: list[str] = []
@@ -5537,9 +5540,9 @@ class TestUseTasks:
             on_error=ErrorPolicy.PAUSE,
             context=ContextMode.HANDOFF,
             workspace="/ws",
-            tasks=True,
+            subtasks=True,
         )
-        node = Node(name="work", node_type=NodeType.TASK, prompt="Do work", tasks=None)
+        node = Node(name="work", node_type=NodeType.TASK, prompt="Do work", subtasks=None)
         assert _use_tasks(flow, node) is True
 
     def test_inherits_false_from_flow(self) -> None:
@@ -5550,9 +5553,9 @@ class TestUseTasks:
             on_error=ErrorPolicy.PAUSE,
             context=ContextMode.HANDOFF,
             workspace="/ws",
-            tasks=False,
+            subtasks=False,
         )
-        node = Node(name="work", node_type=NodeType.TASK, prompt="Do work", tasks=None)
+        node = Node(name="work", node_type=NodeType.TASK, prompt="Do work", subtasks=None)
         assert _use_tasks(flow, node) is False
 
     def test_node_override_true(self) -> None:
@@ -5563,22 +5566,22 @@ class TestUseTasks:
             on_error=ErrorPolicy.PAUSE,
             context=ContextMode.HANDOFF,
             workspace="/ws",
-            tasks=False,
+            subtasks=False,
         )
-        node = Node(name="work", node_type=NodeType.TASK, prompt="Do work", tasks=True)
+        node = Node(name="work", node_type=NodeType.TASK, prompt="Do work", subtasks=True)
         assert _use_tasks(flow, node) is True
 
     def test_node_override_false(self) -> None:
-        """Node-level tasks=False overrides flow-level tasks=True."""
+        """Node-level subtasks=False overrides flow-level subtasks=True."""
         flow = Flow(
             name="t",
             budget_seconds=3600,
             on_error=ErrorPolicy.PAUSE,
             context=ContextMode.HANDOFF,
             workspace="/ws",
-            tasks=True,
+            subtasks=True,
         )
-        node = Node(name="work", node_type=NodeType.TASK, prompt="Do work", tasks=False)
+        node = Node(name="work", node_type=NodeType.TASK, prompt="Do work", subtasks=False)
         assert _use_tasks(flow, node) is False
 
 
@@ -5661,19 +5664,28 @@ class TestBuildTaskManagementInstructions:
 
 
 def _make_tasks_flow(
-    tasks: bool = True,
+    subtasks: bool = True,
     node_tasks: bool | None = None,
 ) -> Flow:
-    """Build a simple linear flow with configurable tasks setting."""
+    """Build a simple linear flow with configurable subtasks setting."""
     nodes: dict[str, Node] = {
         "start": Node(
-            name="start", node_type=NodeType.ENTRY, prompt="Do the start step", tasks=node_tasks
+            name="start",
+            node_type=NodeType.ENTRY,
+            prompt="Do the start step",
+            subtasks=node_tasks,
         ),
         "work": Node(
-            name="work", node_type=NodeType.TASK, prompt="Do the work step", tasks=node_tasks
+            name="work",
+            node_type=NodeType.TASK,
+            prompt="Do the work step",
+            subtasks=node_tasks,
         ),
         "finish": Node(
-            name="finish", node_type=NodeType.EXIT, prompt="Do the finish step", tasks=node_tasks
+            name="finish",
+            node_type=NodeType.EXIT,
+            prompt="Do the finish step",
+            subtasks=node_tasks,
         ),
     }
     edges: list[Edge] = [
@@ -5686,7 +5698,7 @@ def _make_tasks_flow(
         on_error=ErrorPolicy.PAUSE,
         context=ContextMode.HANDOFF,
         workspace="/workspace",
-        tasks=tasks,
+        subtasks=subtasks,
         nodes=nodes,
         edges=tuple(edges),
     )
@@ -5708,7 +5720,7 @@ class TestTaskManagementInjection:
         mock_mgr = MockSubprocessManager()
         executor = FlowExecutor(db, callback, mock_mgr, server_base_url="http://127.0.0.1:8080")
 
-        flow = _make_tasks_flow(tasks=True)
+        flow = _make_tasks_flow(subtasks=True)
         await executor.execute(flow, {}, "/workspace")
 
         # Verify that task management instructions were injected in the prompts
@@ -5726,7 +5738,7 @@ class TestTaskManagementInjection:
         self,
         mock_setup: AsyncMock,
     ) -> None:
-        """When tasks=False, no task management instructions are injected."""
+        """When subtasks=False, no task management instructions are injected."""
         mock_setup.return_value = None
 
         db = _make_db()
@@ -5734,7 +5746,7 @@ class TestTaskManagementInjection:
         mock_mgr = MockSubprocessManager()
         executor = FlowExecutor(db, callback, mock_mgr, server_base_url="http://127.0.0.1:8080")
 
-        flow = _make_tasks_flow(tasks=False)
+        flow = _make_tasks_flow(subtasks=False)
         await executor.execute(flow, {}, "/workspace")
 
         execs = db.list_task_executions(db.list_flow_runs()[0].id)
@@ -5754,7 +5766,7 @@ class TestTaskManagementInjection:
         mock_mgr = MockSubprocessManager()
         executor = FlowExecutor(db, callback, mock_mgr, server_base_url=None)
 
-        flow = _make_tasks_flow(tasks=True)
+        flow = _make_tasks_flow(subtasks=True)
         await executor.execute(flow, {}, "/workspace")
 
         execs = db.list_task_executions(db.list_flow_runs()[0].id)
@@ -5766,7 +5778,7 @@ class TestTaskManagementInjection:
         self,
         mock_setup: AsyncMock,
     ) -> None:
-        """When flow.tasks=True but node.tasks=False, no instructions for that node."""
+        """When flow.tasks=True but node.subtasks=False, no instructions for that node."""
         mock_setup.return_value = None
 
         db = _make_db()
@@ -5774,7 +5786,7 @@ class TestTaskManagementInjection:
         mock_mgr = MockSubprocessManager()
         executor = FlowExecutor(db, callback, mock_mgr, server_base_url="http://127.0.0.1:8080")
 
-        flow = _make_tasks_flow(tasks=True, node_tasks=False)
+        flow = _make_tasks_flow(subtasks=True, node_tasks=False)
         await executor.execute(flow, {}, "/workspace")
 
         execs = db.list_task_executions(db.list_flow_runs()[0].id)
@@ -5794,7 +5806,7 @@ class TestTaskManagementInjection:
         mock_mgr = MockSubprocessManager()
         executor = FlowExecutor(db, callback, mock_mgr, server_base_url="http://127.0.0.1:8080")
 
-        flow = _make_tasks_flow(tasks=True)
+        flow = _make_tasks_flow(subtasks=True)
         await executor.execute(flow, {}, "/workspace")
 
         execs = db.list_task_executions(db.list_flow_runs()[0].id)

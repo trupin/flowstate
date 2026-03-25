@@ -19,8 +19,7 @@ from flowstate.dsl.parser import parse_flow
 from flowstate.engine.executor import FlowExecutor
 
 if TYPE_CHECKING:
-    from flowstate.engine.harness import HarnessManager
-    from flowstate.engine.subprocess_mgr import SubprocessManager
+    from flowstate.engine.harness import Harness, HarnessManager
     from flowstate.server.flow_registry import FlowRegistry
     from flowstate.server.run_manager import RunManager
     from flowstate.state.models import TaskRow
@@ -42,7 +41,7 @@ class QueueManager:
         db: FlowstateDB,
         flow_registry: FlowRegistry,
         run_manager: RunManager,
-        subprocess_mgr: SubprocessManager,
+        harness: Harness,
         ws_hub: object,
         config: object,
         poll_interval: float = 2.0,
@@ -52,7 +51,7 @@ class QueueManager:
         self._db = db
         self._registry = flow_registry
         self._run_manager = run_manager
-        self._subprocess_mgr = subprocess_mgr
+        self._harness = harness
         self._harness_mgr = harness_mgr
         self._ws_hub = ws_hub
         self._config = config
@@ -147,7 +146,7 @@ class QueueManager:
         executor = FlowExecutor(
             db=self._db,
             event_callback=event_callback,
-            subprocess_mgr=self._subprocess_mgr,
+            harness=self._harness,
             max_concurrent=getattr(self._config, "max_concurrent_tasks", 4),
             worktree_cleanup=getattr(self._config, "worktree_cleanup", True),
             harness_mgr=self._harness_mgr,

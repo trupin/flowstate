@@ -3,7 +3,7 @@ flow discuss_flowstate {
     on_error = pause
     context = handoff
     skip_permissions = true
-    tasks = true
+    subtasks = true
 
     input {
         topic: string = "why Flowstate is a great system"

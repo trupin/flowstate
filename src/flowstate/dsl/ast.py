@@ -55,7 +55,7 @@ class Node:
     cwd: str | None = None
     judge: bool | None = None
     harness: str | None = None
-    tasks: bool | None = None
+    subtasks: bool | None = None
     wait_delay_seconds: int | None = None
     wait_until_cron: str | None = None
     line: int = 0
@@ -95,7 +95,7 @@ class Flow:
     judge: bool = False
     harness: str = "claude"
     worktree: bool = True
-    tasks: bool = False
+    subtasks: bool = False
     input_fields: tuple[TaskTypeField, ...] = ()
     output_fields: tuple[TaskTypeField, ...] = ()
     max_parallel: int = 1

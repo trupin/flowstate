@@ -16,8 +16,8 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Protocol
 
 #: Default harness name — used as the registry key for the default backend.
-#: The actual backend (SubprocessManager or AcpHarness) is determined by the
-#: HarnessManager configuration. ACP is the preferred default.
+#: The actual backend (AcpHarness by default) is determined by the
+#: HarnessManager configuration.
 DEFAULT_HARNESS: str = "claude"
 
 if TYPE_CHECKING:

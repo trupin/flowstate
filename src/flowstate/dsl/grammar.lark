@@ -24,7 +24,7 @@ flow_attr: "budget" "=" DURATION       -> flow_budget
          | "harness" "=" STRING -> flow_harness
          | "worktree" "=" BOOL_LIT -> flow_worktree
          | "max_parallel" "=" NUMBER -> flow_max_parallel
-         | "tasks" "=" BOOL_LIT -> flow_tasks
+         | "subtasks" "=" BOOL_LIT -> flow_subtasks
 
 BOOL_LIT.2: "true" | "false"
 ERROR_POLICY.2: "pause" | "abort" | "skip"
@@ -63,7 +63,7 @@ node_attr: "prompt" "=" string  -> node_prompt
          | "cwd" "=" STRING     -> node_cwd
          | "judge" "=" BOOL_LIT -> node_judge
          | "harness" "=" STRING -> node_harness
-         | "tasks" "=" BOOL_LIT -> node_tasks
+         | "subtasks" "=" BOOL_LIT -> node_subtasks
 
 // Edges
 edge_decl: simple_edge | cond_edge | fork_edge | join_edge | file_edge | file_cond_edge | file_delayed_edge | file_scheduled_edge | await_edge | await_cond_edge

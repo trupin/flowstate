@@ -111,7 +111,7 @@ def _make_queue_manager(
         db=db,
         flow_registry=reg,
         run_manager=rm,
-        subprocess_mgr=MagicMock(),
+        harness=MagicMock(),
         ws_hub=ws_hub,
         config=config,
         poll_interval=0.1,

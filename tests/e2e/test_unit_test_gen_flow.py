@@ -26,7 +26,7 @@ import pytest
 from flowstate.dsl.parser import parse_flow
 from flowstate.dsl.type_checker import check_flow
 from flowstate.engine.executor import FlowExecutor
-from flowstate.engine.subprocess_mgr import StreamEvent, StreamEventType, SubprocessManager
+from flowstate.engine.subprocess_mgr import StreamEvent, StreamEventType
 from flowstate.state.repository import FlowstateDB
 
 if TYPE_CHECKING:
@@ -43,8 +43,8 @@ FLOW_PATH = Path(__file__).parent / "flows" / "unit_test_gen.flow"
 # ---------------------------------------------------------------------------
 
 
-class RoutingMockSubprocessManager(SubprocessManager):
-    """Mock that writes DECISION.json for self-report routing.
+class RoutingMockSubprocessManager:
+    """Mock satisfying the Harness protocol that writes DECISION.json for self-report routing.
 
     For each conditional node, the mock writes a DECISION.json to the task_dir
     with the routing decision. The task_dir is extracted from the prompt text
@@ -57,7 +57,6 @@ class RoutingMockSubprocessManager(SubprocessManager):
         Args:
             decisions: Maps node_name to target_node_name for conditional routing.
         """
-        super().__init__()
         self._decisions = decisions
         self.executed_nodes: list[str] = []
 
@@ -126,7 +125,22 @@ class RoutingMockSubprocessManager(SubprocessManager):
         async for event in self.run_task(prompt, workspace, resume_session_id):
             yield event
 
+    async def run_judge(
+        self, prompt: str, workspace: str, *, skip_permissions: bool = False
+    ) -> None:
+        raise NotImplementedError("Judge not mocked for routing tests")
+
     async def kill(self, session_id: str) -> None:
+        pass
+
+    async def start_session(self, workspace: str, session_id: str) -> None:
+        pass
+
+    async def prompt(self, session_id: str, message: str) -> AsyncGenerator[StreamEvent, None]:
+        async for event in self.run_task(message, ".", session_id):
+            yield event
+
+    async def interrupt(self, session_id: str) -> None:
         pass
 
     @staticmethod

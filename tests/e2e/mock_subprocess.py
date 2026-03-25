@@ -454,3 +454,19 @@ class MockSubprocessManager:
     async def kill(self, session_id: str) -> None:
         """Simulate killing a running subprocess. No-op for mock."""
         self._call_history.append({"method": "kill", "session_id": session_id})
+
+    async def start_session(self, workspace: str, session_id: str) -> None:
+        """Simulate starting a long-lived session. No-op for mock."""
+        self._call_history.append({"method": "start_session", "session_id": session_id})
+
+    async def prompt(self, session_id: str, message: str) -> AsyncGenerator[StreamEvent, None]:
+        """Simulate sending a prompt to an existing session.
+
+        Delegates to run_task for simplicity.
+        """
+        async for event in self.run_task(message, ".", session_id):
+            yield event
+
+    async def interrupt(self, session_id: str) -> None:
+        """Simulate interrupting a running prompt. No-op for mock."""
+        self._call_history.append({"method": "interrupt", "session_id": session_id})

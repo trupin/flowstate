@@ -246,18 +246,18 @@ class TestCreateApp:
         app = create_app()
         assert any(m.cls is CORSMiddleware for m in app.user_middleware)
 
-    def test_subprocess_manager_stored(self) -> None:
-        """subprocess_manager argument is stored on app.state."""
+    def test_harness_stored(self) -> None:
+        """harness argument is stored on app.state."""
         sentinel = object()
-        app = create_app(subprocess_manager=sentinel)
-        assert app.state.subprocess_manager is sentinel
+        app = create_app(harness=sentinel)
+        assert app.state.harness is sentinel
 
-    def test_subprocess_manager_created_by_default(self) -> None:
-        """subprocess_manager is a real SubprocessManager by default."""
-        from flowstate.engine.subprocess_mgr import SubprocessManager
+    def test_harness_created_by_default(self) -> None:
+        """Default harness is an AcpHarness."""
+        from flowstate.engine.acp_client import AcpHarness
 
         app = create_app()
-        assert isinstance(app.state.subprocess_manager, SubprocessManager)
+        assert isinstance(app.state.harness, AcpHarness)
 
 
 class TestCreateAppHarnessManager:

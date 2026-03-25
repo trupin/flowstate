@@ -48,7 +48,7 @@ from flowstate.engine.context import (
 from flowstate.engine.events import EventType, FlowEvent
 from flowstate.engine.harness import DEFAULT_HARNESS, HarnessManager
 from flowstate.engine.judge import JudgeContext, JudgeDecision, JudgePauseError, JudgeProtocol
-from flowstate.engine.subprocess_mgr import StreamEvent, StreamEventType, SubprocessManager
+from flowstate.engine.subprocess_mgr import StreamEvent, StreamEventType
 from flowstate.engine.worktree import (
     WorktreeInfo,
     cleanup_worktree,
@@ -147,9 +147,9 @@ def _use_tasks(flow: Flow, node: Node) -> bool:
     Node-level ``tasks`` overrides flow-level. ``None`` at node level means
     inherit from flow. Default is ``False`` (no task management).
     """
-    if node.tasks is not None:
-        return node.tasks
-    return flow.tasks
+    if node.subtasks is not None:
+        return node.subtasks
+    return flow.subtasks
 
 
 def _has_default_edge(edges: list[Edge]) -> bool:
@@ -227,7 +227,7 @@ class FlowExecutor:
         self,
         db: FlowstateDB,
         event_callback: Callable[[FlowEvent], None],
-        subprocess_mgr: SubprocessManager,
+        harness: Harness,
         judge: JudgeProtocol | None = None,
         max_concurrent: int = 4,
         worktree_cleanup: bool = True,
@@ -236,10 +236,9 @@ class FlowExecutor:
     ) -> None:
         self._db = db
         self._raw_callback = event_callback
-        self._subprocess_mgr = subprocess_mgr
-        self._harness_mgr = harness_mgr or HarnessManager(default_harness=subprocess_mgr)
+        self._harness_mgr = harness_mgr or HarnessManager(default_harness=harness)
         self._server_base_url = server_base_url
-        self._judge = judge or JudgeProtocol(subprocess_mgr)
+        self._judge = judge or JudgeProtocol(harness)
         self._semaphore = asyncio.Semaphore(max_concurrent)
         self._max_concurrent = max_concurrent
         self._running_tasks: dict[str, asyncio.Task[None]] = {}

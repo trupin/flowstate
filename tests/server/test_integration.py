@@ -23,7 +23,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from flowstate.config import FlowstateConfig
-from flowstate.engine.subprocess_mgr import StreamEvent, StreamEventType, SubprocessManager
+from flowstate.engine.subprocess_mgr import StreamEvent, StreamEventType
 from flowstate.server.app import create_app
 
 if TYPE_CHECKING:
@@ -75,18 +75,17 @@ INVALID_FLOW = "this is not valid flow syntax at all"
 # ---------------------------------------------------------------------------
 
 
-class MockSubprocessManager(SubprocessManager):
-    """A SubprocessManager that returns canned responses instead of launching processes.
+class MockSubprocessManager:
+    """A test double satisfying the Harness protocol with canned responses.
 
     Each call to run_task yields a few stream events and a successful exit.
     """
 
     def __init__(self, delay: float = 0.0) -> None:
-        super().__init__()
         self._delay = delay
         self._task_count = 0
 
-    async def run_task(  # type: ignore[override]
+    async def run_task(
         self, prompt: str, workspace: str, session_id: str, *, skip_permissions: bool = False
     ) -> Any:
         """Yield mock stream events simulating a successful Claude Code run."""
@@ -110,19 +109,32 @@ class MockSubprocessManager(SubprocessManager):
             raw="Process exited with code 0",
         )
 
-    async def run_task_resume(  # type: ignore[override]
+    async def run_task_resume(
         self, prompt: str, workspace: str, resume_session_id: str, *, skip_permissions: bool = False
     ) -> Any:
         """Delegate to run_task for simplicity."""
         async for event in self.run_task(prompt, workspace, resume_session_id):
             yield event
 
-    async def run_judge(self, prompt: str, workspace: str) -> Any:  # type: ignore[override]
+    async def run_judge(
+        self, prompt: str, workspace: str, *, skip_permissions: bool = False
+    ) -> Any:
         """Not needed for simple linear flow tests."""
         raise NotImplementedError("Judge not mocked for integration tests")
 
     async def kill(self, session_id: str) -> None:
         """No-op kill."""
+
+    async def start_session(self, workspace: str, session_id: str) -> None:
+        """No-op start_session."""
+
+    async def prompt(self, session_id: str, message: str) -> Any:
+        """Delegate to run_task for simplicity."""
+        async for event in self.run_task(message, ".", session_id):
+            yield event
+
+    async def interrupt(self, session_id: str) -> None:
+        """No-op interrupt."""
 
 
 class SlowMockSubprocessManager(MockSubprocessManager):
@@ -139,7 +151,7 @@ class SlowMockSubprocessManager(MockSubprocessManager):
 
 def _create_integration_client(
     tmp_path: Path,
-    subprocess_mgr: SubprocessManager | None = None,
+    subprocess_mgr: MockSubprocessManager | None = None,
     pre_write_flows: dict[str, str] | None = None,
 ) -> TestClient:
     """Create a fully wired FastAPI app using the real lifespan.
@@ -173,7 +185,7 @@ def _create_integration_client(
         subprocess_mgr = MockSubprocessManager()
 
     # create_app with lifespan -- TestClient context manager triggers startup/shutdown
-    app = create_app(config=config, subprocess_manager=subprocess_mgr)
+    app = create_app(config=config, harness=subprocess_mgr)
 
     # Enter the TestClient as a context manager to trigger the lifespan.
     # The lifespan creates real DB, RunManager, WebSocketHub, and FlowRegistry

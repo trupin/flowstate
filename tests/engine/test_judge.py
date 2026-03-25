@@ -15,7 +15,7 @@ from flowstate.engine.judge import (
     build_judge_prompt,
     build_judge_schema,
 )
-from flowstate.engine.subprocess_mgr import JudgeError, JudgeResult, SubprocessManager
+from flowstate.engine.subprocess_mgr import JudgeError, JudgeResult
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -62,13 +62,9 @@ def _make_judge_result(
     )
 
 
-def _mock_subprocess_mgr(**kwargs: object) -> SubprocessManager:
-    """Create a SubprocessManager mock with run_judge as an AsyncMock.
-
-    Note: SubprocessManager will be replaced by SDKRunner once the migration
-    is complete. The mock interface is identical.
-    """
-    mgr = AsyncMock(spec=SubprocessManager)
+def _mock_subprocess_mgr(**kwargs: object) -> AsyncMock:
+    """Create a Harness mock with run_judge as an AsyncMock."""
+    mgr = AsyncMock()
     mgr.run_judge = AsyncMock(**kwargs)
     return mgr
 

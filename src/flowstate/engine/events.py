@@ -36,7 +36,7 @@ from enum import StrEnum
 class EventType(StrEnum):
     """All event types emitted during flow execution.
 
-    16 engine event types plus 2 scheduling event types = 18 total.
+    16 engine event types plus 2 scheduling event types plus 1 subtask = 19 total.
     """
 
     # Flow lifecycle

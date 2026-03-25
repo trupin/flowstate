@@ -93,7 +93,7 @@ def server_and_mock(tmp_path_factory):
         watch_dir=str(watch_dir),
     )
 
-    app = create_app(config=config, subprocess_manager=mock, static_dir=True)
+    app = create_app(config=config, harness=mock, static_dir=True)
 
     uv_config = uvicorn.Config(
         app,

@@ -68,10 +68,10 @@ class TestEventTypeValues:
 
 
 class TestEventTypeCount:
-    """Verify there are exactly 18 event types (16 engine + 2 schedule)."""
+    """Verify there are exactly 19 event types (16 engine + 2 schedule + 1 subtask)."""
 
     def test_event_type_count(self) -> None:
-        assert len(EventType) == 18
+        assert len(EventType) == 19
 
 
 class TestFlowEventCreation:

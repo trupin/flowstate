@@ -190,7 +190,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None]:
         db=db,
         flow_registry=registry,
         run_manager=run_manager,
-        subprocess_mgr=app.state.subprocess_manager,
+        harness=app.state.harness,
         ws_hub=ws_hub,
         config=config,
         harness_mgr=harness_mgr,
@@ -209,15 +209,16 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None]:
 
 def create_app(
     config: FlowstateConfig | None = None,
-    subprocess_manager: Any = None,
+    harness: Any = None,
     static_dir: Path | None | bool = None,
 ) -> FastAPI:
     """Create and configure the FastAPI application.
 
     Args:
         config: Optional configuration. If None, loads from TOML or defaults.
-        subprocess_manager: Optional subprocess manager for test mock injection.
-            Stored on app.state and passed to FlowExecutor during run creation.
+        harness: Optional harness (Harness protocol) for test mock injection.
+            Stored on app.state and used as the default harness for task
+            execution via HarnessManager.
         static_dir: Controls static file serving for the React UI.
             - None (default): no static files mounted. Tests and API-only mode.
             - True: auto-detect from UI_DIST_DIR (production default via CLI).
@@ -235,14 +236,15 @@ def create_app(
         lifespan=lifespan,
     )
 
-    # Store config and subprocess manager on app state
-    # If no subprocess manager provided (production mode), create a real one
-    if subprocess_manager is None:
-        from flowstate.engine.subprocess_mgr import SubprocessManager
+    # Store config on app state.
+    # If no harness provided (production mode), create an AcpHarness with the
+    # default Claude Code command.
+    if harness is None:
+        from flowstate.engine.acp_client import AcpHarness
 
-        subprocess_manager = SubprocessManager()
+        harness = AcpHarness(command=["claude"])
     app.state.config = config
-    app.state.subprocess_manager = subprocess_manager
+    app.state.harness = harness
 
     # Create HarnessManager from config and store on app state
     from flowstate.engine.harness import HarnessConfig, HarnessManager
@@ -251,7 +253,7 @@ def create_app(
     for name, entry in config.harnesses.items():
         harness_configs[name] = HarnessConfig(command=entry.command, env=entry.env)
     harness_mgr = HarnessManager(
-        default_harness=subprocess_manager,
+        default_harness=harness,
         configs=harness_configs,
     )
     app.state.harness_manager = harness_mgr
