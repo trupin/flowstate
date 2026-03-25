@@ -304,6 +304,7 @@ async def start_run(
         max_concurrent=config.max_concurrent_tasks,
         worktree_cleanup=config.worktree_cleanup,
         harness_mgr=harness_mgr,
+        server_base_url=f"http://{config.server_host}:{config.server_port}",
     )
 
     # Register and start as background task with a single shared run_id
@@ -839,6 +840,7 @@ async def trigger_schedule(request: Request, schedule_id: str) -> dict[str, str]
         max_concurrent=config.max_concurrent_tasks,
         worktree_cleanup=config.worktree_cleanup,
         harness_mgr=harness_mgr,
+        server_base_url=f"http://{config.server_host}:{config.server_port}",
     )
 
     run_manager = _get_run_manager(request)

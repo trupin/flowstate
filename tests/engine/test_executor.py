@@ -25,8 +25,9 @@ from flowstate.dsl.ast import (
     Node,
     NodeType,
 )
+from flowstate.engine.context import build_task_management_instructions
 from flowstate.engine.events import EventType, FlowEvent
-from flowstate.engine.executor import FlowExecutor
+from flowstate.engine.executor import FlowExecutor, _use_tasks
 from flowstate.engine.judge import JudgeContext, JudgeDecision, JudgePauseError, JudgeProtocol
 from flowstate.engine.subprocess_mgr import StreamEvent, StreamEventType, SubprocessManager
 from flowstate.engine.worktree import WorktreeInfo
@@ -5518,3 +5519,290 @@ class TestTaskInterruptedEventType:
         d = event.to_dict()
         assert d["type"] == "task.interrupted"
         assert d["payload"]["task_execution_id"] == "t1"
+
+
+# ---------------------------------------------------------------------------
+# Task management instructions (ENGINE-040)
+# ---------------------------------------------------------------------------
+
+
+class TestUseTasks:
+    """Tests for _use_tasks() inheritance logic."""
+
+    def test_inherits_from_flow_when_node_is_none(self) -> None:
+        """When node.tasks is None, inherit from flow.tasks."""
+        flow = Flow(
+            name="t",
+            budget_seconds=3600,
+            on_error=ErrorPolicy.PAUSE,
+            context=ContextMode.HANDOFF,
+            workspace="/ws",
+            tasks=True,
+        )
+        node = Node(name="work", node_type=NodeType.TASK, prompt="Do work", tasks=None)
+        assert _use_tasks(flow, node) is True
+
+    def test_inherits_false_from_flow(self) -> None:
+        """When flow.tasks is False and node.tasks is None, result is False."""
+        flow = Flow(
+            name="t",
+            budget_seconds=3600,
+            on_error=ErrorPolicy.PAUSE,
+            context=ContextMode.HANDOFF,
+            workspace="/ws",
+            tasks=False,
+        )
+        node = Node(name="work", node_type=NodeType.TASK, prompt="Do work", tasks=None)
+        assert _use_tasks(flow, node) is False
+
+    def test_node_override_true(self) -> None:
+        """Node-level tasks=True overrides flow-level tasks=False."""
+        flow = Flow(
+            name="t",
+            budget_seconds=3600,
+            on_error=ErrorPolicy.PAUSE,
+            context=ContextMode.HANDOFF,
+            workspace="/ws",
+            tasks=False,
+        )
+        node = Node(name="work", node_type=NodeType.TASK, prompt="Do work", tasks=True)
+        assert _use_tasks(flow, node) is True
+
+    def test_node_override_false(self) -> None:
+        """Node-level tasks=False overrides flow-level tasks=True."""
+        flow = Flow(
+            name="t",
+            budget_seconds=3600,
+            on_error=ErrorPolicy.PAUSE,
+            context=ContextMode.HANDOFF,
+            workspace="/ws",
+            tasks=True,
+        )
+        node = Node(name="work", node_type=NodeType.TASK, prompt="Do work", tasks=False)
+        assert _use_tasks(flow, node) is False
+
+
+class TestBuildTaskManagementInstructions:
+    """Tests for build_task_management_instructions()."""
+
+    def test_basic_instructions(self) -> None:
+        """Instructions contain correct API URLs with run_id and task_execution_id."""
+        result = build_task_management_instructions(
+            server_base_url="http://127.0.0.1:8080",
+            run_id="run-123",
+            task_execution_id="task-456",
+        )
+        assert "## Task Management" in result
+        assert "http://127.0.0.1:8080/api/runs/run-123/tasks/task-456/subtasks" in result
+        assert "POST" in result
+        assert "PATCH" in result
+        assert "predecessor" not in result.lower()
+
+    def test_trailing_slash_stripped(self) -> None:
+        """Trailing slash on server_base_url is stripped."""
+        result = build_task_management_instructions(
+            server_base_url="http://localhost:8080/",
+            run_id="run-1",
+            task_execution_id="task-1",
+        )
+        assert "http://localhost:8080/api/runs/" in result
+        assert "http://localhost:8080//api" not in result
+
+    def test_predecessor_included_when_provided(self) -> None:
+        """Predecessor section is included when predecessor_task_execution_id is given."""
+        result = build_task_management_instructions(
+            server_base_url="http://127.0.0.1:8080",
+            run_id="run-123",
+            task_execution_id="task-456",
+            predecessor_task_execution_id="task-prev-789",
+        )
+        assert "predecessor" in result.lower()
+        assert "http://127.0.0.1:8080/api/runs/run-123/tasks/task-prev-789/subtasks" in result
+
+    def test_predecessor_omitted_when_none(self) -> None:
+        """Predecessor section is NOT included when predecessor_task_execution_id is None."""
+        result = build_task_management_instructions(
+            server_base_url="http://127.0.0.1:8080",
+            run_id="run-123",
+            task_execution_id="task-456",
+            predecessor_task_execution_id=None,
+        )
+        assert "predecessor" not in result.lower()
+
+    def test_curl_create_example(self) -> None:
+        """Create subtask curl example is correct."""
+        result = build_task_management_instructions(
+            server_base_url="http://localhost:9000",
+            run_id="r1",
+            task_execution_id="t1",
+        )
+        assert "curl -s -X POST http://localhost:9000/api/runs/r1/tasks/t1/subtasks" in result
+        assert '"title"' in result
+
+    def test_curl_update_example(self) -> None:
+        """Update subtask curl example includes PATCH and status field."""
+        result = build_task_management_instructions(
+            server_base_url="http://localhost:9000",
+            run_id="r1",
+            task_execution_id="t1",
+        )
+        assert "PATCH" in result
+        assert '"status"' in result
+        assert "in_progress" in result
+
+    def test_curl_list_example(self) -> None:
+        """List subtasks curl example is correct."""
+        result = build_task_management_instructions(
+            server_base_url="http://localhost:9000",
+            run_id="r1",
+            task_execution_id="t1",
+        )
+        assert "curl -s http://localhost:9000/api/runs/r1/tasks/t1/subtasks" in result
+
+
+def _make_tasks_flow(
+    tasks: bool = True,
+    node_tasks: bool | None = None,
+) -> Flow:
+    """Build a simple linear flow with configurable tasks setting."""
+    nodes: dict[str, Node] = {
+        "start": Node(
+            name="start", node_type=NodeType.ENTRY, prompt="Do the start step", tasks=node_tasks
+        ),
+        "work": Node(
+            name="work", node_type=NodeType.TASK, prompt="Do the work step", tasks=node_tasks
+        ),
+        "finish": Node(
+            name="finish", node_type=NodeType.EXIT, prompt="Do the finish step", tasks=node_tasks
+        ),
+    }
+    edges: list[Edge] = [
+        Edge(edge_type=EdgeType.UNCONDITIONAL, source="start", target="work"),
+        Edge(edge_type=EdgeType.UNCONDITIONAL, source="work", target="finish"),
+    ]
+    return Flow(
+        name="tasks-test",
+        budget_seconds=3600,
+        on_error=ErrorPolicy.PAUSE,
+        context=ContextMode.HANDOFF,
+        workspace="/workspace",
+        tasks=tasks,
+        nodes=nodes,
+        edges=tuple(edges),
+    )
+
+
+class TestTaskManagementInjection:
+    """Tests for task management prompt injection in the executor."""
+
+    @patch("flowstate.engine.executor.setup_worktree_if_needed")
+    async def test_tasks_enabled_injects_instructions(
+        self,
+        mock_setup: AsyncMock,
+    ) -> None:
+        """When tasks=True and server_base_url is set, task management is injected."""
+        mock_setup.return_value = None
+
+        db = _make_db()
+        _events, callback = _collect_events()
+        mock_mgr = MockSubprocessManager()
+        executor = FlowExecutor(db, callback, mock_mgr, server_base_url="http://127.0.0.1:8080")
+
+        flow = _make_tasks_flow(tasks=True)
+        await executor.execute(flow, {}, "/workspace")
+
+        # Verify that task management instructions were injected in the prompts
+        # Check the "work" task (entry and exit tasks also get instructions)
+        execs = db.list_task_executions(db.list_flow_runs()[0].id)
+        work_execs = [e for e in execs if e.node_name == "work"]
+        assert len(work_execs) >= 1
+        work_prompt = work_execs[0].prompt_text
+        assert "## Task Management" in work_prompt
+        assert "/api/runs/" in work_prompt
+        assert f"/tasks/{work_execs[0].id}/subtasks" in work_prompt
+
+    @patch("flowstate.engine.executor.setup_worktree_if_needed")
+    async def test_tasks_disabled_no_injection(
+        self,
+        mock_setup: AsyncMock,
+    ) -> None:
+        """When tasks=False, no task management instructions are injected."""
+        mock_setup.return_value = None
+
+        db = _make_db()
+        _events, callback = _collect_events()
+        mock_mgr = MockSubprocessManager()
+        executor = FlowExecutor(db, callback, mock_mgr, server_base_url="http://127.0.0.1:8080")
+
+        flow = _make_tasks_flow(tasks=False)
+        await executor.execute(flow, {}, "/workspace")
+
+        execs = db.list_task_executions(db.list_flow_runs()[0].id)
+        for e in execs:
+            assert "## Task Management" not in e.prompt_text
+
+    @patch("flowstate.engine.executor.setup_worktree_if_needed")
+    async def test_no_server_url_no_injection(
+        self,
+        mock_setup: AsyncMock,
+    ) -> None:
+        """When server_base_url is None, no task management is injected even if tasks=True."""
+        mock_setup.return_value = None
+
+        db = _make_db()
+        _events, callback = _collect_events()
+        mock_mgr = MockSubprocessManager()
+        executor = FlowExecutor(db, callback, mock_mgr, server_base_url=None)
+
+        flow = _make_tasks_flow(tasks=True)
+        await executor.execute(flow, {}, "/workspace")
+
+        execs = db.list_task_executions(db.list_flow_runs()[0].id)
+        for e in execs:
+            assert "## Task Management" not in e.prompt_text
+
+    @patch("flowstate.engine.executor.setup_worktree_if_needed")
+    async def test_node_override_disables_tasks(
+        self,
+        mock_setup: AsyncMock,
+    ) -> None:
+        """When flow.tasks=True but node.tasks=False, no instructions for that node."""
+        mock_setup.return_value = None
+
+        db = _make_db()
+        _events, callback = _collect_events()
+        mock_mgr = MockSubprocessManager()
+        executor = FlowExecutor(db, callback, mock_mgr, server_base_url="http://127.0.0.1:8080")
+
+        flow = _make_tasks_flow(tasks=True, node_tasks=False)
+        await executor.execute(flow, {}, "/workspace")
+
+        execs = db.list_task_executions(db.list_flow_runs()[0].id)
+        for e in execs:
+            assert "## Task Management" not in e.prompt_text
+
+    @patch("flowstate.engine.executor.setup_worktree_if_needed")
+    async def test_handoff_includes_predecessor_id(
+        self,
+        mock_setup: AsyncMock,
+    ) -> None:
+        """In handoff mode, the predecessor task_execution_id is included in instructions."""
+        mock_setup.return_value = None
+
+        db = _make_db()
+        _events, callback = _collect_events()
+        mock_mgr = MockSubprocessManager()
+        executor = FlowExecutor(db, callback, mock_mgr, server_base_url="http://127.0.0.1:8080")
+
+        flow = _make_tasks_flow(tasks=True)
+        await executor.execute(flow, {}, "/workspace")
+
+        execs = db.list_task_executions(db.list_flow_runs()[0].id)
+        # Order: start, work, finish -- "work" should have predecessor = start's id
+        start_exec = next(e for e in execs if e.node_name == "start")
+        work_exec = next(e for e in execs if e.node_name == "work")
+
+        # The work node prompt should contain the start node's task_execution_id
+        # in the predecessor subtasks section
+        assert "predecessor" in work_exec.prompt_text.lower()
+        assert f"/tasks/{start_exec.id}/subtasks" in work_exec.prompt_text

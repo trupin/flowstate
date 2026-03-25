@@ -37,6 +37,7 @@ from flowstate.engine.context import (
     build_prompt_none,
     build_prompt_session,
     build_routing_instructions,
+    build_task_management_instructions,
     create_task_dir,
     expand_templates,
     get_context_mode,
@@ -140,6 +141,17 @@ def _use_judge(flow: Flow, node: Node) -> bool:
     return flow.judge
 
 
+def _use_tasks(flow: Flow, node: Node) -> bool:
+    """Determine if task management instructions should be injected.
+
+    Node-level ``tasks`` overrides flow-level. ``None`` at node level means
+    inherit from flow. Default is ``False`` (no task management).
+    """
+    if node.tasks is not None:
+        return node.tasks
+    return flow.tasks
+
+
 def _has_default_edge(edges: list[Edge]) -> bool:
     """Check if edges form a default-edge pattern: exactly 1 unconditional + 1+ conditional."""
     unconditional = sum(1 for e in edges if e.edge_type == EdgeType.UNCONDITIONAL)
@@ -220,11 +232,13 @@ class FlowExecutor:
         max_concurrent: int = 4,
         worktree_cleanup: bool = True,
         harness_mgr: HarnessManager | None = None,
+        server_base_url: str | None = None,
     ) -> None:
         self._db = db
         self._raw_callback = event_callback
         self._subprocess_mgr = subprocess_mgr
         self._harness_mgr = harness_mgr or HarnessManager(default_harness=subprocess_mgr)
+        self._server_base_url = server_base_url
         self._judge = judge or JudgeProtocol(subprocess_mgr)
         self._semaphore = asyncio.Semaphore(max_concurrent)
         self._max_concurrent = max_concurrent
@@ -807,6 +821,10 @@ class FlowExecutor:
             task_dir=task_dir,
             prompt_text=prompt,
         )
+
+        # Append task management instructions for join node (ENGINE-040)
+        self._maybe_update_task_prompt(prompt, flow, join_node, flow_run_id, join_task_id, None)
+
         pending.add(join_task_id)
 
         # Record join edge transition
@@ -1244,6 +1262,12 @@ class FlowExecutor:
             prompt_text=prompt,
         )
 
+        # Append task management instructions (ENGINE-040)
+        # In conditional transitions, the source_task is the predecessor
+        self._maybe_update_task_prompt(
+            prompt, flow, target_node, flow_run_id, task_id, source_task.id
+        )
+
         # Store session ID if resuming
         if claude_session_id:
             self._db.update_task_status(task_id, "pending", claude_session_id=claude_session_id)
@@ -1560,6 +1584,15 @@ class FlowExecutor:
             task_dir=new_task_dir,
             prompt_text=new_prompt,
         )
+
+        # Update task management URLs to reference the new task_execution_id (ENGINE-040)
+        if task_execution_id in new_prompt:
+            updated_prompt = new_prompt.replace(task_execution_id, new_task_id)
+            self._db._execute(  # type: ignore[attr-defined]
+                "UPDATE task_executions SET prompt_text = ? WHERE id = ?",
+                (updated_prompt, new_task_id),
+            )
+            self._db._commit()  # type: ignore[attr-defined]
 
         # Add to pending set so it gets picked up
         self._pending_tasks.add(new_task_id)
@@ -2420,7 +2453,45 @@ class FlowExecutor:
             task_dir=task_dir,
             prompt_text=prompt,
         )
+
+        # Append task management instructions after task creation so we have
+        # the task_execution_id for API URLs (ENGINE-040)
+        self._maybe_update_task_prompt(
+            prompt, flow, node, flow_run_id, task_id, predecessor_task_id
+        )
+
         return task_id
+
+    def _maybe_update_task_prompt(
+        self,
+        prompt: str,
+        flow: Flow,
+        node: Node,
+        flow_run_id: str,
+        task_id: str,
+        predecessor_task_id: str | None,
+    ) -> None:
+        """Append task management instructions and update the DB if needed.
+
+        Only injects instructions when tasks are enabled for this node,
+        the server_base_url is configured, and the flow_run_id is available.
+        """
+        if not _use_tasks(flow, node):
+            return
+        if self._server_base_url is None:
+            return
+
+        updated = prompt + build_task_management_instructions(
+            server_base_url=self._server_base_url,
+            run_id=flow_run_id,
+            task_execution_id=task_id,
+            predecessor_task_execution_id=predecessor_task_id,
+        )
+        self._db._execute(  # type: ignore[attr-defined]
+            "UPDATE task_executions SET prompt_text = ? WHERE id = ?",
+            (updated, task_id),
+        )
+        self._db._commit()  # type: ignore[attr-defined]
 
     # ------------------------------------------------------------------ #
     # Error handling

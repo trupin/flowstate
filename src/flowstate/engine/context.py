@@ -222,6 +222,60 @@ def read_output_json(task_dir: str) -> dict[str, str | float | bool] | None:
     return result or None
 
 
+def build_task_management_instructions(
+    server_base_url: str,
+    run_id: str,
+    task_execution_id: str,
+    predecessor_task_execution_id: str | None = None,
+) -> str:
+    """Build prompt section with subtask management API instructions.
+
+    Provides the agent with curl examples for creating, listing, and updating
+    subtasks via the Flowstate REST API. When a predecessor task execution ID
+    is provided (handoff mode), includes instructions to query the predecessor's
+    subtasks for context.
+
+    Args:
+        server_base_url: The base URL of the Flowstate server (e.g. "http://127.0.0.1:8080").
+        run_id: The current flow run ID.
+        task_execution_id: The current task execution ID.
+        predecessor_task_execution_id: Optional predecessor task execution ID for handoff mode.
+    """
+    base = server_base_url.rstrip("/")
+    task_url = f"{base}/api/runs/{run_id}/tasks/{task_execution_id}/subtasks"
+
+    lines = [
+        "\n\n## Task Management",
+        "You have a subtask management system. Use it to break your work into "
+        "subtasks and track progress.",
+        "",
+        "### Create a subtask",
+        f"curl -s -X POST {task_url} \\",
+        '  -H "Content-Type: application/json" \\',
+        """  -d '{"title": "your subtask title"}'""",
+        "",
+        "### Update a subtask",
+        f"curl -s -X PATCH {task_url}/{{subtask_id}} \\",
+        '  -H "Content-Type: application/json" \\',
+        """  -d '{"status": "in_progress"}'  # or "done\"""",
+        "",
+        "### List your subtasks",
+        f"curl -s {task_url}",
+    ]
+
+    if predecessor_task_execution_id is not None:
+        pred_url = f"{base}/api/runs/{run_id}/tasks/{predecessor_task_execution_id}/subtasks"
+        lines.extend(
+            [
+                "",
+                "### Query predecessor's subtasks",
+                f"curl -s {pred_url}",
+            ]
+        )
+
+    return "\n".join(lines)
+
+
 def build_cross_flow_instructions(target_flow_names: list[str]) -> str:
     """Build prompt section instructing the agent to produce cross-flow output.
 
