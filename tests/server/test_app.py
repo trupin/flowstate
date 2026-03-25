@@ -163,8 +163,7 @@ class TestLoadConfigUnknownKeys:
         """Unknown keys in the TOML file are silently ignored."""
         toml_file = tmp_path / "config.toml"
         toml_file.write_text(
-            '[server]\nhost = "0.0.0.0"\nunknown_key = "value"\n\n'
-            '[unknown_section]\nfoo = "bar"\n'
+            '[server]\nhost = "0.0.0.0"\nunknown_key = "value"\n\n[unknown_section]\nfoo = "bar"\n'
         )
         config = load_config(path=str(toml_file))
         assert config.server_host == "0.0.0.0"
@@ -182,9 +181,7 @@ class TestHarnessConfigParsing:
         """TOML with [harnesses.gemini] parses command and env fields."""
         toml_file = tmp_path / "config.toml"
         toml_file.write_text(
-            "[harnesses.gemini]\n"
-            'command = ["gemini"]\n'
-            'env = { GEMINI_API_KEY = "test-key" }\n'
+            '[harnesses.gemini]\ncommand = ["gemini"]\nenv = { GEMINI_API_KEY = "test-key" }\n'
         )
         config = load_config(path=str(toml_file))
         assert "gemini" in config.harnesses
@@ -221,7 +218,7 @@ class TestHarnessConfigParsing:
     def test_harness_env_optional(self, tmp_path: Path) -> None:
         """Harness entry without env field defaults to None."""
         toml_file = tmp_path / "config.toml"
-        toml_file.write_text("[harnesses.custom]\n" 'command = ["my-agent", "--mode", "fast"]\n')
+        toml_file.write_text('[harnesses.custom]\ncommand = ["my-agent", "--mode", "fast"]\n')
         config = load_config(path=str(toml_file))
         entry = config.harnesses["custom"]
         assert entry.command == ["my-agent", "--mode", "fast"]

@@ -141,3 +141,14 @@ class ReorderTasksRequest(BaseModel):
     """Request body for POST /api/flows/:flow_name/tasks/reorder."""
 
     task_ids: list[str]
+
+
+# ---------------------------------------------------------------------------
+# User Input (SERVER-014)
+# ---------------------------------------------------------------------------
+
+
+class UserMessageRequest(BaseModel):
+    """Request body for POST /api/runs/:run_id/tasks/:task_execution_id/message."""
+
+    message: str = Field(..., min_length=1)

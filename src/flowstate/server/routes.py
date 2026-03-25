@@ -23,6 +23,7 @@ from flowstate.server.models import (
     TaskLogEntry,
     TaskLogsResponse,
     UpdateTaskRequest,
+    UserMessageRequest,
 )
 from flowstate.server.run_manager import InvalidStateError
 
@@ -552,6 +553,114 @@ async def skip_task(request: Request, run_id: str, task_id: str) -> dict[str, st
     except InvalidStateError as e:
         raise FlowstateError(str(e), status_code=409) from e
     return {"status": "skipped"}
+
+
+# ---------------------------------------------------------------------------
+# User input endpoints (SERVER-014)
+# ---------------------------------------------------------------------------
+
+
+@router.post("/runs/{run_id}/tasks/{task_execution_id}/message")
+async def send_task_message(
+    request: Request,
+    run_id: str,
+    task_execution_id: str,
+    body: UserMessageRequest,
+) -> dict[str, str]:
+    """Send a user message to a running or interrupted task.
+
+    If the task is running, the message is queued for delivery after the current
+    agent turn.  If the task is interrupted, the message resumes execution.
+
+    Returns ``{"status": "queued"}`` (running) or ``{"status": "resumed"}``
+    (interrupted).
+    """
+    executor = _get_executor_or_error(request, run_id)
+    db = _get_db(request)
+
+    task = db.get_task_execution(task_execution_id)
+    if not task or task.flow_run_id != run_id:
+        raise FlowstateError(
+            f"Task '{task_execution_id}' not found in run '{run_id}'",
+            status_code=404,
+        )
+    if task.status not in ("running", "interrupted"):
+        raise FlowstateError(
+            f"Task is {task.status}, must be running or interrupted",
+            status_code=409,
+        )
+
+    # Determine response status before the executor call (the status may change)
+    response_status = "resumed" if task.status == "interrupted" else "queued"
+
+    await executor.send_message(task_execution_id, body.message)
+
+    # Log the user input for history / replay
+    db.insert_task_log(
+        task_execution_id,
+        "user_input",
+        json.dumps({"message": body.message}),
+    )
+
+    # Broadcast to WebSocket subscribers
+    hub = request.app.state.ws_hub
+    hub.on_flow_event(_make_task_log_event(run_id, task_execution_id, "user_input", body.message))
+
+    return {"status": response_status}
+
+
+@router.post("/runs/{run_id}/tasks/{task_execution_id}/interrupt")
+async def interrupt_task(
+    request: Request,
+    run_id: str,
+    task_execution_id: str,
+) -> dict[str, str]:
+    """Interrupt a running task, stopping the agent's current turn.
+
+    The task transitions to ``interrupted`` and waits for a user message
+    before resuming.
+    """
+    executor = _get_executor_or_error(request, run_id)
+    db = _get_db(request)
+
+    task = db.get_task_execution(task_execution_id)
+    if not task or task.flow_run_id != run_id:
+        raise FlowstateError(
+            f"Task '{task_execution_id}' not found in run '{run_id}'",
+            status_code=404,
+        )
+    if task.status != "running":
+        raise FlowstateError(
+            f"Task is {task.status}, not running",
+            status_code=409,
+        )
+
+    await executor.interrupt_task(task_execution_id)
+    return {"status": "interrupted"}
+
+
+def _make_task_log_event(
+    flow_run_id: str,
+    task_execution_id: str,
+    log_type: str,
+    message: str,
+) -> Any:
+    """Create a FlowEvent for a task log entry (user_input).
+
+    Returns a FlowEvent that the WebSocket hub can serialize and broadcast.
+    """
+    from flowstate.engine.events import EventType, FlowEvent
+
+    return FlowEvent(
+        type=EventType.TASK_LOG,
+        flow_run_id=flow_run_id,
+        timestamp=FlowEvent.now(),
+        payload={
+            "task_execution_id": task_execution_id,
+            "log_type": log_type,
+            "content": json.dumps({"message": message}),
+        },
+    )
 
 
 # ---------------------------------------------------------------------------
