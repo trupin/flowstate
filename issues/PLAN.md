@@ -225,7 +225,7 @@
 | Issue  | Title                                                          | Domain | Priority | Depends On | Status |
 | ------ | -------------------------------------------------------------- | ------ | -------- | ---------- | ------ |
 | UI-035 | Move node details from expanded node pill to log viewer header | ui     | P1       | —          | done   |
-| UI-036 | Auto-follow running node in log viewer when no manual selection | ui     | P1       | —          | in_progress |
+| UI-036 | Auto-follow running node in log viewer when no manual selection | ui     | P1       | —          | done   |
 
 
 ### Phase 13 — Interactive Agent Messaging

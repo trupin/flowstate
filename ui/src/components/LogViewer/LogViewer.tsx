@@ -23,6 +23,7 @@ export interface LogViewerProps {
   logs: LogEntry[];
   taskName?: string | null;
   taskExecution?: TaskExecutionInfo | null;
+  isAutoFollow?: boolean;
   onClear?: () => void;
 }
 
@@ -640,6 +641,7 @@ export function LogViewer({
   logs,
   taskName,
   taskExecution,
+  isAutoFollow = false,
   onClear,
 }: LogViewerProps) {
   const containerRef = useRef<HTMLDivElement>(null);
@@ -675,12 +677,15 @@ export function LogViewer({
     }
   }, [groupedEntries, pinned]);
 
-  // Reset pin state and details when task changes
+  // Reset pin state and details when task changes via manual selection.
+  // Auto-follow transitions should not reset the user's scroll/filter state.
   useEffect(() => {
-    setPinned(true);
-    setShowAll(false);
-    setShowDetails(false);
-  }, [taskName]);
+    if (!isAutoFollow) {
+      setPinned(true);
+      setShowAll(false);
+      setShowDetails(false);
+    }
+  }, [taskName, isAutoFollow]);
 
   // Detect manual scroll-up to auto-unpin
   const handleScroll = () => {

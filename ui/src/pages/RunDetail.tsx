@@ -23,10 +23,17 @@ export function RunDetail() {
     edges,
     selectedTask,
     selectTask,
+    autoSelectedTask,
+    isManualSelection,
     logs,
     isConnected,
     send,
   } = useFlowRun(id!);
+
+  // The effective task shown in log viewer and highlighted in graph:
+  // manual selection takes priority, then auto-follow.
+  const effectiveTask = selectedTask ?? autoSelectedTask;
+  const isAutoFollow = !isManualSelection && effectiveTask !== null;
 
   const [showOrchestrator, setShowOrchestrator] = useState(false);
   const [orchestrators, setOrchestrators] = useState<OrchestratorInfo[]>([]);
@@ -86,9 +93,9 @@ export function RunDetail() {
     return map;
   }, [tasks]);
 
-  // Get logs for the selected task
-  const selectedTaskExecution = selectedTask
-    ? tasks.get(selectedTask)
+  // Get logs for the effective task (manual or auto-selected)
+  const selectedTaskExecution = effectiveTask
+    ? tasks.get(effectiveTask)
     : undefined;
   const selectedLogs = selectedTaskExecution
     ? (logs.get(selectedTaskExecution.id) ?? [])
@@ -261,8 +268,10 @@ export function RunDetail() {
             activeEdges={activeEdges}
             traversedEdges={traversedEdges}
             waitUntil={waitUntil}
-            selectedNode={selectedTask}
-            onNodeClick={(nodeName) => selectTask(nodeName)}
+            selectedNode={effectiveTask}
+            onNodeClick={(nodeName) =>
+              selectTask(nodeName === effectiveTask ? null : nodeName)
+            }
           />
         </div>
 
@@ -275,8 +284,9 @@ export function RunDetail() {
           ) : (
             <LogViewer
               logs={selectedLogs}
-              taskName={selectedTask}
+              taskName={effectiveTask}
               taskExecution={taskExecutionInfo}
+              isAutoFollow={isAutoFollow}
             />
           )}
         </div>

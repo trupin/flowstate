@@ -15,6 +15,7 @@ export interface NodePillData {
   worktreeDir?: string;
   hasExecution?: boolean;
   waitUntil?: string;
+  isSelected?: boolean;
   [key: string]: unknown;
 }
 
@@ -30,10 +31,11 @@ function truncateName(name: string, maxLen = 24): string {
 export function NodePill({ data }: NodeProps<Node<NodePillData>>) {
   const statusClass = `status-${data.status}`;
   const typeClass = `type-${data.nodeType}`;
+  const selectedClass = data.isSelected ? 'node-pill-selected' : '';
 
   return (
     <div
-      className={`node-pill ${statusClass} ${typeClass}`}
+      className={`node-pill ${statusClass} ${typeClass} ${selectedClass}`.trim()}
       data-testid={`node-${data.label}`}
       data-status={data.status}
       title={`${data.label} (${data.status})`}

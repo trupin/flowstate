@@ -99,6 +99,14 @@
   border-radius: 8px;
 }
 
+/* Selected node highlight */
+.node-pill-selected {
+  border-color: var(--accent) !important;
+  box-shadow:
+    0 0 0 3px rgba(59, 130, 246, 0.35),
+    0 0 12px rgba(59, 130, 246, 0.25) !important;
+}
+
 /* Handles */
 .node-pill-handle {
   width: 6px !important;

@@ -92,6 +92,7 @@ function convertToReactFlowNodes(
   taskDirs?: Map<string, string>,
   taskCwds?: Map<string, string>,
   worktreePath?: string,
+  selectedNode?: string | null,
 ): Node<NodePillData>[] {
   return nodeDefs.map((n) => {
     const hasExecution = statuses?.has(n.name) ?? false;
@@ -112,6 +113,7 @@ function convertToReactFlowNodes(
         taskDir: taskDirs?.get(n.name),
         worktreeDir: worktreePath,
         hasExecution,
+        isSelected: selectedNode === n.name,
       },
       position: { x: 0, y: 0 },
     };
@@ -190,6 +192,7 @@ function GraphViewInner({
   activeEdges,
   traversedEdges,
   readOnly = false,
+  selectedNode,
   onNodeClick,
   waitUntil,
 }: GraphViewProps) {
@@ -208,6 +211,7 @@ function GraphViewInner({
         taskDirs,
         taskCwds,
         worktreePath,
+        selectedNode,
       ),
     [
       nodes,
@@ -218,6 +222,7 @@ function GraphViewInner({
       taskDirs,
       taskCwds,
       worktreePath,
+      selectedNode,
     ],
   );
   const nodeOrder = useMemo(() => {

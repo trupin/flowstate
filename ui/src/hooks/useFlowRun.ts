@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback, useRef } from 'react';
+import { useState, useEffect, useCallback, useRef, useMemo } from 'react';
 import { useWebSocket } from './useWebSocket';
 import { api } from '../api/client';
 import type {
@@ -15,6 +15,8 @@ interface UseFlowRunReturn {
   edges: EdgeTransition[];
   selectedTask: string | null;
   selectTask: (nodeName: string | null) => void;
+  autoSelectedTask: string | null;
+  isManualSelection: boolean;
   logs: Map<string, LogEntry[]>;
   isConnected: boolean;
   send: (data: unknown) => void;
@@ -26,6 +28,7 @@ function applyEvent(
   setTasks: React.Dispatch<React.SetStateAction<Map<string, TaskExecution>>>,
   setEdges: React.Dispatch<React.SetStateAction<EdgeTransition[]>>,
   setLogs: React.Dispatch<React.SetStateAction<Map<string, LogEntry[]>>>,
+  setRunningTaskNames: React.Dispatch<React.SetStateAction<string[]>>,
   fetchRunDetail: () => void,
 ) {
   const { type, payload } = event;
@@ -92,6 +95,11 @@ function applyEvent(
         });
         return next;
       });
+      setRunningTaskNames((prev) => {
+        const name = payload.node_name as string;
+        if (prev.includes(name)) return prev;
+        return [...prev, name].sort();
+      });
       break;
     case 'task.completed':
       setTasks((prev) => {
@@ -111,6 +119,11 @@ function applyEvent(
         });
         return next;
       });
+      setRunningTaskNames((prev) => {
+        const name = payload.node_name as string;
+        const filtered = prev.filter((n) => n !== name);
+        return filtered.length === prev.length ? prev : filtered;
+      });
       break;
     case 'task.failed':
       setTasks((prev) => {
@@ -129,6 +142,11 @@ function applyEvent(
           error_message: payload.error_message as string,
         });
         return next;
+      });
+      setRunningTaskNames((prev) => {
+        const name = payload.node_name as string;
+        const filtered = prev.filter((n) => n !== name);
+        return filtered.length === prev.length ? prev : filtered;
       });
       break;
     case 'task.log':
@@ -197,7 +215,25 @@ export function useFlowRun(runId: string): UseFlowRunReturn {
   const [tasks, setTasks] = useState<Map<string, TaskExecution>>(new Map());
   const [edges, setEdges] = useState<EdgeTransition[]>([]);
   const [selectedTask, setSelectedTask] = useState<string | null>(null);
+  const [isManualSelection, setIsManualSelection] = useState(false);
+  const [runningTaskNames, setRunningTaskNames] = useState<string[]>([]);
+  const [lastAutoSelectedTask, setLastAutoSelectedTask] = useState<
+    string | null
+  >(null);
   const [logs, setLogs] = useState<Map<string, LogEntry[]>>(new Map());
+
+  // Auto-select the first running task (alphabetically) when not manually selecting
+  const autoSelectedTask: string | null = useMemo(() => {
+    if (isManualSelection) return null;
+    return runningTaskNames[0] ?? lastAutoSelectedTask;
+  }, [isManualSelection, runningTaskNames, lastAutoSelectedTask]);
+
+  // Track the last auto-selected task so it persists after all tasks complete
+  useEffect(() => {
+    if (autoSelectedTask) {
+      setLastAutoSelectedTask(autoSelectedTask);
+    }
+  }, [autoSelectedTask]);
 
   // Fetch run detail from the API and update state
   const fetchRunDetail = useCallback(() => {
@@ -209,6 +245,12 @@ export function useFlowRun(runId: string): UseFlowRunReturn {
         detail.tasks.forEach((t) => taskMap.set(t.node_name, t));
         setTasks(taskMap);
         setEdges(detail.edges);
+        // Sync running task names from fetched data
+        const running = detail.tasks
+          .filter((t) => t.status === 'running')
+          .map((t) => t.node_name)
+          .sort();
+        setRunningTaskNames(running);
       })
       .catch(() => {
         // Silently ignore fetch errors (e.g. network issues during reconnect)
@@ -243,17 +285,29 @@ export function useFlowRun(runId: string): UseFlowRunReturn {
     const count = eventQueue.length;
     for (const event of eventQueue) {
       if (event.flow_run_id !== runId) continue;
-      applyEvent(event, setRun, setTasks, setEdges, setLogs, fetchRunDetail);
+      applyEvent(
+        event,
+        setRun,
+        setTasks,
+        setEdges,
+        setLogs,
+        setRunningTaskNames,
+        fetchRunDetail,
+      );
     }
     clearQueue(count);
   }, [eventQueue, clearQueue, runId, fetchRunDetail]);
 
-  // Fetch task logs from the API when a task is selected and we have no logs yet.
-  // This handles the case where the run completed before the page loaded, so
-  // WebSocket log events were never received.
+  // The effective task is whichever task the user should be viewing:
+  // manual selection takes priority, otherwise auto-selected.
+  const effectiveTask = selectedTask ?? autoSelectedTask;
+
+  // Fetch task logs from the API when a task is selected (manually or auto)
+  // and we have no logs yet. This handles the case where the run completed
+  // before the page loaded, so WebSocket log events were never received.
   useEffect(() => {
-    if (!selectedTask || !run) return;
-    const taskExec = tasks.get(selectedTask);
+    if (!effectiveTask || !run) return;
+    const taskExec = tasks.get(effectiveTask);
     if (!taskExec) return;
 
     // Only fetch if we don't already have logs for this task
@@ -278,10 +332,18 @@ export function useFlowRun(runId: string): UseFlowRunReturn {
       .catch(() => {
         // Silently ignore fetch errors
       });
-  }, [selectedTask, tasks, run, runId, logs]);
+  }, [effectiveTask, tasks, run, runId, logs]);
 
   const selectTask = useCallback((nodeName: string | null) => {
-    setSelectedTask(nodeName);
+    if (nodeName === null) {
+      // Deselecting: resume auto-follow
+      setSelectedTask(null);
+      setIsManualSelection(false);
+    } else {
+      // Manual selection: override auto-follow
+      setSelectedTask(nodeName);
+      setIsManualSelection(true);
+    }
   }, []);
 
   return {
@@ -290,6 +352,8 @@ export function useFlowRun(runId: string): UseFlowRunReturn {
     edges,
     selectedTask,
     selectTask,
+    autoSelectedTask,
+    isManualSelection,
     logs,
     isConnected,
     send,
