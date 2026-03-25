@@ -224,6 +224,19 @@ export interface QueuedTask {
   children?: QueuedTask[];
 }
 
+// --- Subtask types ---
+
+export type SubtaskStatus = 'todo' | 'in_progress' | 'done';
+
+export interface Subtask {
+  id: string;
+  task_execution_id: string;
+  title: string;
+  status: SubtaskStatus;
+  created_at: string;
+  updated_at: string;
+}
+
 // --- WebSocket event types ---
 
 export interface FlowEvent {

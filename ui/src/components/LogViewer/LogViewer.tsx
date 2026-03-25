@@ -6,6 +6,8 @@ import { ApiError, api } from '../../api/client';
 import { ClickablePath } from '../ClickablePath';
 import { ToolCallBlock } from './ToolCallBlock';
 import { CollapsibleSection } from './CollapsibleSection';
+import { SubtaskProgress } from './SubtaskProgress';
+import { useSubtasks } from '../../hooks/useSubtasks';
 import './LogViewer.css';
 
 // --- Task execution metadata for the details panel ---
@@ -30,6 +32,7 @@ export interface LogViewerProps {
   onClear?: () => void;
   runId?: string;
   taskExecutionId?: string;
+  subtaskVersion?: number;
 }
 
 function formatTimestamp(iso: string): string {
@@ -687,7 +690,13 @@ export function LogViewer({
   onClear,
   runId,
   taskExecutionId,
+  subtaskVersion = 0,
 }: LogViewerProps) {
+  const { subtasks, loading: subtasksLoading } = useSubtasks(
+    runId,
+    taskExecutionId,
+    subtaskVersion,
+  );
   const containerRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
   const [pinned, setPinned] = useState(true);
@@ -870,6 +879,9 @@ export function LogViewer({
       </div>
       {showDetails && taskExecution && (
         <NodeDetailsPanel execution={taskExecution} />
+      )}
+      {showDetails && taskExecutionId && (
+        <SubtaskProgress subtasks={subtasks} loading={subtasksLoading} />
       )}
       <div
         className="log-viewer-content"

@@ -253,7 +253,7 @@
 | STATE-010  | Agent subtask table, model, and repository CRUD           | state  | P1       | —                     | done   |
 | ENGINE-040 | Inject task management instructions when `tasks=true`     | engine | P1       | DSL-012               | in_progress |
 | SERVER-015 | Subtask REST API endpoints + WebSocket events             | server | P1       | STATE-010             | done   |
-| UI-040     | Subtask progress display in node details                  | ui     | P1       | SERVER-015            | todo   |
+| UI-040     | Subtask progress display in node details                  | ui     | P1       | SERVER-015            | done   |
 | ENGINE-041 | Harden: Subtask API error handling and validation         | engine | P2       | ENGINE-040, SERVER-015 | todo   |
 
 

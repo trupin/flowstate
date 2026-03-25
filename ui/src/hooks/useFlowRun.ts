@@ -22,6 +22,7 @@ interface UseFlowRunReturn {
   logs: Map<string, LogEntry[]>;
   isConnected: boolean;
   send: (data: unknown) => void;
+  subtaskVersion: number;
 }
 
 function applyEvent(
@@ -239,6 +240,7 @@ export function useFlowRun(runId: string): UseFlowRunReturn {
     string | null
   >(null);
   const [logs, setLogs] = useState<Map<string, LogEntry[]>>(new Map());
+  const [subtaskVersion, setSubtaskVersion] = useState(0);
 
   // Auto-select the first running task (alphabetically) when not manually selecting
   const autoSelectedTask: string | null = useMemo(() => {
@@ -301,8 +303,12 @@ export function useFlowRun(runId: string): UseFlowRunReturn {
   useEffect(() => {
     if (eventQueue.length === 0) return;
     const count = eventQueue.length;
+    let hasSubtaskEvent = false;
     for (const event of eventQueue) {
       if (event.flow_run_id !== runId) continue;
+      if (event.type === 'subtask.updated') {
+        hasSubtaskEvent = true;
+      }
       applyEvent(
         event,
         setRun,
@@ -312,6 +318,9 @@ export function useFlowRun(runId: string): UseFlowRunReturn {
         setRunningTaskNames,
         fetchRunDetail,
       );
+    }
+    if (hasSubtaskEvent) {
+      setSubtaskVersion((v) => v + 1);
     }
     clearQueue(count);
   }, [eventQueue, clearQueue, runId, fetchRunDetail]);
@@ -382,5 +391,6 @@ export function useFlowRun(runId: string): UseFlowRunReturn {
     logs,
     isConnected,
     send,
+    subtaskVersion,
   };
 }

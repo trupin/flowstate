@@ -30,6 +30,7 @@ export function RunDetail() {
     logs,
     isConnected,
     send,
+    subtaskVersion,
   } = useFlowRun(id!);
 
   // The effective task shown in log viewer and highlighted in graph:
@@ -294,6 +295,7 @@ export function RunDetail() {
               onFollowClick={clearManualSelection}
               runId={id}
               taskExecutionId={selectedTaskExecution?.id}
+              subtaskVersion={subtaskVersion}
             />
           )}
         </div>

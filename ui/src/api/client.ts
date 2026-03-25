@@ -6,6 +6,7 @@ import type {
   LogEntry,
   OrchestratorInfo,
   QueuedTask,
+  Subtask,
 } from './types';
 
 export class ApiError extends Error {
@@ -81,6 +82,8 @@ export const api = {
       get<LogEntry[]>(
         `/api/runs/${runId}/tasks/${taskId}/logs${after ? `?after=${after}` : ''}`,
       ),
+    subtasks: (runId: string, taskExecutionId: string) =>
+      get<Subtask[]>(`/api/runs/${runId}/tasks/${taskExecutionId}/subtasks`),
     orchestrators: async (runId: string): Promise<OrchestratorInfo[]> => {
       try {
         return await get<OrchestratorInfo[]>(

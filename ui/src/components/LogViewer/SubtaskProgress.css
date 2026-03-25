@@ -1,0 +1,117 @@
+/* --- Subtask progress display --- */
+
+.subtask-progress {
+  padding: 6px 12px;
+  background: var(--bg-tertiary);
+  border-bottom: 1px solid var(--border);
+  font-size: 12px;
+}
+
+.subtask-progress-summary {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  cursor: pointer;
+  user-select: none;
+}
+
+.subtask-progress-summary:hover {
+  opacity: 0.85;
+}
+
+.subtask-progress-chevron {
+  width: 12px;
+  flex-shrink: 0;
+  font-size: 10px;
+  text-align: center;
+  color: var(--text-secondary);
+}
+
+.subtask-progress-count {
+  font-size: 11px;
+  color: var(--text-secondary);
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+
+.subtask-progress-bar-container {
+  flex: 1;
+  min-width: 40px;
+  max-width: 120px;
+  height: 4px;
+  background: rgba(255, 255, 255, 0.1);
+  border-radius: 2px;
+  overflow: hidden;
+}
+
+.subtask-progress-bar-fill {
+  display: block;
+  height: 100%;
+  background: var(--success);
+  border-radius: 2px;
+  transition: width 0.3s ease;
+}
+
+/* --- Subtask list --- */
+
+.subtask-progress-list {
+  margin-top: 6px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  max-height: 300px;
+  overflow-y: auto;
+}
+
+.subtask-progress-item {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 2px 0 2px 18px;
+  font-size: 11px;
+}
+
+.subtask-progress-icon {
+  width: 14px;
+  text-align: center;
+  flex-shrink: 0;
+  font-size: 12px;
+}
+
+.subtask-status-todo .subtask-progress-icon {
+  color: var(--text-secondary);
+  opacity: 0.6;
+}
+
+.subtask-status-in_progress .subtask-progress-icon {
+  color: var(--accent);
+}
+
+.subtask-status-done .subtask-progress-icon {
+  color: var(--success);
+}
+
+.subtask-icon-pulse {
+  animation: subtask-pulse 1.5s ease-in-out infinite;
+}
+
+@keyframes subtask-pulse {
+  0%,
+  100% {
+    opacity: 0.5;
+  }
+  50% {
+    opacity: 1;
+  }
+}
+
+.subtask-progress-title {
+  color: var(--text-primary);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.subtask-status-done .subtask-progress-title {
+  color: var(--text-secondary);
+}
