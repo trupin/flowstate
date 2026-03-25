@@ -108,6 +108,16 @@ class TaskLogRow(BaseModel):
     content: str
 
 
+class TaskMessageRow(BaseModel):
+    """Row model for the task_messages table."""
+
+    id: str
+    task_execution_id: str
+    message: str
+    created_at: str
+    processed: int = 0
+
+
 class FlowScheduleRow(BaseModel):
     """Row model for the flow_schedules table."""
 

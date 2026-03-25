@@ -20,6 +20,7 @@ from flowstate.state.models import (
     ForkGroupRow,
     TaskExecutionRow,
     TaskLogRow,
+    TaskMessageRow,
     TaskNodeHistoryRow,
     TaskRow,
 )
@@ -101,6 +102,7 @@ class FlowstateDB:
     def reset_all(self) -> None:
         """Delete all rows from all tables. Used in tests only."""
         tables = [
+            "task_messages",
             "task_logs",
             "edge_transitions",
             "fork_group_members",
@@ -324,8 +326,7 @@ class FlowstateDB:
     def get_latest_task_execution(self, flow_run_id: str) -> TaskExecutionRow | None:
         """Get the most recently created task execution for a flow run."""
         row = self._fetchone(
-            "SELECT * FROM task_executions WHERE flow_run_id = ?"
-            " ORDER BY created_at DESC LIMIT 1",
+            "SELECT * FROM task_executions WHERE flow_run_id = ? ORDER BY created_at DESC LIMIT 1",
             (flow_run_id,),
         )
         return TaskExecutionRow(**dict(row)) if row else None
@@ -554,6 +555,63 @@ class FlowstateDB:
                 (task_execution_id, limit),
             )
         return [TaskLogRow(**dict(r)) for r in rows]
+
+    # ================================================================== #
+    # Task Messages
+    # ================================================================== #
+
+    def insert_task_message(self, task_execution_id: str, message: str) -> str:
+        """Insert a user message into the task message queue.
+
+        Args:
+            task_execution_id: The task execution to queue the message for.
+            message: The message text.
+
+        Returns:
+            The UUID of the newly created message.
+        """
+        msg_id = str(uuid.uuid4())
+        self._execute(
+            """INSERT INTO task_messages (id, task_execution_id, message)
+               VALUES (?, ?, ?)""",
+            (msg_id, task_execution_id, message),
+        )
+        self._commit()
+        return msg_id
+
+    def get_unprocessed_messages(self, task_execution_id: str) -> list[TaskMessageRow]:
+        """Get unprocessed messages for a task execution, ordered by creation time.
+
+        Args:
+            task_execution_id: The task execution to get messages for.
+
+        Returns:
+            List of unprocessed messages ordered by created_at ascending.
+        """
+        rows = self._fetchall(
+            """SELECT * FROM task_messages
+               WHERE task_execution_id = ? AND processed = 0
+               ORDER BY created_at ASC""",
+            (task_execution_id,),
+        )
+        return [TaskMessageRow(**dict(r)) for r in rows]
+
+    def mark_messages_processed(self, task_execution_id: str) -> int:
+        """Mark all unprocessed messages for a task execution as processed.
+
+        Args:
+            task_execution_id: The task execution whose messages to mark.
+
+        Returns:
+            The number of messages that were marked as processed.
+        """
+        cursor = self._execute(
+            """UPDATE task_messages SET processed = 1
+               WHERE task_execution_id = ? AND processed = 0""",
+            (task_execution_id,),
+        )
+        self._commit()
+        return cursor.rowcount
 
     # ================================================================== #
     # Flow Schedules

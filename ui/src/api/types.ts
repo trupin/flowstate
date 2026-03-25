@@ -15,7 +15,8 @@ export type TaskStatus =
   | 'running'
   | 'completed'
   | 'failed'
-  | 'skipped';
+  | 'skipped'
+  | 'interrupted';
 
 export type EdgeType = 'unconditional' | 'conditional' | 'fork' | 'join';
 
@@ -149,7 +150,13 @@ export interface EdgeTransition {
 export interface LogEntry {
   id: number;
   task_execution_id: string;
-  log_type: 'stdout' | 'stderr' | 'tool_use' | 'assistant_message' | 'system';
+  log_type:
+    | 'stdout'
+    | 'stderr'
+    | 'tool_use'
+    | 'assistant_message'
+    | 'system'
+    | 'user_input';
   content: string;
   timestamp: string;
 }

@@ -1992,3 +1992,155 @@ class TestFlowEnabled:
             assert db.is_flow_enabled("my-flow") is False
             db.set_flow_enabled("my-flow", True)
             assert db.is_flow_enabled("my-flow") is True
+
+
+# ================================================================== #
+# Task Messages Tests (STATE-009)
+# ================================================================== #
+
+
+class TestTaskMessages:
+    """Tests for task message queue operations."""
+
+    def _create_task(self, db: FlowstateDB, flow_run_id: str, name: str = "a") -> str:
+        """Helper to create a task execution and return its ID."""
+        return db.create_task_execution(
+            flow_run_id, name, "task", 1, "handoff", "/tmp", f"/tmp/{name}-1", f"do {name}"
+        )
+
+    def test_insert_and_get_unprocessed_messages(self, db: FlowstateDB, flow_run_id: str) -> None:
+        """Insert messages, retrieve unprocessed ones in creation order."""
+        task_id = self._create_task(db, flow_run_id)
+
+        msg1_id = db.insert_task_message(task_id, "hello")
+        msg2_id = db.insert_task_message(task_id, "world")
+
+        messages = db.get_unprocessed_messages(task_id)
+        assert len(messages) == 2
+        assert messages[0].id == msg1_id
+        assert messages[0].message == "hello"
+        assert messages[0].task_execution_id == task_id
+        assert messages[0].processed == 0
+        assert messages[1].id == msg2_id
+        assert messages[1].message == "world"
+
+    def test_get_unprocessed_messages_empty(self, db: FlowstateDB, flow_run_id: str) -> None:
+        """get_unprocessed_messages with no messages returns empty list."""
+        task_id = self._create_task(db, flow_run_id)
+        messages = db.get_unprocessed_messages(task_id)
+        assert messages == []
+
+    def test_mark_messages_processed(self, db: FlowstateDB, flow_run_id: str) -> None:
+        """mark_messages_processed marks all unprocessed messages and returns count."""
+        task_id = self._create_task(db, flow_run_id)
+        db.insert_task_message(task_id, "msg1")
+        db.insert_task_message(task_id, "msg2")
+        db.insert_task_message(task_id, "msg3")
+
+        count = db.mark_messages_processed(task_id)
+        assert count == 3
+
+        # After marking, no unprocessed messages remain
+        messages = db.get_unprocessed_messages(task_id)
+        assert messages == []
+
+    def test_mark_messages_processed_none(self, db: FlowstateDB, flow_run_id: str) -> None:
+        """mark_messages_processed with no unprocessed messages returns 0."""
+        task_id = self._create_task(db, flow_run_id)
+        count = db.mark_messages_processed(task_id)
+        assert count == 0
+
+    def test_mark_processed_then_insert_new(self, db: FlowstateDB, flow_run_id: str) -> None:
+        """After marking processed, new messages are still unprocessed."""
+        task_id = self._create_task(db, flow_run_id)
+
+        db.insert_task_message(task_id, "old msg")
+        db.mark_messages_processed(task_id)
+
+        db.insert_task_message(task_id, "new msg")
+        messages = db.get_unprocessed_messages(task_id)
+        assert len(messages) == 1
+        assert messages[0].message == "new msg"
+
+    def test_messages_isolated_per_task(self, db: FlowstateDB, flow_run_id: str) -> None:
+        """Messages for different tasks are independent."""
+        task1_id = self._create_task(db, flow_run_id, "task1")
+        task2_id = self._create_task(db, flow_run_id, "task2")
+
+        db.insert_task_message(task1_id, "for task1")
+        db.insert_task_message(task2_id, "for task2")
+
+        messages1 = db.get_unprocessed_messages(task1_id)
+        messages2 = db.get_unprocessed_messages(task2_id)
+        assert len(messages1) == 1
+        assert messages1[0].message == "for task1"
+        assert len(messages2) == 1
+        assert messages2[0].message == "for task2"
+
+        # Marking task1 processed does not affect task2
+        db.mark_messages_processed(task1_id)
+        assert db.get_unprocessed_messages(task1_id) == []
+        assert len(db.get_unprocessed_messages(task2_id)) == 1
+
+    def test_message_has_created_at(self, db: FlowstateDB, flow_run_id: str) -> None:
+        """Inserted message has a non-null created_at set by SQLite."""
+        task_id = self._create_task(db, flow_run_id)
+        db.insert_task_message(task_id, "timestamped")
+
+        messages = db.get_unprocessed_messages(task_id)
+        assert len(messages) == 1
+        assert messages[0].created_at is not None
+        assert len(messages[0].created_at) > 0
+
+    def test_insert_returns_uuid(self, db: FlowstateDB, flow_run_id: str) -> None:
+        """insert_task_message returns a valid UUID string."""
+        task_id = self._create_task(db, flow_run_id)
+        msg_id = db.insert_task_message(task_id, "test")
+        assert isinstance(msg_id, str)
+        assert len(msg_id) == 36  # UUID format: 8-4-4-4-12
+
+
+# ================================================================== #
+# Interrupted Status + User Input Log Type Tests (STATE-009)
+# ================================================================== #
+
+
+class TestInterruptedStatusAndUserInputLogType:
+    """Tests for the interrupted task status and user_input log type."""
+
+    def _create_task(self, db: FlowstateDB, flow_run_id: str, name: str = "a") -> str:
+        """Helper to create a task execution and return its ID."""
+        return db.create_task_execution(
+            flow_run_id, name, "task", 1, "handoff", "/tmp", f"/tmp/{name}-1", f"do {name}"
+        )
+
+    def test_update_task_to_interrupted(self, db: FlowstateDB, flow_run_id: str) -> None:
+        """Setting task status to 'interrupted' succeeds."""
+        task_id = self._create_task(db, flow_run_id)
+        db.update_task_status(task_id, "interrupted")
+
+        task = db.get_task_execution(task_id)
+        assert task is not None
+        assert task.status == "interrupted"
+
+    def test_insert_user_input_log(self, db: FlowstateDB, flow_run_id: str) -> None:
+        """Inserting a task log with log_type='user_input' succeeds."""
+        task_id = self._create_task(db, flow_run_id)
+        db.insert_task_log(task_id, "user_input", "What should I do next?")
+
+        logs = db.get_task_logs(task_id)
+        assert len(logs) == 1
+        assert logs[0].log_type == "user_input"
+        assert logs[0].content == "What should I do next?"
+
+    def test_invalid_status_rejected(self, db: FlowstateDB, flow_run_id: str) -> None:
+        """Setting task status to an invalid value raises IntegrityError."""
+        task_id = self._create_task(db, flow_run_id)
+        with pytest.raises(sqlite3.IntegrityError):
+            db.update_task_status(task_id, "bogus_status")
+
+    def test_invalid_log_type_rejected(self, db: FlowstateDB, flow_run_id: str) -> None:
+        """Inserting a log with invalid log_type raises IntegrityError."""
+        task_id = self._create_task(db, flow_run_id)
+        with pytest.raises(sqlite3.IntegrityError):
+            db.insert_task_log(task_id, "bogus_type", "content")

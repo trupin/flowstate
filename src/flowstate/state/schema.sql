@@ -37,7 +37,7 @@ CREATE TABLE IF NOT EXISTS task_executions (
     node_name TEXT NOT NULL,
     node_type TEXT NOT NULL CHECK(node_type IN ('entry', 'task', 'exit', 'wait', 'fence', 'atomic')),
     status TEXT NOT NULL CHECK(status IN (
-        'pending', 'waiting', 'running', 'completed', 'failed', 'skipped'
+        'pending', 'waiting', 'running', 'completed', 'failed', 'skipped', 'interrupted'
     )),
     wait_until TIMESTAMP,
     generation INTEGER NOT NULL DEFAULT 1,
@@ -96,9 +96,18 @@ CREATE TABLE IF NOT EXISTS task_logs (
     task_execution_id TEXT NOT NULL REFERENCES task_executions(id),
     timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     log_type TEXT NOT NULL CHECK(log_type IN (
-        'stdout', 'stderr', 'tool_use', 'assistant_message', 'system'
+        'stdout', 'stderr', 'tool_use', 'assistant_message', 'system', 'user_input'
     )),
     content TEXT NOT NULL
+);
+
+-- Task messages (user messages queued for a task execution)
+CREATE TABLE IF NOT EXISTS task_messages (
+    id TEXT PRIMARY KEY,
+    task_execution_id TEXT NOT NULL REFERENCES task_executions(id),
+    message TEXT NOT NULL,
+    created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f', 'now')),
+    processed INTEGER NOT NULL DEFAULT 0
 );
 
 -- Flow schedules (recurring flow runs)
@@ -163,6 +172,7 @@ CREATE INDEX IF NOT EXISTS idx_task_executions_waiting ON task_executions(status
 CREATE INDEX IF NOT EXISTS idx_edge_transitions_flow_run ON edge_transitions(flow_run_id);
 CREATE INDEX IF NOT EXISTS idx_task_logs_execution ON task_logs(task_execution_id);
 CREATE INDEX IF NOT EXISTS idx_task_logs_timestamp ON task_logs(task_execution_id, timestamp);
+CREATE INDEX IF NOT EXISTS idx_task_messages_task ON task_messages(task_execution_id, processed);
 CREATE INDEX IF NOT EXISTS idx_fork_groups_flow_run ON fork_groups(flow_run_id);
 CREATE INDEX IF NOT EXISTS idx_flow_schedules_next ON flow_schedules(next_trigger_at)
     WHERE enabled = 1;
