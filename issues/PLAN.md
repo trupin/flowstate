@@ -241,6 +241,20 @@
 | SERVER-014 | Message + interrupt API endpoints                         | server | P1       | ENGINE-036, STATE-009 | done   |
 | UI-037     | Always-visible input box + interrupt button               | ui     | P1       | SERVER-014            | done   |
 | ENGINE-037 | Harden: Remove SubprocessManager from task execution      | engine | P2       | ENGINE-035            | todo   |
+| ENGINE-038 | Fix retry_task not waking paused executor loop             | engine | P0       | —                     | todo   |
+
+
+### Phase 14 — Agent Subtask Management
+
+
+| Issue      | Title                                                     | Domain | Priority | Depends On            | Status |
+| ---------- | --------------------------------------------------------- | ------ | -------- | --------------------- | ------ |
+| DSL-012    | Add `tasks` boolean attribute to grammar, parser, AST     | dsl    | P1       | —                     | todo   |
+| STATE-010  | Agent subtask table, model, and repository CRUD           | state  | P1       | —                     | todo   |
+| ENGINE-038 | Inject task management instructions when `tasks=true`     | engine | P1       | DSL-012               | todo   |
+| SERVER-015 | Subtask REST API endpoints + WebSocket events             | server | P1       | STATE-010             | todo   |
+| UI-040     | Subtask progress display in node details                  | ui     | P1       | SERVER-015            | todo   |
+| ENGINE-039 | Harden: Subtask API error handling and validation         | engine | P2       | ENGINE-038, SERVER-015 | todo   |
 
 
 ---
