@@ -511,3 +511,119 @@
 .collapsible-content {
   margin-top: 2px;
 }
+
+/* --- Input bar styles --- */
+
+.log-viewer-input-bar {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 12px;
+  border-top: 1px solid var(--border);
+  background: var(--bg-secondary);
+  flex-shrink: 0;
+}
+
+.log-viewer-input {
+  flex: 1;
+  min-width: 0;
+  padding: 6px 10px;
+  font-size: 12px;
+  font-family: var(--font-mono);
+  background: var(--bg-primary);
+  color: var(--text-primary);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  outline: none;
+}
+
+.log-viewer-input:focus {
+  border-color: var(--accent);
+}
+
+.log-viewer-input:disabled {
+  opacity: 0.6;
+}
+
+.log-viewer-input::placeholder {
+  color: var(--text-secondary);
+  opacity: 0.7;
+}
+
+.log-viewer-send-btn {
+  padding: 6px 14px;
+  font-size: 12px;
+  font-weight: 500;
+  background: var(--accent);
+  color: #fff;
+  border: 1px solid var(--accent);
+  border-radius: 4px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.log-viewer-send-btn:hover:not(:disabled) {
+  opacity: 0.9;
+}
+
+.log-viewer-send-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.log-viewer-interrupt-btn {
+  padding: 6px 12px;
+  font-size: 12px;
+  font-weight: 500;
+  background: rgba(245, 158, 11, 0.15);
+  color: #f59e0b;
+  border: 1px solid rgba(245, 158, 11, 0.4);
+  border-radius: 4px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.log-viewer-interrupt-btn:hover:not(:disabled) {
+  background: rgba(245, 158, 11, 0.25);
+}
+
+.log-viewer-interrupt-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.log-viewer-input-error {
+  padding: 4px 12px;
+  font-size: 11px;
+  color: var(--error);
+  background: var(--bg-secondary);
+  border-top: 1px solid var(--border);
+  flex-shrink: 0;
+}
+
+/* --- User input log entry styles --- */
+
+.log-entry-user-input {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  padding: 4px 8px;
+  background: rgba(99, 102, 241, 0.1);
+  border-radius: 4px;
+  border-left: 3px solid rgba(99, 102, 241, 0.5);
+}
+
+.log-entry-user-label {
+  font-size: 11px;
+  font-weight: 600;
+  color: #818cf8;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  flex-shrink: 0;
+}
+
+.log-entry-user-message {
+  color: var(--text-primary);
+  white-space: pre-wrap;
+  word-break: break-word;
+}

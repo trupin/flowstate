@@ -186,6 +186,22 @@ function applyEvent(
         return next;
       });
       break;
+    case 'task.interrupted':
+      setTasks((prev) => {
+        const next = new Map(prev);
+        const nodeName = payload.node_name as string;
+        const existing = next.get(nodeName);
+        if (existing) {
+          next.set(nodeName, { ...existing, status: 'interrupted' });
+        }
+        return next;
+      });
+      setRunningTaskNames((prev) => {
+        const name = payload.node_name as string;
+        const filtered = prev.filter((n) => n !== name);
+        return filtered.length === prev.length ? prev : filtered;
+      });
+      break;
     case 'edge.transition':
       setEdges((prev) => [
         ...prev,

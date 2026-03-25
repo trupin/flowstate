@@ -1,7 +1,8 @@
-import { useRef, useEffect, useState, useMemo } from 'react';
+import { useRef, useEffect, useState, useMemo, useCallback } from 'react';
 import Markdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import type { LogEntry, NodeType, TaskStatus } from '../../api/types';
+import { ApiError, api } from '../../api/client';
 import { ClickablePath } from '../ClickablePath';
 import { ToolCallBlock } from './ToolCallBlock';
 import { CollapsibleSection } from './CollapsibleSection';
@@ -25,6 +26,8 @@ export interface LogViewerProps {
   taskExecution?: TaskExecutionInfo | null;
   isAutoFollow?: boolean;
   onClear?: () => void;
+  runId?: string;
+  taskExecutionId?: string;
 }
 
 function formatTimestamp(iso: string): string {
@@ -187,6 +190,11 @@ interface ParsedRaw {
   text: string;
 }
 
+interface ParsedUserInput {
+  kind: 'user_input';
+  message: string;
+}
+
 type ParsedContent =
   | ParsedThinking
   | ParsedAssistant
@@ -198,7 +206,8 @@ type ParsedContent =
   | ParsedSystemInit
   | ParsedRateLimitEvent
   | ParsedActivity
-  | ParsedRaw;
+  | ParsedRaw
+  | ParsedUserInput;
 
 function truncateStr(s: string, maxLen: number): string {
   if (s.length <= maxLen) return s;
@@ -246,7 +255,16 @@ function getFirstMeaningfulLine(text: string): string {
   return truncateStr(text, 200);
 }
 
-function parseLogContent(content: string): ParsedContent {
+function parseLogContent(
+  content: string,
+  logType?: LogEntry['log_type'],
+): ParsedContent {
+  // Handle user_input log type BEFORE JSON parsing — this must not be
+  // caught by the generic eventType === 'user' filter below.
+  if (logType === 'user_input') {
+    return { kind: 'user_input', message: content };
+  }
+
   // Handle non-JSON process exit messages
   const exitMatch = content.match(/^Process exited with code (\d+)$/);
   if (exitMatch) {
@@ -420,8 +438,13 @@ function parseLogContent(content: string): ParsedContent {
 
 type VisibilityCategory = 'visible' | 'noise' | 'hidden';
 
-function classifyEntry(content: string): VisibilityCategory {
-  const parsed = parseLogContent(content);
+function classifyEntry(
+  content: string,
+  logType?: LogEntry['log_type'],
+): VisibilityCategory {
+  const parsed = parseLogContent(content, logType);
+  // User input is always visible
+  if (parsed.kind === 'user_input') return 'visible';
   // Completely hidden: empty raw text (user, unknown JSON types)
   if (parsed.kind === 'raw' && parsed.text === '') return 'hidden';
   // Noise: system init, rate limit (accessible via "Show all")
@@ -478,14 +501,19 @@ function ThinkingBlock({ text, isActive }: ThinkingBlockProps) {
 
 interface LogEntryContentProps {
   content: string;
+  logType?: LogEntry['log_type'];
   isLastEntry?: boolean;
 }
 
 function LogEntryContent({
   content,
+  logType,
   isLastEntry = false,
 }: LogEntryContentProps) {
-  const parsed = useMemo(() => parseLogContent(content), [content]);
+  const parsed = useMemo(
+    () => parseLogContent(content, logType),
+    [content, logType],
+  );
 
   switch (parsed.kind) {
     case 'thinking':
@@ -551,6 +579,13 @@ function LogEntryContent({
       return <span className="log-parsed log-parsed-system">Rate limited</span>;
     case 'activity':
       return <span className="log-parsed log-activity">{parsed.text}</span>;
+    case 'user_input':
+      return (
+        <div className="log-entry-user-input">
+          <span className="log-entry-user-label">You</span>
+          <span className="log-entry-user-message">{parsed.message}</span>
+        </div>
+      );
     case 'raw':
       return <span className="log-content">{parsed.text}</span>;
   }
@@ -584,13 +619,16 @@ function groupLogEntries(logs: LogEntry[]): GroupedEntry[] {
       continue;
     }
 
-    const parsed = parseLogContent(entry.content);
+    const parsed = parseLogContent(entry.content, entry.log_type);
 
     if (parsed.kind === 'tool_use') {
       // Look at the next non-hidden entry for a matching tool_result
       const nextEntry = logs[i + 1];
       if (nextEntry) {
-        const nextParsed = parseLogContent(nextEntry.content);
+        const nextParsed = parseLogContent(
+          nextEntry.content,
+          nextEntry.log_type,
+        );
         if (nextParsed.kind === 'tool_result') {
           result.push({
             type: 'tool_call',
@@ -643,17 +681,24 @@ export function LogViewer({
   taskExecution,
   isAutoFollow = false,
   onClear,
+  runId,
+  taskExecutionId,
 }: LogViewerProps) {
   const containerRef = useRef<HTMLDivElement>(null);
+  const inputRef = useRef<HTMLInputElement>(null);
   const [pinned, setPinned] = useState(true);
   const [showAll, setShowAll] = useState(false);
   const [showDetails, setShowDetails] = useState(false);
+  const [inputValue, setInputValue] = useState('');
+  const [sending, setSending] = useState(false);
+  const [interrupting, setInterrupting] = useState(false);
+  const [inputError, setInputError] = useState<string | null>(null);
 
   const { filteredLogs, noiseCount } = useMemo(() => {
     const filtered: LogEntry[] = [];
     let noise = 0;
     for (const entry of logs) {
-      const category = classifyEntry(entry.content);
+      const category = classifyEntry(entry.content, entry.log_type);
       if (category === 'noise') {
         noise++;
         if (showAll) filtered.push(entry);
@@ -696,6 +741,65 @@ export function LogViewer({
       setPinned(false);
     }
   };
+
+  // Clear input state when selected task changes
+  useEffect(() => {
+    setInputValue('');
+    setSending(false);
+    setInterrupting(false);
+    setInputError(null);
+  }, [taskExecutionId]);
+
+  const handleSend = useCallback(async () => {
+    if (!runId || !taskExecutionId || !inputValue.trim() || sending) return;
+    setSending(true);
+    setInputError(null);
+    try {
+      await api.taskInteraction.sendMessage(
+        runId,
+        taskExecutionId,
+        inputValue.trim(),
+      );
+      setInputValue('');
+      inputRef.current?.focus();
+    } catch (err) {
+      if (err instanceof ApiError && err.status === 409) {
+        setInputError('Task is no longer running');
+      } else {
+        setInputError('Failed to send message');
+      }
+    } finally {
+      setSending(false);
+    }
+  }, [runId, taskExecutionId, inputValue, sending]);
+
+  const handleInterrupt = useCallback(async () => {
+    if (!runId || !taskExecutionId || interrupting) return;
+    setInterrupting(true);
+    setInputError(null);
+    try {
+      await api.taskInteraction.interrupt(runId, taskExecutionId);
+    } catch (err) {
+      if (err instanceof ApiError && err.status === 409) {
+        setInputError('Task is no longer running');
+      } else {
+        setInputError('Failed to interrupt task');
+      }
+      setInterrupting(false);
+    }
+    // Don't reset interrupting here — it will be cleared when status changes
+  }, [runId, taskExecutionId, interrupting]);
+
+  // Reset interrupting state when task status changes away from running
+  useEffect(() => {
+    if (taskExecution?.status !== 'running') {
+      setInterrupting(false);
+    }
+  }, [taskExecution?.status]);
+
+  const showInputBar =
+    taskExecution?.status === 'running' ||
+    taskExecution?.status === 'interrupted';
 
   if (!taskName) {
     return (
@@ -794,6 +898,7 @@ export function LogViewer({
                 </span>
                 <LogEntryContent
                   content={grouped.entry.content}
+                  logType={grouped.entry.log_type}
                   isLastEntry={isLast}
                 />
               </div>
@@ -801,6 +906,49 @@ export function LogViewer({
           })
         )}
       </div>
+      {showInputBar && (
+        <div className="log-viewer-input-bar">
+          {taskExecution.status === 'running' && (
+            <button
+              className="log-viewer-interrupt-btn"
+              onClick={handleInterrupt}
+              disabled={interrupting}
+              title="Stop the agent to send a message"
+            >
+              {interrupting ? 'Interrupting...' : 'Interrupt'}
+            </button>
+          )}
+          <input
+            ref={inputRef}
+            type="text"
+            className="log-viewer-input"
+            value={inputValue}
+            onChange={(e) => {
+              setInputValue(e.target.value);
+              setInputError(null);
+            }}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter' && !sending) {
+                void handleSend();
+              }
+            }}
+            placeholder={
+              taskExecution.status === 'interrupted'
+                ? 'Send a message to resume the agent...'
+                : 'Send a message to the agent...'
+            }
+            disabled={sending}
+          />
+          <button
+            className="log-viewer-send-btn"
+            onClick={() => void handleSend()}
+            disabled={sending || !inputValue.trim()}
+          >
+            {sending ? 'Sending...' : 'Send'}
+          </button>
+        </div>
+      )}
+      {inputError && <div className="log-viewer-input-error">{inputError}</div>}
     </div>
   );
 }

@@ -287,6 +287,8 @@ export function RunDetail() {
               taskName={effectiveTask}
               taskExecution={taskExecutionInfo}
               isAutoFollow={isAutoFollow}
+              runId={id}
+              taskExecutionId={selectedTaskExecution?.id}
             />
           )}
         </div>

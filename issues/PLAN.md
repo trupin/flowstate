@@ -237,7 +237,7 @@
 | STATE-009  | Task message queue + interrupted status + user_input log  | state  | P1       | —                     | done   |
 | ENGINE-036 | Message queue + re-invocation loop + interrupt in executor| engine | P1       | ENGINE-035, STATE-009 | done   |
 | SERVER-014 | Message + interrupt API endpoints                         | server | P1       | ENGINE-036, STATE-009 | done   |
-| UI-037     | Always-visible input box + interrupt button               | ui     | P1       | SERVER-014            | todo   |
+| UI-037     | Always-visible input box + interrupt button               | ui     | P1       | SERVER-014            | done   |
 | ENGINE-037 | Harden: Remove SubprocessManager from task execution      | engine | P2       | ENGINE-035            | todo   |
 
 

@@ -159,4 +159,22 @@ export const api = {
       path,
       command: command ?? localStorage.getItem('flowstate-ide') ?? 'code',
     }),
+  taskInteraction: {
+    sendMessage: (
+      runId: string,
+      taskExecutionId: string,
+      message: string,
+    ): Promise<{ status: string }> =>
+      post<{ status: string }>(
+        `/api/runs/${runId}/tasks/${taskExecutionId}/message`,
+        { message },
+      ),
+    interrupt: (
+      runId: string,
+      taskExecutionId: string,
+    ): Promise<{ status: string }> =>
+      post<{ status: string }>(
+        `/api/runs/${runId}/tasks/${taskExecutionId}/interrupt`,
+      ),
+  },
 };
