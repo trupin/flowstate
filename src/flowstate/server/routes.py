@@ -13,6 +13,7 @@ from flowstate.dsl.parser import parse_flow
 from flowstate.engine.executor import FlowExecutor
 from flowstate.server.app import FlowstateError
 from flowstate.server.models import (
+    CreateSubtaskRequest,
     OpenRequest,
     ReorderTasksRequest,
     RunSummary,
@@ -20,8 +21,10 @@ from flowstate.server.models import (
     StartRunRequest,
     StartRunResponse,
     SubmitTaskRequest,
+    SubtaskResponse,
     TaskLogEntry,
     TaskLogsResponse,
+    UpdateSubtaskRequest,
     UpdateTaskRequest,
     UserMessageRequest,
 )
@@ -30,7 +33,7 @@ from flowstate.server.run_manager import InvalidStateError
 if TYPE_CHECKING:
     from flowstate.server.flow_registry import DiscoveredFlow, FlowRegistry
     from flowstate.server.run_manager import RunManager
-    from flowstate.state.models import TaskNodeHistoryRow, TaskRow
+    from flowstate.state.models import AgentSubtaskRow, TaskNodeHistoryRow, TaskRow
     from flowstate.state.repository import FlowstateDB
 
 router = APIRouter(prefix="/api")
@@ -1021,6 +1024,124 @@ async def reorder_tasks(
     db = _get_db(request)
     db.reorder_tasks(flow_name, body.task_ids)
     return {"status": "reordered"}
+
+
+# ---------------------------------------------------------------------------
+# Agent Subtask endpoints (SERVER-015)
+# ---------------------------------------------------------------------------
+
+_VALID_SUBTASK_STATUSES = frozenset({"todo", "in_progress", "done"})
+
+
+def _subtask_to_response(row: AgentSubtaskRow) -> SubtaskResponse:
+    """Convert an AgentSubtaskRow to a SubtaskResponse."""
+    return SubtaskResponse(
+        id=row.id,
+        task_execution_id=row.task_execution_id,
+        title=row.title,
+        status=row.status,
+        created_at=row.created_at,
+        updated_at=row.updated_at,
+    )
+
+
+def _validate_task_in_run(request: Request, run_id: str, task_execution_id: str) -> None:
+    """Validate that the task execution exists and belongs to the given run.
+
+    Raises FlowstateError(404) if the task doesn't exist or belongs to a
+    different run.
+    """
+    db = _get_db(request)
+    task = db.get_task_execution(task_execution_id)
+    if not task or task.flow_run_id != run_id:
+        raise FlowstateError(
+            f"Task '{task_execution_id}' not found in run '{run_id}'",
+            status_code=404,
+        )
+
+
+def _emit_subtask_event(request: Request, run_id: str, row: AgentSubtaskRow) -> None:
+    """Emit a SUBTASK_UPDATED WebSocket event for the given subtask."""
+    from flowstate.engine.events import EventType, make_event
+
+    event = make_event(
+        EventType.SUBTASK_UPDATED,
+        flow_run_id=run_id,
+        subtask_id=row.id,
+        task_execution_id=row.task_execution_id,
+        title=row.title,
+        status=row.status,
+        created_at=row.created_at,
+        updated_at=row.updated_at,
+    )
+    hub = request.app.state.ws_hub
+    hub.on_flow_event(event)
+
+
+@router.post(
+    "/runs/{run_id}/tasks/{task_execution_id}/subtasks",
+    status_code=201,
+)
+async def create_subtask(
+    request: Request,
+    run_id: str,
+    task_execution_id: str,
+    body: CreateSubtaskRequest,
+) -> SubtaskResponse:
+    """Create a new subtask for a task execution.
+
+    Returns 201 with the created subtask. Emits a SUBTASK_UPDATED WebSocket
+    event so the UI can update in real time.
+    """
+    _validate_task_in_run(request, run_id, task_execution_id)
+    db = _get_db(request)
+    row = db.create_agent_subtask(task_execution_id, body.title)
+    _emit_subtask_event(request, run_id, row)
+    return _subtask_to_response(row)
+
+
+@router.get("/runs/{run_id}/tasks/{task_execution_id}/subtasks")
+async def list_subtasks(
+    request: Request,
+    run_id: str,
+    task_execution_id: str,
+) -> list[SubtaskResponse]:
+    """List all subtasks for a task execution, ordered by creation time."""
+    _validate_task_in_run(request, run_id, task_execution_id)
+    db = _get_db(request)
+    rows = db.list_agent_subtasks(task_execution_id)
+    return [_subtask_to_response(r) for r in rows]
+
+
+@router.patch("/runs/{run_id}/tasks/{task_execution_id}/subtasks/{subtask_id}")
+async def update_subtask(
+    request: Request,
+    run_id: str,
+    task_execution_id: str,
+    subtask_id: str,
+    body: UpdateSubtaskRequest,
+) -> SubtaskResponse:
+    """Update the status of a subtask.
+
+    Valid statuses: ``todo``, ``in_progress``, ``done``.
+    Returns 400 for invalid status, 404 if the subtask does not exist.
+    Emits a SUBTASK_UPDATED WebSocket event on success.
+    """
+    if body.status not in _VALID_SUBTASK_STATUSES:
+        raise FlowstateError(
+            f"Invalid status '{body.status}'. Must be one of: {', '.join(sorted(_VALID_SUBTASK_STATUSES))}",
+            status_code=400,
+        )
+    _validate_task_in_run(request, run_id, task_execution_id)
+    db = _get_db(request)
+    row = db.update_agent_subtask(subtask_id, body.status)
+    if not row:
+        raise FlowstateError(
+            f"Subtask '{subtask_id}' not found",
+            status_code=404,
+        )
+    _emit_subtask_event(request, run_id, row)
+    return _subtask_to_response(row)
 
 
 @router.post("/_test/reset")

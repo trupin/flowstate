@@ -71,6 +71,9 @@ class EventType(StrEnum):
     SCHEDULE_TRIGGERED = "schedule.triggered"
     SCHEDULE_SKIPPED = "schedule.skipped"
 
+    # Agent subtask lifecycle
+    SUBTASK_UPDATED = "subtask.updated"
+
 
 @dataclass
 class FlowEvent:

@@ -152,3 +152,31 @@ class UserMessageRequest(BaseModel):
     """Request body for POST /api/runs/:run_id/tasks/:task_execution_id/message."""
 
     message: str = Field(..., min_length=1)
+
+
+# ---------------------------------------------------------------------------
+# Agent Subtasks (SERVER-015)
+# ---------------------------------------------------------------------------
+
+
+class CreateSubtaskRequest(BaseModel):
+    """Request body for POST /api/runs/:run_id/tasks/:task_execution_id/subtasks."""
+
+    title: str = Field(..., min_length=1)
+
+
+class UpdateSubtaskRequest(BaseModel):
+    """Request body for PATCH /api/runs/:run_id/tasks/:task_execution_id/subtasks/:subtask_id."""
+
+    status: str
+
+
+class SubtaskResponse(BaseModel):
+    """Response body for subtask endpoints."""
+
+    id: str
+    task_execution_id: str
+    title: str
+    status: str
+    created_at: str
+    updated_at: str
