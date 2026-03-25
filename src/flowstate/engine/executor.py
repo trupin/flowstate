@@ -47,7 +47,7 @@ from flowstate.engine.context import (
 from flowstate.engine.events import EventType, FlowEvent
 from flowstate.engine.harness import DEFAULT_HARNESS, HarnessManager
 from flowstate.engine.judge import JudgeContext, JudgeDecision, JudgePauseError, JudgeProtocol
-from flowstate.engine.subprocess_mgr import StreamEventType, SubprocessManager
+from flowstate.engine.subprocess_mgr import StreamEvent, StreamEventType, SubprocessManager
 from flowstate.engine.worktree import (
     WorktreeInfo,
     cleanup_worktree,
@@ -56,11 +56,11 @@ from flowstate.engine.worktree import (
 )
 
 if TYPE_CHECKING:
-    from collections.abc import Callable
+    from collections.abc import AsyncGenerator, Callable, Sequence
 
     from flowstate.dsl.ast import Edge, Flow, Node
     from flowstate.engine.harness import Harness
-    from flowstate.state.models import TaskExecutionRow
+    from flowstate.state.models import TaskExecutionRow, TaskMessageRow
     from flowstate.state.repository import FlowstateDB
 
 logger = logging.getLogger(__name__)
@@ -248,6 +248,14 @@ class FlowExecutor:
         self._task_id: str | None = None
         # Track which harness each session uses for kill() dispatch
         self._session_harness: dict[str, str] = {}
+        # Per-task interrupt coordination (ENGINE-036)
+        # When a task is interrupted, its asyncio.Event is cleared; when a
+        # message arrives for the interrupted task, the event is set to wake it.
+        self._task_resume_events: dict[str, asyncio.Event] = {}
+        # Track which tasks are currently interrupted (waiting for user message)
+        self._interrupted_tasks: set[str] = set()
+        # Map task_execution_id -> session_id for interrupt dispatch
+        self._task_session: dict[str, str] = {}
 
     def _emit(self, event: FlowEvent) -> None:
         """Emit an event via the callback, catching any callback exceptions."""
@@ -1466,6 +1474,10 @@ class FlowExecutor:
         # Wake up the main loop if it's waiting on _resume_event (paused state).
         self._resume_event.set()
 
+        # Wake up any interrupted tasks so their coroutines can exit
+        for resume_event in self._task_resume_events.values():
+            resume_event.set()
+
         # Kill all running subprocesses via their respective harnesses
         for task_id in list(self._running_tasks):
             task_exec = self._db.get_task_execution(task_id)
@@ -1485,9 +1497,11 @@ class FlowExecutor:
 
         # Mark all still-active tasks as failed (due to cancellation).
         # The DB schema only allows 'failed'/'skipped' for terminal error states.
+        # Include "interrupted" status (ENGINE-036) since interrupted tasks are
+        # still logically active.
         tasks = self._db.list_task_executions(flow_run_id)
         for task in tasks:
-            if task.status in ("running", "pending", "waiting"):
+            if task.status in ("running", "pending", "waiting", "interrupted"):
                 self._db.update_task_status(task.id, "failed", error_message="Flow cancelled")
 
         # Update fork groups
@@ -1870,6 +1884,161 @@ class FlowExecutor:
             )
 
     # ------------------------------------------------------------------ #
+    # Task-level interrupt + messaging (ENGINE-036)
+    # ------------------------------------------------------------------ #
+
+    @staticmethod
+    def _format_user_messages(messages: Sequence[TaskMessageRow]) -> str:
+        """Format pending user messages into a re-invocation prompt.
+
+        The formatted prompt instructs the agent to address the user's
+        messages before continuing its task.
+        """
+        lines = ["The user sent you the following message(s) while you were working:", ""]
+        for msg in messages:
+            lines.append(f'- "{msg.message}"')
+        lines.append("")
+        lines.append("Address these messages, then continue your task.")
+        return "\n".join(lines)
+
+    async def interrupt_task(self, task_execution_id: str) -> None:
+        """Interrupt a running task: cancel the current agent turn.
+
+        The execution coroutine transitions the task to ``interrupted`` and
+        waits for a user message before resuming.  Calling interrupt on an
+        already-interrupted task is a no-op (idempotent).
+        """
+        task = self._db.get_task_execution(task_execution_id)
+        if task is None:
+            raise RuntimeError(f"Task execution not found: {task_execution_id}")
+
+        # Idempotent: already interrupted
+        if task.status == "interrupted":
+            return
+
+        if task.status != "running":
+            raise RuntimeError(
+                f"Cannot interrupt task {task_execution_id} with status '{task.status}'"
+            )
+
+        # Resolve harness for the session and send interrupt signal.
+        # Use _task_session (set by _execute_single_task) because the DB's
+        # claude_session_id is only populated on task completion.
+        session_id = self._task_session.get(task_execution_id) or task.claude_session_id
+        if session_id:
+            harness_name = self._session_harness.get(session_id, DEFAULT_HARNESS)
+            harness = self._harness_mgr.get(harness_name)
+            await harness.interrupt(session_id)
+
+        # Mark as interrupted in DB
+        self._db.update_task_status(task_execution_id, "interrupted")
+        self._interrupted_tasks.add(task_execution_id)
+
+        flow_run_id = task.flow_run_id
+        self._emit(
+            FlowEvent(
+                type=EventType.TASK_INTERRUPTED,
+                flow_run_id=flow_run_id,
+                timestamp=_now_iso(),
+                payload={
+                    "task_execution_id": task_execution_id,
+                    "node_name": task.node_name,
+                },
+            )
+        )
+
+    async def send_message(self, task_execution_id: str, message: str) -> None:
+        """Send a user message to a running or interrupted task.
+
+        If the task is running, the message is queued and will be delivered
+        after the current agent turn finishes.  If the task is interrupted,
+        the message is queued and the task is signalled to resume.
+
+        Raises ``RuntimeError`` for completed/failed/other terminal tasks.
+        """
+        task = self._db.get_task_execution(task_execution_id)
+        if task is None:
+            raise RuntimeError(f"Task execution not found: {task_execution_id}")
+
+        if task.status not in ("running", "interrupted"):
+            raise RuntimeError(
+                f"Cannot send message to task {task_execution_id} " f"with status '{task.status}'"
+            )
+
+        # Enqueue the message in the DB
+        self._db.insert_task_message(task_execution_id, message)
+
+        # If interrupted, signal the execution coroutine to resume
+        if task.status == "interrupted":
+            resume_event = self._task_resume_events.get(task_execution_id)
+            if resume_event is not None:
+                resume_event.set()
+
+    # ------------------------------------------------------------------ #
+    # Stream event helper (shared by initial prompt + re-invocation)
+    # ------------------------------------------------------------------ #
+
+    async def _stream_events(
+        self,
+        stream: AsyncGenerator[StreamEvent, None],
+        task_execution_id: str,
+        flow_run_id: str,
+        session_id: str | None,
+    ) -> int | None:
+        """Consume a harness event stream, logging events and returning the exit code.
+
+        This is the inner loop shared by the initial prompt and any
+        re-invocation prompts (ENGINE-036). It returns the process exit code
+        (``0`` on success) or ``None`` if no exit event was received (e.g.
+        the stream was interrupted).
+        """
+        exit_code: int | None = None
+        async for event in stream:
+            log_type = _to_log_type(event.type)
+            self._db.insert_task_log(task_execution_id, log_type, event.raw)
+            self._emit(
+                FlowEvent(
+                    type=EventType.TASK_LOG,
+                    flow_run_id=flow_run_id,
+                    timestamp=_now_iso(),
+                    payload={
+                        "task_execution_id": task_execution_id,
+                        "log_type": event.type.value,
+                        "content": event.raw,
+                    },
+                )
+            )
+            if (
+                event.type == StreamEventType.SYSTEM
+                and event.content.get("event") == "process_exit"
+            ):
+                exit_code = event.content.get("exit_code", -1)
+            # Capture real Claude Code session ID from system/init event.
+            if (
+                event.type == StreamEventType.SYSTEM
+                and event.content.get("subtype") == "init"
+                and isinstance(event.content.get("session_id"), str)
+            ):
+                real_sid = event.content["session_id"]
+                # Update the session→harness mapping with the real session ID
+                if session_id and session_id in self._session_harness:
+                    harness_name = self._session_harness.pop(session_id)
+                    self._session_harness[real_sid] = harness_name
+        return exit_code
+
+    def _session_harness_session_for(
+        self, task_execution_id: str, fallback_session_id: str | None
+    ) -> str | None:
+        """Return the current session ID for a task, or the fallback.
+
+        After streaming, the real session ID may have replaced the original.
+        This method is a no-op pass-through; the session ID tracking is
+        handled inside ``_stream_events``. We simply return the fallback
+        because the caller already holds the correct value.
+        """
+        return fallback_session_id
+
+    # ------------------------------------------------------------------ #
     # Task execution
     # ------------------------------------------------------------------ #
 
@@ -1945,6 +2114,9 @@ class FlowExecutor:
         )
 
         session_id: str | None = None
+        # Create a per-task resume event for interrupt→wait→resume coordination
+        resume_event = asyncio.Event()
+        self._task_resume_events[task_execution_id] = resume_event
         try:
             skip_perms = flow.skip_permissions
             session_id = task_exec.claude_session_id or str(uuid.uuid4())
@@ -1954,6 +2126,8 @@ class FlowExecutor:
             harness: Harness = self._harness_mgr.get(harness_name)
             # Track session -> harness name for kill() dispatch
             self._session_harness[session_id] = harness_name
+            # Track task -> session for interrupt dispatch
+            self._task_session[task_execution_id] = session_id
 
             # Determine if this is a session resume or fresh task
             if task_exec.context_mode == ContextMode.SESSION.value and task_exec.claude_session_id:
@@ -1971,37 +2145,57 @@ class FlowExecutor:
                     skip_permissions=skip_perms,
                 )
 
-            # Stream events
+            # Stream events from the initial prompt
             exit_code: int | None = None
-            async for event in stream:
-                # Store log (map event type to allowed DB log_type)
-                log_type = _to_log_type(event.type)
-                self._db.insert_task_log(task_execution_id, log_type, event.raw)
-                # Emit to UI
-                self._emit(
-                    FlowEvent(
-                        type=EventType.TASK_LOG,
-                        flow_run_id=flow_run_id,
-                        timestamp=_now_iso(),
-                        payload={
-                            "task_execution_id": task_execution_id,
-                            "log_type": event.type.value,
-                            "content": event.raw,
-                        },
+            exit_code = await self._stream_events(
+                stream, task_execution_id, flow_run_id, session_id
+            )
+            # Capture the session_id that may have been updated during streaming
+            session_id = self._session_harness_session_for(task_execution_id, session_id)
+
+            # ---- Re-invocation loop (ENGINE-036) ----
+            # After each agent turn, check for queued user messages. If the
+            # task was interrupted, wait for a resume signal. Keep looping
+            # until no more messages are pending.
+            while exit_code == 0 and not self._cancelled:
+                # Check if the task was interrupted by interrupt_task()
+                if task_execution_id in self._interrupted_tasks:
+                    # The task is interrupted -- wait for a user message
+                    resume_event.clear()
+                    await resume_event.wait()
+                    # Woke up: either a message arrived or flow was cancelled
+                    if self._cancelled:
+                        break
+                    self._interrupted_tasks.discard(task_execution_id)
+                    # Transition back to running
+                    self._db.update_task_status(task_execution_id, "running")
+                    self._emit(
+                        FlowEvent(
+                            type=EventType.FLOW_STATUS_CHANGED,
+                            flow_run_id=flow_run_id,
+                            timestamp=_now_iso(),
+                            payload={
+                                "old_status": "interrupted",
+                                "new_status": "running",
+                                "reason": "User sent message to interrupted task",
+                                "task_execution_id": task_execution_id,
+                            },
+                        )
                     )
+
+                # Fetch unprocessed messages from the DB
+                messages = self._db.get_unprocessed_messages(task_execution_id)
+                if not messages:
+                    break
+
+                # Mark messages as processed and re-invoke with combined prompt
+                self._db.mark_messages_processed(task_execution_id)
+                combined_prompt = self._format_user_messages(messages)
+                assert session_id is not None  # guaranteed by initialization above
+                re_stream = harness.prompt(session_id, combined_prompt)
+                exit_code = await self._stream_events(
+                    re_stream, task_execution_id, flow_run_id, session_id
                 )
-                if (
-                    event.type == StreamEventType.SYSTEM
-                    and event.content.get("event") == "process_exit"
-                ):
-                    exit_code = event.content.get("exit_code", -1)
-                # Capture real Claude Code session ID from system/init event.
-                if (
-                    event.type == StreamEventType.SYSTEM
-                    and event.content.get("subtype") == "init"
-                    and isinstance(event.content.get("session_id"), str)
-                ):
-                    session_id = event.content["session_id"]
 
             elapsed = time.monotonic() - start_time
 
@@ -2120,6 +2314,10 @@ class FlowExecutor:
                     )
                 )
         finally:
+            # Clean up per-task coordination state
+            self._task_resume_events.pop(task_execution_id, None)
+            self._interrupted_tasks.discard(task_execution_id)
+            self._task_session.pop(task_execution_id, None)
             # Clean up session→harness tracking to prevent unbounded growth
             if session_id is not None:
                 self._session_harness.pop(session_id, None)

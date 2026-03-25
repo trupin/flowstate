@@ -4580,3 +4580,770 @@ class TestAtomicNodeWithContention:
         ]
         # The second executor should have emitted at least one waiting event
         assert len(waiting_events) >= 1
+
+
+# ---------------------------------------------------------------------------
+# Mock for interrupt + messaging tests (ENGINE-036)
+# ---------------------------------------------------------------------------
+
+
+class InterruptableMockManager(SubprocessManager):
+    """A mock SubprocessManager that supports interrupt-aware execution.
+
+    - ``run_task`` supports delays that can be cut short by ``interrupt()``.
+    - ``prompt()`` tracks calls for assertion.
+    - ``interrupt()`` sets a per-session event to abort the delay in run_task.
+    - ``prompt_calls`` records all (session_id, message) tuples for assertions.
+    """
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.calls: list[tuple[str, str, str]] = []
+        self.prompt_calls: list[tuple[str, str]] = []
+        self.interrupt_calls: list[str] = []
+        self.kill_calls: list[str] = []
+        self.start_session_calls: list[tuple[str, str]] = []
+        # Per-session event: when set, running tasks exit immediately.
+        self._session_interrupt_events: dict[str, asyncio.Event] = {}
+        # Optional delay for run_task
+        self.task_delays: dict[str, float] = {}
+        self.task_responses: dict[str, tuple[int, list[StreamEvent]]] = {}
+
+    async def run_task(
+        self,
+        prompt: str,
+        workspace: str,
+        session_id: str,
+        *,
+        skip_permissions: bool = False,
+    ) -> AsyncGenerator[StreamEvent, None]:
+        self.calls.append((prompt, workspace, session_id))
+        # Ensure an interrupt event exists for this session
+        if session_id not in self._session_interrupt_events:
+            self._session_interrupt_events[session_id] = asyncio.Event()
+        interrupt_event = self._session_interrupt_events[session_id]
+
+        exit_code, extra_events = self._find_response(prompt)
+
+        delay = self._find_delay(prompt)
+        if delay > 0:
+            # Wait for delay OR interrupt, whichever comes first
+            try:
+                await asyncio.wait_for(interrupt_event.wait(), timeout=delay)
+                # If we get here, interrupt was signalled before the delay elapsed.
+                # Emit exit with code 0 (agent stopped gracefully).
+                yield StreamEvent(
+                    type=StreamEventType.SYSTEM,
+                    content={"event": "process_exit", "exit_code": 0, "stderr": ""},
+                    raw="Process exited with code 0",
+                )
+                return
+            except TimeoutError:
+                # Normal completion: delay elapsed without interrupt
+                pass
+
+        for evt in extra_events:
+            yield evt
+
+        yield StreamEvent(
+            type=StreamEventType.SYSTEM,
+            content={"event": "process_exit", "exit_code": exit_code, "stderr": ""},
+            raw=f"Process exited with code {exit_code}",
+        )
+
+    async def run_task_resume(
+        self,
+        prompt: str,
+        workspace: str,
+        resume_session_id: str,
+        *,
+        skip_permissions: bool = False,
+    ) -> AsyncGenerator[StreamEvent, None]:
+        exit_code, extra_events = self._find_response(prompt)
+        for evt in extra_events:
+            yield evt
+        yield StreamEvent(
+            type=StreamEventType.SYSTEM,
+            content={"event": "process_exit", "exit_code": exit_code, "stderr": ""},
+            raw=f"Process exited with code {exit_code}",
+        )
+
+    async def run_judge(
+        self, prompt: str, workspace: str, *, skip_permissions: bool = False
+    ) -> Any:
+        return {"target": "__none__", "reasoning": "", "confidence": 0.0}
+
+    async def kill(self, session_id: str) -> None:
+        self.kill_calls.append(session_id)
+
+    async def start_session(self, workspace: str, session_id: str) -> None:
+        self.start_session_calls.append((workspace, session_id))
+        self._session_interrupt_events[session_id] = asyncio.Event()
+
+    async def prompt(self, session_id: str, message: str) -> AsyncGenerator[StreamEvent, None]:
+        self.prompt_calls.append((session_id, message))
+        exit_code, extra_events = self._find_response(message)
+        for evt in extra_events:
+            yield evt
+        yield StreamEvent(
+            type=StreamEventType.SYSTEM,
+            content={"event": "process_exit", "exit_code": exit_code, "stderr": ""},
+            raw=f"Process exited with code {exit_code}",
+        )
+
+    async def interrupt(self, session_id: str) -> None:
+        self.interrupt_calls.append(session_id)
+        # Signal the interrupt event so run_task exits early
+        event = self._session_interrupt_events.get(session_id)
+        if event is not None:
+            event.set()
+
+    def _find_response(self, prompt: str) -> tuple[int, list[StreamEvent]]:
+        for key, response in self.task_responses.items():
+            marker = f"Do the {key} step"
+            if marker in prompt:
+                return response
+        return (0, [])
+
+    def _find_delay(self, prompt: str) -> float:
+        for key, delay in self.task_delays.items():
+            marker = f"Do the {key} step"
+            if marker in prompt:
+                return delay
+        return 0.0
+
+
+# ---------------------------------------------------------------------------
+# Tests: Task-level messaging (ENGINE-036)
+# ---------------------------------------------------------------------------
+
+
+class TestFormatUserMessages:
+    """Test the _format_user_messages static method."""
+
+    def test_single_message(self) -> None:
+        """Format a single user message."""
+        from flowstate.state.models import TaskMessageRow
+
+        messages = [
+            TaskMessageRow(
+                id="m1",
+                task_execution_id="t1",
+                message="please also check edge cases",
+                created_at="2024-01-01T00:00:00",
+                processed=0,
+            )
+        ]
+        result = FlowExecutor._format_user_messages(messages)
+        assert "please also check edge cases" in result
+        assert "Address these messages" in result
+
+    def test_multiple_messages(self) -> None:
+        """Format multiple user messages."""
+        from flowstate.state.models import TaskMessageRow
+
+        messages = [
+            TaskMessageRow(
+                id="m1",
+                task_execution_id="t1",
+                message="use pytest not unittest",
+                created_at="2024-01-01T00:00:00",
+                processed=0,
+            ),
+            TaskMessageRow(
+                id="m2",
+                task_execution_id="t1",
+                message="also add integration tests",
+                created_at="2024-01-01T00:00:01",
+                processed=0,
+            ),
+        ]
+        result = FlowExecutor._format_user_messages(messages)
+        assert '- "use pytest not unittest"' in result
+        assert '- "also add integration tests"' in result
+        assert "Address these messages, then continue your task." in result
+
+
+class TestSendMessageQueues:
+    """Test that send_message enqueues messages to the DB."""
+
+    async def test_send_message_to_running_task(self) -> None:
+        """send_message inserts a message into task_messages for a running task."""
+        db = _make_db()
+        _events, callback = _collect_events()
+        mock_mgr = InterruptableMockManager()
+        executor = FlowExecutor(db, callback, mock_mgr, max_concurrent=4)
+
+        flow = _make_linear_flow(node_names=["start", "work", "finish"])
+        # Make the "work" step slow so we can send a message while it's running
+        mock_mgr.task_delays["work"] = 0.5
+
+        # Start the flow in the background
+        exec_task = asyncio.create_task(executor.execute(flow, {}, "/workspace"))
+
+        # Wait for "work" to start running
+        work_task_id: str | None = None
+        for _ in range(200):
+            await asyncio.sleep(0.01)
+            runs = db.list_flow_runs()
+            if runs:
+                tasks = db.list_task_executions(runs[0].id)
+                for t in tasks:
+                    if t.node_name == "work" and t.status == "running":
+                        work_task_id = t.id
+                        break
+            if work_task_id:
+                break
+
+        assert work_task_id is not None, "work task never reached running status"
+
+        # Send a message while the task is running
+        await executor.send_message(work_task_id, "please check edge cases")
+
+        # Verify message was queued in DB
+        messages = db.get_unprocessed_messages(work_task_id)
+        assert len(messages) == 1
+        assert messages[0].message == "please check edge cases"
+
+        # Wait for flow to complete
+        await asyncio.wait_for(exec_task, timeout=10)
+
+    async def test_send_message_to_completed_task_raises(self) -> None:
+        """send_message to a completed task raises RuntimeError."""
+        db = _make_db()
+        _events, callback = _collect_events()
+        mock_mgr = MockSubprocessManager()
+        executor = FlowExecutor(db, callback, mock_mgr, max_concurrent=4)
+
+        flow = _make_linear_flow(node_names=["start", "finish"])
+        flow_run_id = await executor.execute(flow, {}, "/workspace")
+
+        # Find the completed start task
+        tasks = db.list_task_executions(flow_run_id)
+        start_task = next(t for t in tasks if t.node_name == "start")
+        assert start_task.status == "completed"
+
+        import pytest
+
+        with pytest.raises(RuntimeError, match="Cannot send message"):
+            await executor.send_message(start_task.id, "too late")
+
+    async def test_send_message_to_failed_task_raises(self) -> None:
+        """send_message to a failed task raises RuntimeError."""
+        db = _make_db()
+        _events, callback = _collect_events()
+        mock_mgr = MockSubprocessManager()
+        mock_mgr.task_responses["start"] = (1, [])  # fail
+        executor = FlowExecutor(db, callback, mock_mgr, max_concurrent=4)
+
+        flow = _make_linear_flow(node_names=["start", "finish"], on_error=ErrorPolicy.PAUSE)
+        # Run in background, it will pause due to on_error=pause
+        exec_task = asyncio.create_task(executor.execute(flow, {}, "/workspace"))
+
+        # Wait for paused state
+        for _ in range(200):
+            await asyncio.sleep(0.01)
+            runs = db.list_flow_runs()
+            if runs:
+                run = db.get_flow_run(runs[0].id)
+                if run and run.status == "paused":
+                    break
+
+        tasks = db.list_task_executions(db.list_flow_runs()[0].id)
+        failed_task = next(t for t in tasks if t.status == "failed")
+
+        import pytest
+
+        with pytest.raises(RuntimeError, match="Cannot send message"):
+            await executor.send_message(failed_task.id, "too late")
+
+        # Clean up
+        await executor.cancel(db.list_flow_runs()[0].id)
+        with contextlib.suppress(asyncio.CancelledError):
+            await exec_task
+
+
+class TestReInvocationLoop:
+    """Test the re-invocation loop: after agent turn, check for messages."""
+
+    async def test_reinvocation_with_queued_message(self) -> None:
+        """After a task completes, if messages exist, re-invoke with them."""
+        db = _make_db()
+        _events, callback = _collect_events()
+        mock_mgr = InterruptableMockManager()
+        executor = FlowExecutor(db, callback, mock_mgr, max_concurrent=4)
+
+        flow = _make_linear_flow(node_names=["start", "work", "finish"])
+        # Make "work" slow enough to queue a message
+        mock_mgr.task_delays["work"] = 0.3
+
+        exec_task = asyncio.create_task(executor.execute(flow, {}, "/workspace"))
+
+        # Wait for "work" to start running
+        work_task_id: str | None = None
+        for _ in range(200):
+            await asyncio.sleep(0.01)
+            runs = db.list_flow_runs()
+            if runs:
+                tasks = db.list_task_executions(runs[0].id)
+                for t in tasks:
+                    if t.node_name == "work" and t.status == "running":
+                        work_task_id = t.id
+                        break
+            if work_task_id:
+                break
+
+        assert work_task_id is not None
+
+        # Queue a message while the task is running
+        await executor.send_message(work_task_id, "use pytest not unittest")
+
+        # Wait for flow to complete
+        flow_run_id = await asyncio.wait_for(exec_task, timeout=10)
+
+        # Verify the flow completed successfully
+        run = db.get_flow_run(flow_run_id)
+        assert run is not None
+        assert run.status == "completed"
+
+        # The prompt() method should have been called with the re-invocation message
+        reinvoc_prompts = [
+            msg for _, msg in mock_mgr.prompt_calls if "use pytest not unittest" in msg
+        ]
+        assert len(reinvoc_prompts) >= 1
+        assert "Address these messages" in reinvoc_prompts[0]
+
+        # Messages should be marked as processed
+        messages = db.get_unprocessed_messages(work_task_id)
+        assert len(messages) == 0
+
+    async def test_no_reinvocation_without_messages(self) -> None:
+        """If no messages are queued, no re-invocation happens."""
+        db = _make_db()
+        _events, callback = _collect_events()
+        mock_mgr = InterruptableMockManager()
+        executor = FlowExecutor(db, callback, mock_mgr, max_concurrent=4)
+
+        flow = _make_linear_flow(node_names=["start", "finish"])
+        flow_run_id = await executor.execute(flow, {}, "/workspace")
+
+        # No prompt() calls should have been made (only run_task calls)
+        assert len(mock_mgr.prompt_calls) == 0
+
+        run = db.get_flow_run(flow_run_id)
+        assert run is not None
+        assert run.status == "completed"
+
+    async def test_multiple_messages_combined(self) -> None:
+        """Multiple messages are combined into a single re-invocation prompt."""
+        db = _make_db()
+        _events, callback = _collect_events()
+        mock_mgr = InterruptableMockManager()
+        executor = FlowExecutor(db, callback, mock_mgr, max_concurrent=4)
+
+        flow = _make_linear_flow(node_names=["start", "work", "finish"])
+        mock_mgr.task_delays["work"] = 0.3
+
+        exec_task = asyncio.create_task(executor.execute(flow, {}, "/workspace"))
+
+        # Wait for "work" to start running
+        work_task_id: str | None = None
+        for _ in range(200):
+            await asyncio.sleep(0.01)
+            runs = db.list_flow_runs()
+            if runs:
+                tasks = db.list_task_executions(runs[0].id)
+                for t in tasks:
+                    if t.node_name == "work" and t.status == "running":
+                        work_task_id = t.id
+                        break
+            if work_task_id:
+                break
+
+        assert work_task_id is not None
+
+        # Queue multiple messages
+        await executor.send_message(work_task_id, "use pytest not unittest")
+        await executor.send_message(work_task_id, "also check edge cases")
+
+        # Wait for flow to complete
+        flow_run_id = await asyncio.wait_for(exec_task, timeout=10)
+        assert db.get_flow_run(flow_run_id) is not None
+        assert db.get_flow_run(flow_run_id).status == "completed"  # type: ignore[union-attr]
+
+        # Both messages should appear in a single re-invocation prompt
+        reinvoc_prompts = [
+            msg for _, msg in mock_mgr.prompt_calls if "Address these messages" in msg
+        ]
+        assert len(reinvoc_prompts) >= 1
+        assert "use pytest not unittest" in reinvoc_prompts[0]
+        assert "also check edge cases" in reinvoc_prompts[0]
+
+
+class TestInterruptTask:
+    """Test interrupt_task: cancels current agent turn, sets status to interrupted."""
+
+    async def test_interrupt_sets_status(self) -> None:
+        """interrupt_task sets the task status to 'interrupted' and emits event."""
+        db = _make_db()
+        events, callback = _collect_events()
+        mock_mgr = InterruptableMockManager()
+        executor = FlowExecutor(db, callback, mock_mgr, max_concurrent=4)
+
+        flow = _make_linear_flow(node_names=["start", "work", "finish"])
+        # Make "work" slow so we can interrupt it
+        mock_mgr.task_delays["work"] = 5.0
+
+        exec_task = asyncio.create_task(executor.execute(flow, {}, "/workspace"))
+
+        # Wait for "work" to start running
+        work_task_id: str | None = None
+        for _ in range(200):
+            await asyncio.sleep(0.01)
+            runs = db.list_flow_runs()
+            if runs:
+                tasks = db.list_task_executions(runs[0].id)
+                for t in tasks:
+                    if t.node_name == "work" and t.status == "running":
+                        work_task_id = t.id
+                        break
+            if work_task_id:
+                break
+
+        assert work_task_id is not None
+
+        # Interrupt the task
+        await executor.interrupt_task(work_task_id)
+
+        # Verify status changed to interrupted
+        task = db.get_task_execution(work_task_id)
+        assert task is not None
+        assert task.status == "interrupted"
+
+        # Verify TASK_INTERRUPTED event was emitted
+        interrupted_events = [e for e in events if e.type == EventType.TASK_INTERRUPTED]
+        assert len(interrupted_events) == 1
+        assert interrupted_events[0].payload["task_execution_id"] == work_task_id
+        assert interrupted_events[0].payload["node_name"] == "work"
+
+        # Clean up: send a message to resume, then cancel
+        await executor.send_message(work_task_id, "continue")
+        # Give executor time to process
+        await asyncio.sleep(0.1)
+        await executor.cancel(db.list_flow_runs()[0].id)
+        with contextlib.suppress(asyncio.CancelledError):
+            await exec_task
+
+    async def test_interrupt_idempotent(self) -> None:
+        """Calling interrupt_task twice on the same task is a no-op."""
+        db = _make_db()
+        events, callback = _collect_events()
+        mock_mgr = InterruptableMockManager()
+        executor = FlowExecutor(db, callback, mock_mgr, max_concurrent=4)
+
+        flow = _make_linear_flow(node_names=["start", "work", "finish"])
+        mock_mgr.task_delays["work"] = 5.0
+
+        exec_task = asyncio.create_task(executor.execute(flow, {}, "/workspace"))
+
+        # Wait for "work" to start running
+        work_task_id: str | None = None
+        for _ in range(200):
+            await asyncio.sleep(0.01)
+            runs = db.list_flow_runs()
+            if runs:
+                tasks = db.list_task_executions(runs[0].id)
+                for t in tasks:
+                    if t.node_name == "work" and t.status == "running":
+                        work_task_id = t.id
+                        break
+            if work_task_id:
+                break
+
+        assert work_task_id is not None
+
+        await executor.interrupt_task(work_task_id)
+        # Second interrupt should not raise
+        await executor.interrupt_task(work_task_id)
+
+        # Only one TASK_INTERRUPTED event should be emitted
+        interrupted_events = [e for e in events if e.type == EventType.TASK_INTERRUPTED]
+        assert len(interrupted_events) == 1
+
+        # Clean up
+        await executor.send_message(work_task_id, "continue")
+        await asyncio.sleep(0.1)
+        await executor.cancel(db.list_flow_runs()[0].id)
+        with contextlib.suppress(asyncio.CancelledError):
+            await exec_task
+
+    async def test_interrupt_non_running_task_raises(self) -> None:
+        """Interrupting a completed task raises RuntimeError."""
+        db = _make_db()
+        _events, callback = _collect_events()
+        mock_mgr = MockSubprocessManager()
+        executor = FlowExecutor(db, callback, mock_mgr, max_concurrent=4)
+
+        flow = _make_linear_flow(node_names=["start", "finish"])
+        flow_run_id = await executor.execute(flow, {}, "/workspace")
+
+        tasks = db.list_task_executions(flow_run_id)
+        completed_task = next(t for t in tasks if t.status == "completed")
+
+        import pytest
+
+        with pytest.raises(RuntimeError, match="Cannot interrupt"):
+            await executor.interrupt_task(completed_task.id)
+
+    async def test_interrupt_nonexistent_task_raises(self) -> None:
+        """Interrupting a non-existent task raises RuntimeError."""
+        db = _make_db()
+        _events, callback = _collect_events()
+        mock_mgr = MockSubprocessManager()
+        executor = FlowExecutor(db, callback, mock_mgr, max_concurrent=4)
+
+        import pytest
+
+        with pytest.raises(RuntimeError, match="not found"):
+            await executor.interrupt_task("nonexistent-id")
+
+
+class TestInterruptAndResume:
+    """Test the full interrupt -> send message -> resume cycle."""
+
+    async def test_interrupt_then_message_resumes(self) -> None:
+        """Interrupt a task, send a message, and verify it resumes and completes."""
+        db = _make_db()
+        _events, callback = _collect_events()
+        mock_mgr = InterruptableMockManager()
+        executor = FlowExecutor(db, callback, mock_mgr, max_concurrent=4)
+
+        flow = _make_linear_flow(node_names=["start", "work", "finish"])
+        # Make "work" slow so we can interrupt, but not too slow
+        mock_mgr.task_delays["work"] = 2.0
+
+        exec_task = asyncio.create_task(executor.execute(flow, {}, "/workspace"))
+
+        # Wait for "work" to start running
+        work_task_id: str | None = None
+        for _ in range(200):
+            await asyncio.sleep(0.01)
+            runs = db.list_flow_runs()
+            if runs:
+                tasks = db.list_task_executions(runs[0].id)
+                for t in tasks:
+                    if t.node_name == "work" and t.status == "running":
+                        work_task_id = t.id
+                        break
+            if work_task_id:
+                break
+
+        assert work_task_id is not None
+
+        # Interrupt the task
+        await executor.interrupt_task(work_task_id)
+
+        # Verify it's interrupted
+        task = db.get_task_execution(work_task_id)
+        assert task is not None
+        assert task.status == "interrupted"
+
+        # Give a small delay so the execution coroutine enters the wait state
+        await asyncio.sleep(0.1)
+
+        # Send a message to resume
+        await executor.send_message(work_task_id, "please continue with pytest")
+
+        # Wait for flow to complete
+        flow_run_id = await asyncio.wait_for(exec_task, timeout=10)
+
+        # Verify the flow completed
+        run = db.get_flow_run(flow_run_id)
+        assert run is not None
+        assert run.status == "completed"
+
+        # Verify the re-invocation prompt was sent via prompt()
+        reinvoc_prompts = [
+            msg for _, msg in mock_mgr.prompt_calls if "please continue with pytest" in msg
+        ]
+        assert len(reinvoc_prompts) >= 1
+
+    async def test_send_message_to_interrupted_task(self) -> None:
+        """send_message to an interrupted task signals resume."""
+        db = _make_db()
+        events, callback = _collect_events()
+        mock_mgr = InterruptableMockManager()
+        executor = FlowExecutor(db, callback, mock_mgr, max_concurrent=4)
+
+        flow = _make_linear_flow(node_names=["start", "work", "finish"])
+        mock_mgr.task_delays["work"] = 2.0
+
+        exec_task = asyncio.create_task(executor.execute(flow, {}, "/workspace"))
+
+        # Wait for "work" to start running
+        work_task_id: str | None = None
+        for _ in range(200):
+            await asyncio.sleep(0.01)
+            runs = db.list_flow_runs()
+            if runs:
+                tasks = db.list_task_executions(runs[0].id)
+                for t in tasks:
+                    if t.node_name == "work" and t.status == "running":
+                        work_task_id = t.id
+                        break
+            if work_task_id:
+                break
+
+        assert work_task_id is not None
+
+        # Interrupt the task
+        await executor.interrupt_task(work_task_id)
+        await asyncio.sleep(0.1)
+
+        # Send a message which should trigger resume
+        await executor.send_message(work_task_id, "resume now")
+
+        # Wait for flow to complete
+        await asyncio.wait_for(exec_task, timeout=10)
+
+        # After resume, the status went back to running briefly then completed
+        # Check that a FLOW_STATUS_CHANGED event was emitted with old=interrupted
+        status_events = [
+            e
+            for e in events
+            if e.type == EventType.FLOW_STATUS_CHANGED
+            and e.payload.get("old_status") == "interrupted"
+        ]
+        assert len(status_events) >= 1
+        assert status_events[0].payload["new_status"] == "running"
+
+
+class TestInterruptedTaskEdgeEvaluation:
+    """Test that edges are only evaluated after ALL messages are processed."""
+
+    async def test_edges_not_evaluated_while_interrupted(self) -> None:
+        """An interrupted task does not proceed to edge evaluation."""
+        db = _make_db()
+        _events, callback = _collect_events()
+        mock_mgr = InterruptableMockManager()
+        executor = FlowExecutor(db, callback, mock_mgr, max_concurrent=4)
+
+        flow = _make_linear_flow(node_names=["start", "work", "finish"])
+        mock_mgr.task_delays["work"] = 2.0
+
+        exec_task = asyncio.create_task(executor.execute(flow, {}, "/workspace"))
+
+        # Wait for "work" to start running
+        work_task_id: str | None = None
+        flow_run_id: str | None = None
+        for _ in range(200):
+            await asyncio.sleep(0.01)
+            runs = db.list_flow_runs()
+            if runs:
+                flow_run_id = runs[0].id
+                tasks = db.list_task_executions(flow_run_id)
+                for t in tasks:
+                    if t.node_name == "work" and t.status == "running":
+                        work_task_id = t.id
+                        break
+            if work_task_id:
+                break
+
+        assert work_task_id is not None
+        assert flow_run_id is not None
+
+        # Interrupt the task
+        await executor.interrupt_task(work_task_id)
+        await asyncio.sleep(0.2)
+
+        # While interrupted, "finish" node should NOT have been created
+        tasks = db.list_task_executions(flow_run_id)
+        finish_tasks = [t for t in tasks if t.node_name == "finish"]
+        assert len(finish_tasks) == 0, "finish task should not be created while work is interrupted"
+
+        # Resume by sending a message
+        await executor.send_message(work_task_id, "continue")
+
+        # Wait for flow to complete
+        await asyncio.wait_for(exec_task, timeout=10)
+
+        # Now finish should have been executed
+        tasks = db.list_task_executions(flow_run_id)
+        finish_tasks = [t for t in tasks if t.node_name == "finish"]
+        assert len(finish_tasks) == 1
+        assert finish_tasks[0].status == "completed"
+
+
+class TestCancelInterruptedTask:
+    """Test that cancel properly handles interrupted tasks."""
+
+    async def test_cancel_wakes_interrupted_tasks(self) -> None:
+        """Cancelling a flow wakes up interrupted tasks so they can exit."""
+        db = _make_db()
+        _events, callback = _collect_events()
+        mock_mgr = InterruptableMockManager()
+        executor = FlowExecutor(db, callback, mock_mgr, max_concurrent=4)
+
+        flow = _make_linear_flow(node_names=["start", "work", "finish"])
+        mock_mgr.task_delays["work"] = 5.0
+
+        exec_task = asyncio.create_task(executor.execute(flow, {}, "/workspace"))
+
+        # Wait for "work" to start running
+        work_task_id: str | None = None
+        for _ in range(200):
+            await asyncio.sleep(0.01)
+            runs = db.list_flow_runs()
+            if runs:
+                tasks = db.list_task_executions(runs[0].id)
+                for t in tasks:
+                    if t.node_name == "work" and t.status == "running":
+                        work_task_id = t.id
+                        break
+            if work_task_id:
+                break
+
+        assert work_task_id is not None
+        flow_run_id = db.list_flow_runs()[0].id
+
+        # Interrupt the task
+        await executor.interrupt_task(work_task_id)
+        await asyncio.sleep(0.1)
+
+        # Cancel the flow while task is interrupted
+        await executor.cancel(flow_run_id)
+
+        # Flow should finish (not hang)
+        with contextlib.suppress(asyncio.CancelledError):
+            await asyncio.wait_for(exec_task, timeout=5)
+
+        # Task should be marked as failed (cancelled)
+        task = db.get_task_execution(work_task_id)
+        assert task is not None
+        assert task.status == "failed"
+
+        # Flow should be cancelled
+        run = db.get_flow_run(flow_run_id)
+        assert run is not None
+        assert run.status == "cancelled"
+
+
+class TestTaskInterruptedEventType:
+    """Test that the TASK_INTERRUPTED event type exists and works."""
+
+    def test_event_type_value(self) -> None:
+        """TASK_INTERRUPTED has the correct string value."""
+        assert EventType.TASK_INTERRUPTED == "task.interrupted"
+        assert EventType.TASK_INTERRUPTED.value == "task.interrupted"
+
+    def test_event_serialization(self) -> None:
+        """A FlowEvent with TASK_INTERRUPTED serializes correctly."""
+        event = FlowEvent(
+            type=EventType.TASK_INTERRUPTED,
+            flow_run_id="run-1",
+            timestamp="2024-01-01T00:00:00",
+            payload={"task_execution_id": "t1", "node_name": "work"},
+        )
+        d = event.to_dict()
+        assert d["type"] == "task.interrupted"
+        assert d["payload"]["task_execution_id"] == "t1"
