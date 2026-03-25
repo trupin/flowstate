@@ -226,6 +226,8 @@
 | ------ | -------------------------------------------------------------- | ------ | -------- | ---------- | ------ |
 | UI-035 | Move node details from expanded node pill to log viewer header | ui     | P1       | —          | done   |
 | UI-036 | Auto-follow running node in log viewer when no manual selection | ui     | P1       | —          | done   |
+| UI-038 | Remove graph relayout on node click (dead code after UI-035)   | ui     | P1       | —          | todo   |
+| UI-039 | Add auto-follow toggle button in log viewer header             | ui     | P1       | —          | todo   |
 
 
 ### Phase 13 — Interactive Agent Messaging
