@@ -240,7 +240,7 @@
 | ENGINE-036 | Message queue + re-invocation loop + interrupt in executor| engine | P1       | ENGINE-035, STATE-009 | done   |
 | SERVER-014 | Message + interrupt API endpoints                         | server | P1       | ENGINE-036, STATE-009 | done   |
 | UI-037     | Always-visible input box + interrupt button               | ui     | P1       | SERVER-014            | done   |
-| ENGINE-037 | Remove SubprocessManager — fix messaging + interrupt       | engine | P0       | ENGINE-035            | todo   |
+| ENGINE-037 | Remove SubprocessManager — fix messaging + interrupt       | engine | P0       | ENGINE-035            | done   |
 | ENGINE-038 | Fix retry_task not waking paused executor loop             | engine | P0       | —                     | done   |
 | ENGINE-043 | Send message silently fails with SubprocessManager harness | engine | P0       | —                     | done (superseded by ENGINE-037) |
 
@@ -263,9 +263,9 @@
 
 | Issue      | Title                                                     | Domain | Priority | Depends On | Status |
 | ---------- | --------------------------------------------------------- | ------ | -------- | ---------- | ------ |
-| DSL-013    | Rename `tasks` attribute to `subtasks` in grammar/AST/parser | dsl | P1       | —          | todo   |
-| ENGINE-042 | Rename `tasks` references to `subtasks` in executor/context  | engine | P1    | DSL-013    | todo   |
-| UI-041     | Display `subtasks` attribute in flow settings panel       | ui     | P1       | —          | todo   |
+| DSL-013    | Rename `tasks` attribute to `subtasks` in grammar/AST/parser | dsl | P1       | —          | done   |
+| ENGINE-042 | Rename `tasks` references to `subtasks` in executor/context  | engine | P1    | DSL-013    | done   |
+| UI-041     | Display `subtasks` attribute in flow settings panel       | ui     | P1       | —          | done   |
 
 
 ---
