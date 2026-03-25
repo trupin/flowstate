@@ -191,6 +191,26 @@ export function FlowDetailPanel({ flow, isEnabled }: FlowDetailPanelProps) {
 
             <span className="flow-settings-key">On Overlap</span>
             <span className="flow-settings-value">{ast.on_overlap}</span>
+
+            <span className="flow-settings-key">Subtasks</span>
+            <span className="flow-settings-value">
+              {(ast.subtasks ?? ast.tasks ?? false) ? 'enabled' : 'disabled'}
+            </span>
+
+            <span className="flow-settings-key">Harness</span>
+            <span className="flow-settings-value">{ast.harness}</span>
+
+            <span className="flow-settings-key">Worktree</span>
+            <span className="flow-settings-value">
+              {ast.worktree ? 'enabled' : 'disabled'}
+            </span>
+
+            {ast.max_parallel > 1 && (
+              <>
+                <span className="flow-settings-key">Max Parallel</span>
+                <span className="flow-settings-value">{ast.max_parallel}</span>
+              </>
+            )}
           </div>
         </section>
       )}
