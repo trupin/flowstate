@@ -180,3 +180,25 @@ class SubtaskResponse(BaseModel):
     status: str
     created_at: str
     updated_at: str
+
+
+# ---------------------------------------------------------------------------
+# Run Results (SERVER-017)
+# ---------------------------------------------------------------------------
+
+
+class FileChange(BaseModel):
+    """A single file entry in a non-git workspace listing."""
+
+    path: str
+    size: int
+
+
+class RunResultsResponse(BaseModel):
+    """Response body for GET /api/runs/:run_id/results."""
+
+    workspace: str | None
+    git_available: bool
+    git_diff: str | None = None
+    file_changes: list[FileChange] | None = None
+    task_summaries: dict[str, str]

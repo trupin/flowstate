@@ -293,6 +293,9 @@
 | UI-044     | Group consecutive thinking/assistant streaming chunks      | ui     | P1       | UI-043      | done   |
 | SERVER-016 | Task rerun API endpoint                                   | server | P1       | —           | done   |
 | UI-045     | Task rerun button in UI                                   | ui     | P1       | SERVER-016  | done   |
+| UI-047     | Filter noise assistant chunks (backticks, whitespace)      | ui     | P1       | UI-044      | done   |
+| SERVER-017 | Run results API endpoint (git diff + file list + summaries)| server | P1       | —           | done   |
+| UI-046     | View Results modal on completed runs                       | ui     | P1       | SERVER-017  | todo   |
 
 
 ---

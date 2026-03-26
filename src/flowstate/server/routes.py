@@ -10,12 +10,16 @@ from typing import TYPE_CHECKING, Any
 from fastapi import APIRouter, Request
 
 from flowstate.dsl.parser import parse_flow
+from flowstate.engine.context import read_summary
 from flowstate.engine.executor import FlowExecutor
+from flowstate.engine.worktree import is_git_repo
 from flowstate.server.app import FlowstateError
 from flowstate.server.models import (
     CreateSubtaskRequest,
+    FileChange,
     OpenRequest,
     ReorderTasksRequest,
+    RunResultsResponse,
     RunSummary,
     ScheduleResponse,
     StartRunRequest,
@@ -33,7 +37,7 @@ from flowstate.server.run_manager import InvalidStateError
 if TYPE_CHECKING:
     from flowstate.server.flow_registry import DiscoveredFlow, FlowRegistry
     from flowstate.server.run_manager import RunManager
-    from flowstate.state.models import AgentSubtaskRow, TaskNodeHistoryRow, TaskRow
+    from flowstate.state.models import AgentSubtaskRow, FlowRunRow, TaskNodeHistoryRow, TaskRow
     from flowstate.state.repository import FlowstateDB
 
 router = APIRouter(prefix="/api")
@@ -468,6 +472,121 @@ async def get_run(request: Request, run_id: str) -> dict[str, Any]:
             for e in edges
         ],
     }
+
+
+# ---------------------------------------------------------------------------
+# Run results endpoint (SERVER-017)
+# ---------------------------------------------------------------------------
+
+_RUN_TERMINAL_STATUSES = frozenset({"completed", "failed", "cancelled", "budget_exceeded"})
+
+# Maximum depth for recursive file listing in non-git workspaces.
+_MAX_FILE_LIST_DEPTH = 4
+# Maximum number of files returned in the file_changes list.
+_MAX_FILE_ENTRIES = 500
+
+
+async def _compute_run_results(
+    run: FlowRunRow,
+    db: FlowstateDB,
+) -> RunResultsResponse:
+    """Compute results for a terminal flow run.
+
+    For git workspaces: runs ``git diff HEAD`` to capture the unified diff.
+    For non-git workspaces: lists files recursively (up to a bounded depth).
+    Always collects SUMMARY.md content from each task execution's task_dir.
+    """
+    import asyncio
+    import subprocess
+    from pathlib import Path
+
+    workspace = run.worktree_path or run.default_workspace
+
+    git_available = False
+    git_diff: str | None = None
+    file_changes: list[FileChange] | None = None
+
+    if workspace and Path(workspace).is_dir():
+        if is_git_repo(workspace):
+            git_available = True
+            try:
+                diff_output = await asyncio.to_thread(
+                    subprocess.check_output,
+                    ["git", "diff", "HEAD"],
+                    cwd=workspace,
+                    text=True,
+                    stderr=subprocess.DEVNULL,
+                )
+                git_diff = diff_output
+            except (subprocess.CalledProcessError, FileNotFoundError, OSError):
+                # git command failed -- leave git_diff as None
+                git_diff = None
+        else:
+            # List files recursively for non-git workspaces
+            ws_path = Path(workspace)
+            entries: list[FileChange] = []
+
+            def _walk(dir_path: Path, depth: int) -> None:
+                if depth > _MAX_FILE_LIST_DEPTH or len(entries) >= _MAX_FILE_ENTRIES:
+                    return
+                try:
+                    for item in sorted(dir_path.iterdir()):
+                        if len(entries) >= _MAX_FILE_ENTRIES:
+                            return
+                        if item.is_file():
+                            try:
+                                size = item.stat().st_size
+                            except OSError:
+                                size = 0
+                            rel = str(item.relative_to(ws_path))
+                            entries.append(FileChange(path=rel, size=size))
+                        elif item.is_dir() and not item.name.startswith("."):
+                            _walk(item, depth + 1)
+                except PermissionError:
+                    pass
+
+            await asyncio.to_thread(_walk, ws_path, 0)
+            file_changes = entries
+
+    # Collect task summaries from SUMMARY.md files
+    task_summaries: dict[str, str] = {}
+    task_executions = db.list_task_executions(run.id)
+    for te in task_executions:
+        if te.task_dir:
+            summary = read_summary(te.task_dir)
+            if summary:
+                task_summaries[te.node_name] = summary
+
+    return RunResultsResponse(
+        workspace=workspace,
+        git_available=git_available,
+        git_diff=git_diff,
+        file_changes=file_changes,
+        task_summaries=task_summaries,
+    )
+
+
+@router.get("/runs/{run_id}/results")
+async def get_run_results(request: Request, run_id: str) -> RunResultsResponse:
+    """Get computed results for a completed flow run.
+
+    Returns the workspace diff (for git repos), file listing (for non-git),
+    and SUMMARY.md content from each task execution.
+
+    Returns 404 if the run does not exist. Returns 400 if the run is not in
+    a terminal status (completed, failed, cancelled, budget_exceeded).
+    """
+    db = _get_db(request)
+    run = db.get_flow_run(run_id)
+    if not run:
+        raise FlowstateError(f"Run '{run_id}' not found", status_code=404)
+    if run.status not in _RUN_TERMINAL_STATUSES:
+        raise FlowstateError(
+            f"Run '{run_id}' is not in a terminal status (current: {run.status}). "
+            "Results are only available for completed, failed, cancelled, or budget_exceeded runs.",
+            status_code=400,
+        )
+    return await _compute_run_results(run, db)
 
 
 def _get_executor_or_error(request: Request, run_id: str) -> Any:

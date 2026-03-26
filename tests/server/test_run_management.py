@@ -870,3 +870,171 @@ class TestAutoWorkspaceWhenOmitted:
 
         assert len(workspaces) == 2
         assert workspaces[0] != workspaces[1], "Concurrent runs should get different workspaces"
+
+
+# ---------------------------------------------------------------------------
+# GET /api/runs/:id/results — Run results (SERVER-017)
+# ---------------------------------------------------------------------------
+
+
+class TestGetRunResults:
+    def test_results_completed_run_git_workspace(self) -> None:
+        """GET /api/runs/:id/results returns git diff for completed run with git workspace."""
+        completed_run = _make_flow_run_row(
+            "run-1", status="completed", started_at="2025-01-01T00:00:00+00:00"
+        )
+        completed_run.worktree_path = "/tmp/test-worktree"
+
+        task = _make_task_row("task-1", "run-1", "start", "completed")
+
+        mock_db = MagicMock()
+        mock_db.get_flow_run.return_value = completed_run
+        mock_db.list_task_executions.return_value = [task]
+
+        client = _make_test_client(db_mock=mock_db)
+
+        with (
+            patch("flowstate.server.routes.is_git_repo", return_value=True),
+            patch(
+                "flowstate.server.routes.read_summary",
+                return_value="Created hello.txt",
+            ),
+            patch("subprocess.check_output", return_value="diff --git a/hello.txt\n"),
+            patch("pathlib.Path.is_dir", return_value=True),
+        ):
+            response = client.get("/api/runs/run-1/results")
+
+        assert response.status_code == 200
+        body = response.json()
+        assert body["workspace"] == "/tmp/test-worktree"
+        assert body["git_available"] is True
+        assert body["git_diff"] == "diff --git a/hello.txt\n"
+        assert body["file_changes"] is None
+        assert body["task_summaries"] == {"start": "Created hello.txt"}
+
+    def test_results_completed_run_non_git_workspace(self) -> None:
+        """GET /api/runs/:id/results returns file listing for non-git workspace."""
+        import tempfile
+        from pathlib import Path
+
+        completed_run = _make_flow_run_row("run-1", status="completed")
+
+        # Create a real temp directory with some files
+        with tempfile.TemporaryDirectory() as tmpdir:
+            completed_run.worktree_path = None
+            completed_run.default_workspace = tmpdir
+
+            # Create test files
+            (Path(tmpdir) / "hello.txt").write_text("hello")
+            (Path(tmpdir) / "world.txt").write_text("world!!!")
+
+            mock_db = MagicMock()
+            mock_db.get_flow_run.return_value = completed_run
+            mock_db.list_task_executions.return_value = []
+
+            client = _make_test_client(db_mock=mock_db)
+
+            with patch("flowstate.server.routes.is_git_repo", return_value=False):
+                response = client.get("/api/runs/run-1/results")
+
+        assert response.status_code == 200
+        body = response.json()
+        assert body["git_available"] is False
+        assert body["git_diff"] is None
+        assert body["file_changes"] is not None
+        paths = {f["path"] for f in body["file_changes"]}
+        assert "hello.txt" in paths
+        assert "world.txt" in paths
+        assert body["task_summaries"] == {}
+
+    def test_results_running_run_returns_400(self) -> None:
+        """GET /api/runs/:id/results returns 400 for a still-running run."""
+        running_run = _make_flow_run_row("run-1", status="running")
+        mock_db = MagicMock()
+        mock_db.get_flow_run.return_value = running_run
+
+        client = _make_test_client(db_mock=mock_db)
+        response = client.get("/api/runs/run-1/results")
+
+        assert response.status_code == 400
+        body = response.json()
+        assert "terminal" in body["error"].lower() or "running" in body["error"].lower()
+
+    def test_results_nonexistent_run_returns_404(self) -> None:
+        """GET /api/runs/:id/results returns 404 for nonexistent run."""
+        mock_db = MagicMock()
+        mock_db.get_flow_run.return_value = None
+
+        client = _make_test_client(db_mock=mock_db)
+        response = client.get("/api/runs/nonexistent/results")
+
+        assert response.status_code == 404
+        body = response.json()
+        assert "nonexistent" in body["error"]
+
+    def test_results_workspace_cleaned_up(self) -> None:
+        """GET /api/runs/:id/results handles missing workspace gracefully."""
+        completed_run = _make_flow_run_row("run-1", status="completed")
+        completed_run.worktree_path = "/tmp/nonexistent-cleaned-up-worktree"
+
+        mock_db = MagicMock()
+        mock_db.get_flow_run.return_value = completed_run
+        mock_db.list_task_executions.return_value = []
+
+        client = _make_test_client(db_mock=mock_db)
+        response = client.get("/api/runs/run-1/results")
+
+        assert response.status_code == 200
+        body = response.json()
+        assert body["workspace"] == "/tmp/nonexistent-cleaned-up-worktree"
+        assert body["git_available"] is False
+        assert body["git_diff"] is None
+        assert body["file_changes"] is None
+        assert body["task_summaries"] == {}
+
+    def test_results_no_workspace(self) -> None:
+        """GET /api/runs/:id/results with no workspace returns empty results."""
+        completed_run = _make_flow_run_row("run-1", status="completed")
+        completed_run.worktree_path = None
+        completed_run.default_workspace = None
+
+        mock_db = MagicMock()
+        mock_db.get_flow_run.return_value = completed_run
+        mock_db.list_task_executions.return_value = []
+
+        client = _make_test_client(db_mock=mock_db)
+        response = client.get("/api/runs/run-1/results")
+
+        assert response.status_code == 200
+        body = response.json()
+        assert body["workspace"] is None
+        assert body["git_available"] is False
+        assert body["git_diff"] is None
+        assert body["file_changes"] is None
+        assert body["task_summaries"] == {}
+
+    def test_results_failed_run(self) -> None:
+        """GET /api/runs/:id/results works for failed (terminal) runs."""
+        failed_run = _make_flow_run_row("run-1", status="failed")
+        failed_run.worktree_path = None
+        failed_run.default_workspace = None
+
+        mock_db = MagicMock()
+        mock_db.get_flow_run.return_value = failed_run
+        mock_db.list_task_executions.return_value = []
+
+        client = _make_test_client(db_mock=mock_db)
+        response = client.get("/api/runs/run-1/results")
+
+        assert response.status_code == 200
+
+    def test_results_paused_run_returns_400(self) -> None:
+        """GET /api/runs/:id/results returns 400 for paused (non-terminal) run."""
+        paused_run = _make_flow_run_row("run-1", status="paused")
+        mock_db = MagicMock()
+        mock_db.get_flow_run.return_value = paused_run
+
+        client = _make_test_client(db_mock=mock_db)
+        response = client.get("/api/runs/run-1/results")
+
+        assert response.status_code == 400
