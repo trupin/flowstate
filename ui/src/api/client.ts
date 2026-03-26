@@ -6,6 +6,7 @@ import type {
   LogEntry,
   OrchestratorInfo,
   QueuedTask,
+  RunResults,
   Subtask,
 } from './types';
 
@@ -93,6 +94,7 @@ export const api = {
         return [];
       }
     },
+    getResults: (id: string) => get<RunResults>(`/api/runs/${id}/results`),
     orchestratorLogs: async (
       runId: string,
       sessionId: string,

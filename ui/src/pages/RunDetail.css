@@ -100,6 +100,24 @@
   color: #fff;
 }
 
+/* --- View Results button --- */
+
+.view-results-btn {
+  font-size: 11px;
+  padding: 3px 10px;
+  border-radius: 4px;
+  border: 1px solid var(--accent);
+  background: transparent;
+  color: var(--accent);
+  cursor: pointer;
+  font-weight: 500;
+}
+
+.view-results-btn:hover {
+  background: var(--accent);
+  color: #fff;
+}
+
 .ws-disconnected {
   font-size: 11px;
   color: var(--warning);

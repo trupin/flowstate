@@ -6,6 +6,7 @@ import { LogViewer } from '../components/LogViewer';
 import type { TaskExecutionInfo } from '../components/LogViewer';
 import { ControlPanel } from '../components/ControlPanel';
 import { OrchestratorConsole } from '../components/OrchestratorConsole';
+import { ResultsModal } from '../components/ResultsModal/ResultsModal';
 import { expandEdges } from '../utils/edges';
 import { api } from '../api/client';
 import type {
@@ -41,6 +42,7 @@ export function RunDetail() {
 
   const [showOrchestrator, setShowOrchestrator] = useState(false);
   const [orchestrators, setOrchestrators] = useState<OrchestratorInfo[]>([]);
+  const [showResults, setShowResults] = useState(false);
 
   // Fetch orchestrators once the run is available
   const runLoaded = run !== null;
@@ -236,6 +238,16 @@ export function RunDetail() {
               Orchestrator
             </button>
           )}
+          {['completed', 'failed', 'cancelled', 'budget_exceeded'].includes(
+            run.status,
+          ) && (
+            <button
+              className="view-results-btn"
+              onClick={() => setShowResults(true)}
+            >
+              View Results
+            </button>
+          )}
           {!isConnected && (
             <span className="ws-disconnected">Reconnecting...</span>
           )}
@@ -314,6 +326,10 @@ export function RunDetail() {
         onRetry={handleRetry}
         onSkip={handleSkip}
       />
+
+      {showResults && id && (
+        <ResultsModal runId={id} onClose={() => setShowResults(false)} />
+      )}
     </div>
   );
 }

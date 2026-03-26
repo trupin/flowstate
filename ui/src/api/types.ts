@@ -240,6 +240,21 @@ export interface Subtask {
   updated_at: string;
 }
 
+// --- Run results types ---
+
+export interface FileChange {
+  path: string;
+  status: string;
+}
+
+export interface RunResults {
+  workspace: string | null;
+  git_available: boolean;
+  git_diff: string | null;
+  file_changes: FileChange[] | null;
+  task_summaries: Record<string, string>;
+}
+
 // --- WebSocket event types ---
 
 export interface FlowEvent {
