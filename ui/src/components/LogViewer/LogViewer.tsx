@@ -675,7 +675,23 @@ interface GroupedSingle {
   entry: LogEntry;
 }
 
-type GroupedEntry = GroupedToolCall | GroupedSingle;
+interface GroupedThinking {
+  type: 'merged_thinking';
+  text: string;
+  timestamp: string;
+}
+
+interface GroupedAssistant {
+  type: 'merged_assistant';
+  text: string;
+  timestamp: string;
+}
+
+type GroupedEntry =
+  | GroupedToolCall
+  | GroupedSingle
+  | GroupedThinking
+  | GroupedAssistant;
 
 function groupLogEntries(logs: LogEntry[]): GroupedEntry[] {
   const result: GroupedEntry[] = [];
@@ -717,6 +733,40 @@ function groupLogEntries(logs: LogEntry[]): GroupedEntry[] {
         toolResult: null,
         timestamp: entry.timestamp,
         ids: [entry.id],
+      });
+      i++;
+      continue;
+    }
+
+    // Merge consecutive thinking chunks into one block
+    if (parsed.kind === 'thinking' && parsed.text) {
+      const last = result[result.length - 1];
+      if (last?.type === 'merged_thinking') {
+        last.text += parsed.text;
+        i++;
+        continue;
+      }
+      result.push({
+        type: 'merged_thinking',
+        text: parsed.text,
+        timestamp: entry.timestamp,
+      });
+      i++;
+      continue;
+    }
+
+    // Merge consecutive assistant chunks into one block
+    if (parsed.kind === 'assistant' && parsed.text) {
+      const last = result[result.length - 1];
+      if (last?.type === 'merged_assistant') {
+        last.text += parsed.text;
+        i++;
+        continue;
+      }
+      result.push({
+        type: 'merged_assistant',
+        text: parsed.text,
+        timestamp: entry.timestamp,
       });
       i++;
       continue;
@@ -977,9 +1027,39 @@ export function LogViewer({
                 </div>
               );
             }
+            if (grouped.type === 'merged_thinking') {
+              return (
+                <div
+                  key={`thinking-${index}`}
+                  className="log-line log-type-assistant_message"
+                >
+                  <span className="log-timestamp">
+                    {formatTimestamp(grouped.timestamp)}
+                  </span>
+                  <ThinkingBlock text={grouped.text} isActive={isLast} />
+                </div>
+              );
+            }
+            if (grouped.type === 'merged_assistant') {
+              return (
+                <div
+                  key={`assistant-${index}`}
+                  className="log-line log-type-assistant_message"
+                >
+                  <span className="log-timestamp">
+                    {formatTimestamp(grouped.timestamp)}
+                  </span>
+                  <div className="log-parsed log-parsed-assistant">
+                    <Markdown remarkPlugins={REMARK_PLUGINS}>
+                      {grouped.text}
+                    </Markdown>
+                  </div>
+                </div>
+              );
+            }
             return (
               <div
-                key={grouped.entry.id}
+                key={grouped.entry.id ?? `single-${index}`}
                 className={`log-line log-type-${grouped.entry.log_type}`}
               >
                 <span className="log-timestamp">
