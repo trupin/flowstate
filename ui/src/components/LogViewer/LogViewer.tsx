@@ -503,6 +503,16 @@ function parseLogContent(
   return { kind: 'raw', text: content };
 }
 
+// --- Noise detection for streaming fragments ---
+
+function isNoiseText(text: string): boolean {
+  const trimmed = text.trim();
+  if (trimmed === '') return true;
+  // Bare markdown fences, quotes, list markers, emphasis markers
+  if (/^[`>*_~\-\s]+$/.test(trimmed)) return true;
+  return false;
+}
+
 // --- Visibility classification ---
 
 type VisibilityCategory = 'visible' | 'noise' | 'hidden';
@@ -516,6 +526,12 @@ function classifyEntry(
   if (parsed.kind === 'user_input') return 'visible';
   // Completely hidden: empty raw text (user, unknown JSON types)
   if (parsed.kind === 'raw' && parsed.text === '') return 'hidden';
+  // Hide noise assistant/thinking chunks (bare backticks, whitespace, markdown markers)
+  if (
+    (parsed.kind === 'assistant' || parsed.kind === 'thinking') &&
+    isNoiseText(parsed.text)
+  )
+    return 'hidden';
   // Noise: system init, rate limit (accessible via "Show all")
   if (parsed.kind === 'system_init') return 'noise';
   if (parsed.kind === 'rate_limit') return 'noise';
@@ -738,8 +754,12 @@ function groupLogEntries(logs: LogEntry[]): GroupedEntry[] {
       continue;
     }
 
-    // Merge consecutive thinking chunks into one block
-    if (parsed.kind === 'thinking' && parsed.text) {
+    // Merge consecutive thinking chunks into one block (skip noise fragments)
+    if (
+      parsed.kind === 'thinking' &&
+      parsed.text &&
+      !isNoiseText(parsed.text)
+    ) {
       const last = result[result.length - 1];
       if (last?.type === 'merged_thinking') {
         last.text += parsed.text;
@@ -755,8 +775,12 @@ function groupLogEntries(logs: LogEntry[]): GroupedEntry[] {
       continue;
     }
 
-    // Merge consecutive assistant chunks into one block
-    if (parsed.kind === 'assistant' && parsed.text) {
+    // Merge consecutive assistant chunks into one block (skip noise fragments)
+    if (
+      parsed.kind === 'assistant' &&
+      parsed.text &&
+      !isNoiseText(parsed.text)
+    ) {
       const last = result[result.length - 1];
       if (last?.type === 'merged_assistant') {
         last.text += parsed.text;
