@@ -227,15 +227,14 @@ function extractBlockContent(
   if (!Array.isArray(contentArr)) return '';
   const parts: string[] = [];
   for (const block of contentArr) {
-    if (
-      block != null &&
-      typeof block === 'object' &&
-      'type' in block &&
-      block.type === blockType &&
-      textField in block &&
-      typeof (block as Record<string, unknown>)[textField] === 'string'
-    ) {
-      parts.push((block as Record<string, unknown>)[textField] as string);
+    if (block == null || typeof block !== 'object') continue;
+    const rec = block as Record<string, unknown>;
+    // Match by explicit type field (Claude API format: {type: "text", text: "..."})
+    // OR by presence of textField when no type (ACP format: {text: "..."})
+    const typeMatches =
+      ('type' in rec && rec.type === blockType) || !('type' in rec);
+    if (typeMatches && textField in rec && typeof rec[textField] === 'string') {
+      parts.push(rec[textField] as string);
     }
   }
   return parts.join('\n');
@@ -301,10 +300,18 @@ function parseLogContent(
   if (eventType === 'assistant') {
     const message = obj.message as Record<string, unknown> | undefined;
     if (message) {
-      // Check for thinking blocks first
+      // Check for thinking blocks — two formats:
+      // 1. Claude API: content[].type === 'thinking' with content[].thinking field
+      // 2. ACP: top-level obj.thinking === true, text in content[].type === 'text'
       const thinkingText = extractThinkingFromContent(message.content);
       if (thinkingText) {
         return { kind: 'thinking', text: thinkingText };
+      }
+      if (obj.thinking === true) {
+        const text = extractTextFromContent(message.content);
+        if (text) {
+          return { kind: 'thinking', text };
+        }
       }
 
       const text = extractTextFromContent(message.content);
