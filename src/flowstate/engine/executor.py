@@ -2238,12 +2238,19 @@ class FlowExecutor:
             # Capture the session_id that may have been updated during streaming
             session_id = self._session_harness_session_for(task_execution_id, session_id)
 
-            # ---- Re-invocation loop (ENGINE-036) ----
+            # ---- Re-invocation loop (ENGINE-036, ENGINE-051) ----
             # After each agent turn, check for queued user messages. If the
             # task was interrupted, wait for a resume signal. Keep looping
             # until no more messages are pending.
-            while exit_code == 0 and not self._cancelled:
-                # Check if the task was interrupted by interrupt_task()
+            #
+            # The interrupt check MUST come before the exit_code check because
+            # harness.interrupt() sends an ACP cancel which yields exit_code=-1.
+            # Without this ordering the loop would break on exit_code != 0 and
+            # the task would fall through to the error handler instead of
+            # waiting for user input (ENGINE-051).
+            while not self._cancelled:
+                # Check for interrupt FIRST — interrupt returns exit_code=-1
+                # but should wait for user input, not fail.
                 if task_execution_id in self._interrupted_tasks:
                     # The task is interrupted -- wait for a user message
                     resume_event.clear()
@@ -2267,6 +2274,13 @@ class FlowExecutor:
                             },
                         )
                     )
+                    # After interrupt, skip the exit_code check and go straight
+                    # to fetching the queued user message(s). The exit_code from
+                    # the interrupted stream (-1) is stale and must not cause a
+                    # break; the re-invocation below will produce a fresh one.
+                elif exit_code != 0:
+                    # Normal exit code check — non-zero means the task failed.
+                    break
 
                 # Fetch unprocessed messages from the DB
                 messages = self._db.get_unprocessed_messages(task_execution_id)

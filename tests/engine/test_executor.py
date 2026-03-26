@@ -4858,11 +4858,13 @@ class InterruptableMockManager:
             try:
                 await asyncio.wait_for(interrupt_event.wait(), timeout=delay)
                 # If we get here, interrupt was signalled before the delay elapsed.
-                # Emit exit with code 0 (agent stopped gracefully).
+                # In real ACP, harness.interrupt() sends a cancel which returns
+                # stop_reason="cancelled" → exit_code=-1.  Accurately simulate
+                # this so tests catch the ENGINE-051 bug (loop must handle -1).
                 yield StreamEvent(
                     type=StreamEventType.SYSTEM,
-                    content={"event": "process_exit", "exit_code": 0, "stderr": ""},
-                    raw="Process exited with code 0",
+                    content={"event": "process_exit", "exit_code": -1, "stderr": ""},
+                    raw="Process exited with code -1",
                 )
                 return
             except TimeoutError:
@@ -5553,6 +5555,181 @@ class TestCancelInterruptedTask:
         run = db.get_flow_run(flow_run_id)
         assert run is not None
         assert run.status == "cancelled"
+
+
+# ---------------------------------------------------------------------------
+# Tests: ENGINE-051 — Interrupt causes flow failure instead of waiting
+# ---------------------------------------------------------------------------
+
+
+class TestInterruptDoesNotCauseFailure:
+    """ENGINE-051: Interrupt must NOT cause the flow to fail.
+
+    The real ACP harness returns exit_code=-1 on interrupt (stop_reason=cancelled).
+    The re-invocation loop must handle this by waiting for user input rather than
+    treating -1 as a task failure.
+    """
+
+    async def test_interrupt_exit_code_minus_one_does_not_fail_task(self) -> None:
+        """When interrupt yields exit_code=-1, the task enters 'interrupted' status
+        (not 'failed') and the flow does not trigger on_error."""
+        db = _make_db()
+        events, callback = _collect_events()
+        mock_mgr = InterruptableMockManager()
+        executor = FlowExecutor(db, callback, mock_mgr, max_concurrent=4)
+
+        flow = _make_linear_flow(
+            node_names=["start", "work", "finish"],
+            on_error=ErrorPolicy.PAUSE,
+        )
+        # Make "work" slow so we can interrupt it
+        mock_mgr.task_delays["work"] = 5.0
+
+        exec_task = asyncio.create_task(executor.execute(flow, {}, "/workspace"))
+
+        # Wait for "work" to start running
+        work_task_id: str | None = None
+        for _ in range(200):
+            await asyncio.sleep(0.01)
+            runs = db.list_flow_runs()
+            if runs:
+                tasks = db.list_task_executions(runs[0].id)
+                for t in tasks:
+                    if t.node_name == "work" and t.status == "running":
+                        work_task_id = t.id
+                        break
+            if work_task_id:
+                break
+        assert work_task_id is not None
+
+        # Interrupt the task (mock returns exit_code=-1, matching real ACP)
+        await executor.interrupt_task(work_task_id)
+        await asyncio.sleep(0.1)
+
+        # CRITICAL: task must be "interrupted", NOT "failed"
+        task = db.get_task_execution(work_task_id)
+        assert task is not None
+        assert task.status == "interrupted", (
+            f"Expected 'interrupted' but got '{task.status}' — "
+            "exit_code=-1 from ACP cancel must not cause task failure"
+        )
+
+        # Flow must NOT be paused (on_error=pause should not have triggered)
+        flow_run_id = db.list_flow_runs()[0].id
+        run = db.get_flow_run(flow_run_id)
+        assert run is not None
+        assert run.status != "paused", "Flow should not be paused — interrupt is not an error"
+
+        # No TASK_FAILED event should have been emitted
+        failed_events = [e for e in events if e.type == EventType.TASK_FAILED]
+        assert (
+            len(failed_events) == 0
+        ), "TASK_FAILED event emitted after interrupt — this is the ENGINE-051 bug"
+
+        # Resume by sending a message, then verify the flow completes
+        await executor.send_message(work_task_id, "continue working")
+        flow_run_id = await asyncio.wait_for(exec_task, timeout=10)
+
+        run = db.get_flow_run(flow_run_id)
+        assert run is not None
+        assert run.status == "completed"
+
+        # Verify the work task completed successfully after resume
+        task = db.get_task_execution(work_task_id)
+        assert task is not None
+        assert task.status == "completed"
+
+    async def test_interrupt_resume_reinvokes_with_user_message(self) -> None:
+        """After interrupt and resume, the agent is re-invoked with the user's message."""
+        db = _make_db()
+        _events, callback = _collect_events()
+        mock_mgr = InterruptableMockManager()
+        executor = FlowExecutor(db, callback, mock_mgr, max_concurrent=4)
+
+        flow = _make_linear_flow(node_names=["start", "work", "finish"])
+        mock_mgr.task_delays["work"] = 5.0
+
+        exec_task = asyncio.create_task(executor.execute(flow, {}, "/workspace"))
+
+        # Wait for "work" to start
+        work_task_id: str | None = None
+        for _ in range(200):
+            await asyncio.sleep(0.01)
+            runs = db.list_flow_runs()
+            if runs:
+                tasks = db.list_task_executions(runs[0].id)
+                for t in tasks:
+                    if t.node_name == "work" and t.status == "running":
+                        work_task_id = t.id
+                        break
+            if work_task_id:
+                break
+        assert work_task_id is not None
+
+        await executor.interrupt_task(work_task_id)
+        await asyncio.sleep(0.1)
+
+        # Send a specific message
+        await executor.send_message(work_task_id, "switch to using pytest fixtures")
+
+        await asyncio.wait_for(exec_task, timeout=10)
+
+        # Verify prompt() was called with the user's message
+        reinvoc_prompts = [
+            msg for _, msg in mock_mgr.prompt_calls if "switch to using pytest fixtures" in msg
+        ]
+        assert (
+            len(reinvoc_prompts) >= 1
+        ), "Agent was not re-invoked with user message after interrupt resume"
+
+    async def test_interrupt_with_on_error_abort_does_not_abort_flow(self) -> None:
+        """Even with on_error=abort, interrupt should NOT abort the flow."""
+        db = _make_db()
+        _events, callback = _collect_events()
+        mock_mgr = InterruptableMockManager()
+        executor = FlowExecutor(db, callback, mock_mgr, max_concurrent=4)
+
+        flow = _make_linear_flow(
+            node_names=["start", "work", "finish"],
+            on_error=ErrorPolicy.ABORT,
+        )
+        mock_mgr.task_delays["work"] = 5.0
+
+        exec_task = asyncio.create_task(executor.execute(flow, {}, "/workspace"))
+
+        work_task_id: str | None = None
+        for _ in range(200):
+            await asyncio.sleep(0.01)
+            runs = db.list_flow_runs()
+            if runs:
+                tasks = db.list_task_executions(runs[0].id)
+                for t in tasks:
+                    if t.node_name == "work" and t.status == "running":
+                        work_task_id = t.id
+                        break
+            if work_task_id:
+                break
+        assert work_task_id is not None
+
+        await executor.interrupt_task(work_task_id)
+        await asyncio.sleep(0.1)
+
+        # Flow must still be running (not aborted/failed)
+        flow_run_id = db.list_flow_runs()[0].id
+        run = db.get_flow_run(flow_run_id)
+        assert run is not None
+        assert run.status == "running", (
+            f"Expected 'running' but got '{run.status}' — "
+            "interrupt must not trigger on_error=abort"
+        )
+
+        # Resume and complete
+        await executor.send_message(work_task_id, "continue")
+        await asyncio.wait_for(exec_task, timeout=10)
+
+        run = db.get_flow_run(flow_run_id)
+        assert run is not None
+        assert run.status == "completed"
 
 
 # ---------------------------------------------------------------------------
