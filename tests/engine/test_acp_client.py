@@ -1411,3 +1411,189 @@ class TestAcpHarnessTimeouts:
 
         # Should get an ERROR event
         assert any(e.type == StreamEventType.ERROR for e in events)
+
+
+# ---------------------------------------------------------------------------
+# ENGINE-050: Real-time streaming tests
+# ---------------------------------------------------------------------------
+
+
+class TestAcpHarnessRealTimeStreaming:
+    """Verify events are yielded DURING prompt execution, not batched after."""
+
+    @pytest.mark.asyncio
+    async def test_events_streamed_during_prompt_run_task(self) -> None:
+        """Events are yielded while conn.prompt() is still running (run_task)."""
+        prompt_can_finish = asyncio.Event()
+        _captured_bridge: list[Any] = [None]
+
+        async def slow_prompt(prompt: Any, session_id: str, **kw: Any) -> MagicMock:
+            bridge = _captured_bridge[0]
+            await bridge.session_update(session_id, _make_agent_message_chunk("Hello"))
+            await bridge.session_update(session_id, _make_agent_message_chunk("World"))
+            await prompt_can_finish.wait()  # block until test says continue
+            return _make_prompt_response("end_turn")
+
+        conn = AsyncMock()
+        conn.initialize = AsyncMock()
+        conn.new_session = AsyncMock(return_value=_make_new_session_response("acp-sess-1"))
+        conn.prompt = AsyncMock(side_effect=slow_prompt)
+        conn.cancel = AsyncMock()
+
+        process = MagicMock()
+        process.terminate = MagicMock()
+        process.kill = MagicMock()
+        process.wait = AsyncMock()
+        process.returncode = None
+
+        class _MockCtx:
+            def __init__(self, to_client: Any, *args: Any, **kwargs: Any) -> None:
+                if callable(to_client):
+                    _captured_bridge[0] = to_client(conn)
+                else:
+                    _captured_bridge[0] = to_client
+
+            async def __aenter__(self) -> tuple[Any, Any]:
+                return (conn, process)
+
+            async def __aexit__(self, *args: Any) -> None:
+                pass
+
+        harness = AcpHarness(command=["test-agent"])
+
+        with patch("acp.spawn_agent_process", _MockCtx):
+            events_received_before_finish: list[StreamEvent] = []
+            all_events: list[StreamEvent] = []
+
+            async for event in harness.run_task("Do something", "/tmp/work", "stream-sess"):
+                all_events.append(event)
+                # If prompt hasn't finished yet, record this event
+                if not prompt_can_finish.is_set():
+                    events_received_before_finish.append(event)
+                    # After receiving first two events, let prompt finish
+                    if len(events_received_before_finish) >= 2:
+                        prompt_can_finish.set()
+
+        # We should have received ASSISTANT events BEFORE the prompt finished
+        assert len(events_received_before_finish) >= 2
+        assert events_received_before_finish[0].type == StreamEventType.ASSISTANT
+        assert events_received_before_finish[0].content["message"]["content"][0]["text"] == "Hello"
+        assert events_received_before_finish[1].type == StreamEventType.ASSISTANT
+        assert events_received_before_finish[1].content["message"]["content"][0]["text"] == "World"
+
+        # Total events: 2 ASSISTANT + RESULT + SYSTEM(exit) = 4
+        assert len(all_events) == 4
+        assert all_events[2].type == StreamEventType.RESULT
+        assert all_events[3].type == StreamEventType.SYSTEM
+
+    @pytest.mark.asyncio
+    async def test_events_streamed_during_prompt_session_api(self) -> None:
+        """Events are yielded while conn.prompt() is still running (session API)."""
+        prompt_can_finish = asyncio.Event()
+        _captured_bridge: list[Any] = [None]
+
+        async def slow_prompt(prompt: Any, session_id: str, **kw: Any) -> MagicMock:
+            bridge = _captured_bridge[0]
+            await bridge.session_update(session_id, _make_agent_message_chunk("Streaming"))
+            await prompt_can_finish.wait()
+            return _make_prompt_response("end_turn")
+
+        conn = AsyncMock()
+        conn.initialize = AsyncMock()
+        conn.new_session = AsyncMock(return_value=_make_new_session_response("acp-sess-1"))
+        conn.prompt = AsyncMock(side_effect=slow_prompt)
+        conn.cancel = AsyncMock()
+
+        process = MagicMock()
+        process.terminate = MagicMock()
+        process.kill = MagicMock()
+        process.wait = AsyncMock()
+        process.returncode = None
+
+        class _MockCtx:
+            def __init__(self, to_client: Any, *args: Any, **kwargs: Any) -> None:
+                if callable(to_client):
+                    _captured_bridge[0] = to_client(conn)
+                else:
+                    _captured_bridge[0] = to_client
+
+            async def __aenter__(self) -> tuple[Any, Any]:
+                return (conn, process)
+
+            async def __aexit__(self, *args: Any) -> None:
+                pass
+
+        harness = AcpHarness(command=["test-agent"])
+
+        with patch("acp.spawn_agent_process", _MockCtx):
+            await harness.start_session("/workspace", "stream-sess-2")
+
+            events_received_before_finish: list[StreamEvent] = []
+            all_events: list[StreamEvent] = []
+
+            async for event in harness.prompt("stream-sess-2", "Do something"):
+                all_events.append(event)
+                if not prompt_can_finish.is_set():
+                    events_received_before_finish.append(event)
+                    if len(events_received_before_finish) >= 1:
+                        prompt_can_finish.set()
+
+        # Got at least one event BEFORE prompt finished
+        assert len(events_received_before_finish) >= 1
+        assert events_received_before_finish[0].type == StreamEventType.ASSISTANT
+        assert (
+            events_received_before_finish[0].content["message"]["content"][0]["text"] == "Streaming"
+        )
+
+        # Total: 1 ASSISTANT + RESULT + SYSTEM = 3
+        assert len(all_events) == 3
+
+    @pytest.mark.asyncio
+    async def test_prompt_error_during_streaming(self) -> None:
+        """Errors from conn.prompt() are still propagated correctly with streaming."""
+        _captured_bridge: list[Any] = [None]
+
+        async def failing_prompt(prompt: Any, session_id: str, **kw: Any) -> MagicMock:
+            bridge = _captured_bridge[0]
+            await bridge.session_update(session_id, _make_agent_message_chunk("Before error"))
+            raise RuntimeError("Prompt exploded")
+
+        conn = AsyncMock()
+        conn.initialize = AsyncMock()
+        conn.new_session = AsyncMock(return_value=_make_new_session_response("acp-sess-1"))
+        conn.prompt = AsyncMock(side_effect=failing_prompt)
+        conn.cancel = AsyncMock()
+
+        process = MagicMock()
+        process.terminate = MagicMock()
+        process.kill = MagicMock()
+        process.wait = AsyncMock()
+        process.returncode = None
+
+        class _MockCtx:
+            def __init__(self, to_client: Any, *args: Any, **kwargs: Any) -> None:
+                if callable(to_client):
+                    _captured_bridge[0] = to_client(conn)
+                else:
+                    _captured_bridge[0] = to_client
+
+            async def __aenter__(self) -> tuple[Any, Any]:
+                return (conn, process)
+
+            async def __aexit__(self, *args: Any) -> None:
+                pass
+
+        harness = AcpHarness(command=["test-agent"])
+
+        with patch("acp.spawn_agent_process", _MockCtx):
+            events: list[StreamEvent] = []
+            async for event in harness.run_task("Fail", "/tmp", "err-stream"):
+                events.append(event)
+
+        # Should have ASSISTANT (streamed before error), then ERROR + SYSTEM(exit)
+        assert events[0].type == StreamEventType.ASSISTANT
+        assert events[0].content["message"]["content"][0]["text"] == "Before error"
+        assert any(e.type == StreamEventType.ERROR for e in events)
+        assert any(
+            e.type == StreamEventType.SYSTEM and e.content.get("exit_code") == 1 for e in events
+        )

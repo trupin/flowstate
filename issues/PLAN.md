@@ -279,6 +279,7 @@
 | ENGINE-047 | judge=false not respected — judge still invoked            | engine | P2       | —           | done   |
 | ENGINE-048 | QueueManager missing server_base_url — subtasks not injected | engine | P1    | —           | done   |
 | ENGINE-049 | ACP bridge "Tool completed" instead of real log content   | engine | P1       | ENGINE-045  | done   |
+| ENGINE-050 | Stream ACP events in real-time instead of batch            | engine | P1       | ENGINE-049  | done   |
 
 
 ---

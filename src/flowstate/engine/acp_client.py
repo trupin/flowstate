@@ -22,6 +22,7 @@ ACP harnesses are not in use.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 import logging
 import os
@@ -557,57 +558,20 @@ class AcpHarness:
                 f"(returncode={getattr(session.process, 'returncode', '?')})"
             )
 
+        # Drain stale sentinels from previous cancel/interrupt cycles
+        while not session.queue.empty():
+            try:
+                session.queue.get_nowait()
+            except asyncio.QueueEmpty:
+                break
+
         try:
-            # Send the prompt -- triggers session_update callbacks -> queue
-            prompt_response = await session.conn.prompt(  # type: ignore[union-attr]
-                prompt=[text_block(message)],
-                session_id=session.acp_session_id,
-            )
-
-            # Drain queued events
-            while not session.queue.empty():
-                event = session.queue.get_nowait()
-                if event is not None:
-                    yield event
-
-            # Emit RESULT event based on prompt response
-            stop_reason = prompt_response.stop_reason
-            if stop_reason == "cancelled":
-                yield StreamEvent(
-                    type=StreamEventType.SYSTEM,
-                    content={
-                        "event": "process_exit",
-                        "exit_code": -1,
-                        "stderr": "Agent session cancelled",
-                    },
-                    raw="Agent session cancelled",
-                )
-            else:
-                # end_turn, max_tokens, etc. -- treat as success
-                yield StreamEvent(
-                    type=StreamEventType.RESULT,
-                    content={
-                        "type": "result",
-                        "result": "",
-                        "stop_reason": stop_reason,
-                    },
-                    raw=json.dumps(
-                        {
-                            "type": "result",
-                            "result": "",
-                            "stop_reason": stop_reason,
-                        }
-                    ),
-                )
-                yield StreamEvent(
-                    type=StreamEventType.SYSTEM,
-                    content={
-                        "event": "process_exit",
-                        "exit_code": 0,
-                        "stderr": "",
-                    },
-                    raw="Process exited with code 0",
-                )
+            async for event in self._prompt_and_stream(
+                session.conn,
+                session.queue,
+                {"prompt": [text_block(message)], "session_id": session.acp_session_id},
+            ):
+                yield event
         except Exception as e:
             if not isinstance(e, GeneratorExit | StopAsyncIteration | AcpSessionError):
                 logger.error("ACP prompt error for session %s: %s", session_id, e)
@@ -745,6 +709,92 @@ class AcpHarness:
             ) from e
 
     # ------------------------------------------------------------------ #
+    # Internal: concurrent prompt + stream
+    # ------------------------------------------------------------------ #
+
+    async def _prompt_and_stream(
+        self,
+        conn: Any,
+        queue: asyncio.Queue[StreamEvent | None],
+        prompt_args: dict[str, Any],
+    ) -> AsyncGenerator[StreamEvent, None]:
+        """Run conn.prompt() concurrently while yielding events as they arrive.
+
+        Launches ``conn.prompt()`` as a background task and drains the event
+        queue in real-time.  When the prompt finishes, a ``None`` sentinel is
+        pushed to unblock the drain loop.  After draining, RESULT and SYSTEM
+        events are emitted based on the prompt's stop_reason.
+
+        Exceptions from ``conn.prompt()`` are re-raised so callers can handle
+        them (e.g. emit ERROR + SYSTEM events).
+        """
+        prompt_task = asyncio.create_task(conn.prompt(**prompt_args))
+
+        def _on_done(task: asyncio.Task[Any]) -> None:
+            queue.put_nowait(None)  # sentinel: prompt finished
+
+        prompt_task.add_done_callback(_on_done)
+
+        try:
+            while True:
+                event = await queue.get()
+                if event is None:
+                    break
+                yield event
+        finally:
+            if not prompt_task.done():
+                prompt_task.cancel()
+                with contextlib.suppress(asyncio.CancelledError):
+                    await prompt_task
+
+        # Drain any events that arrived between sentinel and now
+        while not queue.empty():
+            event = queue.get_nowait()
+            if event is not None:
+                yield event
+
+        # Re-raise exception from prompt task if it failed
+        prompt_response = prompt_task.result()
+
+        # Yield RESULT + SYSTEM events based on stop_reason
+        stop_reason = prompt_response.stop_reason
+        if stop_reason == "cancelled":
+            yield StreamEvent(
+                type=StreamEventType.SYSTEM,
+                content={
+                    "event": "process_exit",
+                    "exit_code": -1,
+                    "stderr": "Agent session cancelled",
+                },
+                raw="Agent session cancelled",
+            )
+        else:
+            yield StreamEvent(
+                type=StreamEventType.RESULT,
+                content={
+                    "type": "result",
+                    "result": "",
+                    "stop_reason": stop_reason,
+                },
+                raw=json.dumps(
+                    {
+                        "type": "result",
+                        "result": "",
+                        "stop_reason": stop_reason,
+                    }
+                ),
+            )
+            yield StreamEvent(
+                type=StreamEventType.SYSTEM,
+                content={
+                    "event": "process_exit",
+                    "exit_code": 0,
+                    "stderr": "",
+                },
+                raw="Process exited with code 0",
+            )
+
+    # ------------------------------------------------------------------ #
     # Internal: one-shot ACP session (used by run_task / run_task_resume)
     # ------------------------------------------------------------------ #
 
@@ -862,57 +912,13 @@ class AcpHarness:
                     # Update the session's ACP session ID
                     acp_session.acp_session_id = acp_session_id
 
-                    # Send the prompt -- this triggers session_update callbacks
-                    # which enqueue StreamEvents via the bridge
-                    prompt_response = await conn.prompt(
-                        prompt=[text_block(prompt)],
-                        session_id=acp_session_id,
-                    )
-
-                    # Drain any remaining events from the queue
-                    while not queue.empty():
-                        event = queue.get_nowait()
-                        if event is not None:
-                            yield event
-
-                    # Emit RESULT event based on prompt response
-                    stop_reason = prompt_response.stop_reason
-                    if stop_reason == "cancelled":
-                        yield StreamEvent(
-                            type=StreamEventType.SYSTEM,
-                            content={
-                                "event": "process_exit",
-                                "exit_code": -1,
-                                "stderr": "Agent session cancelled",
-                            },
-                            raw="Agent session cancelled",
-                        )
-                    else:
-                        # end_turn, max_tokens, etc. -- treat as success
-                        yield StreamEvent(
-                            type=StreamEventType.RESULT,
-                            content={
-                                "type": "result",
-                                "result": "",
-                                "stop_reason": stop_reason,
-                            },
-                            raw=json.dumps(
-                                {
-                                    "type": "result",
-                                    "result": "",
-                                    "stop_reason": stop_reason,
-                                }
-                            ),
-                        )
-                        yield StreamEvent(
-                            type=StreamEventType.SYSTEM,
-                            content={
-                                "event": "process_exit",
-                                "exit_code": 0,
-                                "stderr": "",
-                            },
-                            raw="Process exited with code 0",
-                        )
+                    # Stream events in real-time while prompt() runs concurrently
+                    async for event in self._prompt_and_stream(
+                        conn,
+                        queue,
+                        {"prompt": [text_block(prompt)], "session_id": acp_session_id},
+                    ):
+                        yield event
 
                 finally:
                     self._sessions.pop(session_id, None)
