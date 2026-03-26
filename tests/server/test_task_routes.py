@@ -639,6 +639,154 @@ class TestSubmitTaskScheduling:
         assert call_kwargs["cron_expression"] is None
 
 
+# ---------------------------------------------------------------------------
+# POST /api/tasks/:task_id/rerun -- Rerun task (SERVER-016)
+# ---------------------------------------------------------------------------
+
+
+class TestRerunTask:
+    def test_rerun_completed_task_returns_201(self) -> None:
+        """Rerunning a completed task creates a new queued task with the same params."""
+        original = _make_task_row("task-1", status="completed")
+        original = original.model_copy(
+            update={
+                "params_json": '{"focus": "security"}',
+                "description": "Check auth module",
+            }
+        )
+        new_task = _make_task_row(
+            "task-2",
+            status="queued",
+            description="Check auth module",
+        )
+        new_task = new_task.model_copy(
+            update={
+                "params_json": '{"focus": "security"}',
+                "created_by": "rerun",
+            }
+        )
+
+        mock_db = MagicMock()
+        mock_db.get_task.side_effect = [original, new_task]
+        mock_db.create_task.return_value = "task-2"
+
+        client = _make_test_client(db_mock=mock_db)
+        response = client.post("/api/tasks/task-1/rerun")
+
+        assert response.status_code == 201
+        body = response.json()
+        assert body["id"] == "task-2"
+        assert body["status"] == "queued"
+        assert body["flow_name"] == "code_review"
+        assert body["params_json"] == '{"focus": "security"}'
+        assert body["description"] == "Check auth module"
+        assert body["created_by"] == "rerun"
+
+        # Verify create_task was called with correct args
+        call_kwargs = mock_db.create_task.call_args[1]
+        assert call_kwargs["flow_name"] == "code_review"
+        assert call_kwargs["title"] == "Review PR #42"
+        assert call_kwargs["description"] == "Check auth module"
+        assert call_kwargs["params_json"] == '{"focus": "security"}'
+        assert call_kwargs["priority"] == 0
+        assert call_kwargs["created_by"] == "rerun"
+
+    def test_rerun_failed_task_returns_201(self) -> None:
+        """Rerunning a failed task also works."""
+        original = _make_task_row("task-1", status="failed")
+        new_task = _make_task_row("task-3", status="queued")
+        new_task = new_task.model_copy(update={"created_by": "rerun"})
+
+        mock_db = MagicMock()
+        mock_db.get_task.side_effect = [original, new_task]
+        mock_db.create_task.return_value = "task-3"
+
+        client = _make_test_client(db_mock=mock_db)
+        response = client.post("/api/tasks/task-1/rerun")
+
+        assert response.status_code == 201
+        assert response.json()["id"] == "task-3"
+        assert response.json()["status"] == "queued"
+
+    def test_rerun_cancelled_task_returns_201(self) -> None:
+        """Rerunning a cancelled task also works."""
+        original = _make_task_row("task-1", status="cancelled")
+        new_task = _make_task_row("task-4", status="queued")
+        new_task = new_task.model_copy(update={"created_by": "rerun"})
+
+        mock_db = MagicMock()
+        mock_db.get_task.side_effect = [original, new_task]
+        mock_db.create_task.return_value = "task-4"
+
+        client = _make_test_client(db_mock=mock_db)
+        response = client.post("/api/tasks/task-1/rerun")
+
+        assert response.status_code == 201
+        assert response.json()["id"] == "task-4"
+
+    def test_rerun_running_task_returns_400(self) -> None:
+        """Cannot rerun a task that is still running."""
+        task = _make_task_row("task-1", status="running")
+        mock_db = MagicMock()
+        mock_db.get_task.return_value = task
+
+        client = _make_test_client(db_mock=mock_db)
+        response = client.post("/api/tasks/task-1/rerun")
+
+        assert response.status_code == 400
+        body = response.json()
+        assert "running" in body["error"]
+
+    def test_rerun_queued_task_returns_400(self) -> None:
+        """Cannot rerun a task that is still queued."""
+        task = _make_task_row("task-1", status="queued")
+        mock_db = MagicMock()
+        mock_db.get_task.return_value = task
+
+        client = _make_test_client(db_mock=mock_db)
+        response = client.post("/api/tasks/task-1/rerun")
+
+        assert response.status_code == 400
+        body = response.json()
+        assert "queued" in body["error"]
+
+    def test_rerun_nonexistent_task_returns_404(self) -> None:
+        """Rerunning a nonexistent task returns 404."""
+        mock_db = MagicMock()
+        mock_db.get_task.return_value = None
+
+        client = _make_test_client(db_mock=mock_db)
+        response = client.post("/api/tasks/nonexistent/rerun")
+
+        assert response.status_code == 404
+        body = response.json()
+        assert "nonexistent" in body["error"]
+
+    def test_rerun_creates_new_task_with_different_id(self) -> None:
+        """New task from rerun has a different ID but same flow_name, title, and params."""
+        original = _make_task_row("original-id", status="completed", title="My Task")
+        original = original.model_copy(update={"params_json": '{"key": "val"}'})
+        new_task = _make_task_row("new-id", status="queued", title="My Task")
+        new_task = new_task.model_copy(
+            update={"params_json": '{"key": "val"}', "created_by": "rerun"}
+        )
+
+        mock_db = MagicMock()
+        mock_db.get_task.side_effect = [original, new_task]
+        mock_db.create_task.return_value = "new-id"
+
+        client = _make_test_client(db_mock=mock_db)
+        response = client.post("/api/tasks/original-id/rerun")
+
+        assert response.status_code == 201
+        body = response.json()
+        assert body["id"] == "new-id"
+        assert body["id"] != "original-id"
+        assert body["flow_name"] == original.flow_name
+        assert body["title"] == original.title
+        assert body["params_json"] == original.params_json
+
+
 class TestAllTaskRoutesAsync:
     def test_all_task_routes_are_async(self) -> None:
         """Verify that all task route handler functions are async."""
@@ -655,6 +803,7 @@ class TestAllTaskRoutesAsync:
             routes.update_task,
             routes.delete_task,
             routes.reorder_tasks,
+            routes.rerun_task,
         ]
         for handler in route_handlers:
             assert asyncio.iscoroutinefunction(

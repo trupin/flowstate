@@ -1029,6 +1029,39 @@ async def reorder_tasks(
 
 
 # ---------------------------------------------------------------------------
+# POST /api/tasks/:task_id/rerun -- Rerun task (SERVER-016)
+# ---------------------------------------------------------------------------
+
+_TERMINAL_STATUSES = frozenset({"completed", "failed", "cancelled"})
+
+
+@router.post("/tasks/{task_id}/rerun", status_code=201)
+async def rerun_task(request: Request, task_id: str) -> dict[str, Any]:
+    """Duplicate a terminal task and queue the copy for immediate execution."""
+    db = _get_db(request)
+    task = db.get_task(task_id)
+    if task is None:
+        raise FlowstateError(f"Task '{task_id}' not found", status_code=404)
+    if task.status not in _TERMINAL_STATUSES:
+        raise FlowstateError(
+            f"Cannot rerun task in status '{task.status}'; must be completed, failed, or cancelled",
+            status_code=400,
+        )
+
+    new_task_id = db.create_task(
+        flow_name=task.flow_name,
+        title=task.title,
+        description=task.description,
+        params_json=task.params_json,
+        priority=0,
+        created_by="rerun",
+    )
+    new_task = db.get_task(new_task_id)
+    assert new_task is not None  # just created -- must exist
+    return _task_to_response(new_task)
+
+
+# ---------------------------------------------------------------------------
 # Agent Subtask endpoints (SERVER-015)
 # ---------------------------------------------------------------------------
 

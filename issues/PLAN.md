@@ -280,6 +280,19 @@
 | ENGINE-048 | QueueManager missing server_base_url — subtasks not injected | engine | P1    | —           | done   |
 | ENGINE-049 | ACP bridge "Tool completed" instead of real log content   | engine | P1       | ENGINE-045  | done   |
 | ENGINE-050 | Stream ACP events in real-time instead of batch            | engine | P1       | ENGINE-049  | done   |
+| ENGINE-051 | Interrupt waits for user input instead of failing          | engine | P1       | —           | done   |
+
+
+### Phase 17 — UI Polish + Task Rerun
+
+
+| Issue      | Title                                                     | Domain | Priority | Depends On  | Status |
+| ---------- | --------------------------------------------------------- | ------ | -------- | ----------- | ------ |
+| UI-042     | Log viewer horizontal overflow fix                        | ui     | P1       | —           | done   |
+| UI-043     | Show agent reasoning and assistant messages                | ui     | P1       | —           | done   |
+| UI-044     | Group consecutive thinking/assistant streaming chunks      | ui     | P1       | UI-043      | done   |
+| SERVER-016 | Task rerun API endpoint                                   | server | P1       | —           | done   |
+| UI-045     | Task rerun button in UI                                   | ui     | P1       | SERVER-016  | todo   |
 
 
 ---
