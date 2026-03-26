@@ -113,14 +113,18 @@
 }
 
 .run-detail-graph {
-  width: 60%;
+  flex: 3;
+  min-width: 0;
   position: relative;
+  overflow: hidden;
 }
 
 .run-detail-logs {
-  width: 40%;
+  flex: 2;
+  min-width: 280px;
   position: relative;
   border-left: 1px solid var(--border);
+  overflow: hidden;
 }
 
 .run-detail-loading {

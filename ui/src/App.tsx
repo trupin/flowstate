@@ -12,8 +12,10 @@ export function App() {
         <main
           style={{
             marginLeft: 'var(--sidebar-width)',
-            flex: 1,
+            width: 'calc(100vw - var(--sidebar-width))',
+            maxWidth: 'calc(100vw - var(--sidebar-width))',
             minHeight: '100vh',
+            overflow: 'hidden',
           }}
         >
           <Routes>

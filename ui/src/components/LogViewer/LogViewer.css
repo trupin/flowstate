@@ -132,6 +132,7 @@
 .log-viewer-content {
   flex: 1;
   overflow-y: auto;
+  overflow-x: hidden;
   padding: 8px 12px;
   font-family: var(--font-mono);
   font-size: 12px;
@@ -143,6 +144,7 @@
 .log-line {
   display: flex;
   gap: 8px;
+  min-width: 0;
 }
 
 .log-timestamp {
@@ -154,6 +156,9 @@
 
 .log-content {
   color: var(--text-primary);
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
 }
 
 /* Subtle color hint for stderr */
@@ -272,16 +277,23 @@
   display: inline-flex;
   align-items: baseline;
   gap: 4px;
+  max-width: 100%;
+  overflow: hidden;
 }
 
 .log-tool-name {
   color: var(--accent);
   font-weight: 600;
+  flex-shrink: 0;
 }
 
 .log-tool-args {
   color: var(--text-secondary);
   font-size: 11px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0;
 }
 
 /* Tool result: dimmed */
