@@ -72,6 +72,17 @@ export function TaskQueuePanel({ flowName, flowParams }: TaskQueuePanelProps) {
     setEditingTask(null);
   };
 
+  const handleRerun = (taskId: string) => {
+    api.tasks
+      .rerun(taskId)
+      .then(() => {
+        fetchTasks();
+      })
+      .catch(() => {
+        // silently ignore rerun errors
+      });
+  };
+
   const handleModalSubmit = () => {
     setShowModal(false);
     setEditingTask(null);
@@ -181,6 +192,16 @@ export function TaskQueuePanel({ flowName, flowParams }: TaskQueuePanelProps) {
               />
               <span className="task-item-title">{t.title}</span>
               <span className="task-item-status">{t.status}</span>
+              <button
+                className="task-action-btn task-rerun-btn"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  handleRerun(t.id);
+                }}
+                title="Re-run"
+              >
+                &#8635;
+              </button>
             </div>
           ))}
         </div>

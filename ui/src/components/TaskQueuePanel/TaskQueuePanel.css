@@ -141,7 +141,8 @@
   color: var(--error);
 }
 
-.task-edit-btn:hover {
+.task-edit-btn:hover,
+.task-rerun-btn:hover {
   color: var(--accent);
 }
 

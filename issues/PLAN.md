@@ -292,7 +292,7 @@
 | UI-043     | Show agent reasoning and assistant messages                | ui     | P1       | —           | done   |
 | UI-044     | Group consecutive thinking/assistant streaming chunks      | ui     | P1       | UI-043      | done   |
 | SERVER-016 | Task rerun API endpoint                                   | server | P1       | —           | done   |
-| UI-045     | Task rerun button in UI                                   | ui     | P1       | SERVER-016  | todo   |
+| UI-045     | Task rerun button in UI                                   | ui     | P1       | SERVER-016  | done   |
 
 
 ---

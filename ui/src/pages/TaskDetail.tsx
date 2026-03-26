@@ -1,8 +1,10 @@
 import { useState, useEffect, useCallback } from 'react';
-import { useParams, Link } from 'react-router-dom';
+import { useParams, useNavigate, Link } from 'react-router-dom';
 import { api } from '../api/client';
 import type { QueuedTask } from '../api/types';
 import './TaskDetail.css';
+
+const TERMINAL_STATUSES = new Set(['completed', 'failed', 'cancelled']);
 
 function formatTimestamp(iso: string | undefined | null): string {
   if (!iso) return '\u2014';
@@ -41,9 +43,12 @@ const STATUS_COLORS: Record<string, string> = {
 
 export function TaskDetail() {
   const { taskId } = useParams<{ taskId: string }>();
+  const navigate = useNavigate();
   const [task, setTask] = useState<QueuedTask | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [rerunning, setRerunning] = useState(false);
+  const [rerunError, setRerunError] = useState<string | null>(null);
 
   const fetchTask = useCallback(() => {
     if (!taskId) return;
@@ -67,6 +72,25 @@ export function TaskDetail() {
     const interval = setInterval(fetchTask, 3000);
     return () => clearInterval(interval);
   }, [fetchTask]);
+
+  const handleRerun = useCallback(() => {
+    if (!taskId || rerunning) return;
+    setRerunning(true);
+    setRerunError(null);
+    api.tasks
+      .rerun(taskId)
+      .then((newTask) => {
+        navigate(`/tasks/${newTask.id}`);
+      })
+      .catch((err) => {
+        setRerunError(
+          err instanceof Error ? err.message : 'Failed to re-run task',
+        );
+      })
+      .finally(() => {
+        setRerunning(false);
+      });
+  }, [taskId, rerunning, navigate]);
 
   if (loading) {
     return <div className="task-detail-loading">Loading task...</div>;
@@ -124,7 +148,20 @@ export function TaskDetail() {
           >
             {task.status}
           </span>
+          {TERMINAL_STATUSES.has(task.status) && (
+            <button
+              className="task-rerun-btn"
+              onClick={handleRerun}
+              disabled={rerunning}
+            >
+              {rerunning ? 'Re-running...' : 'Re-run'}
+            </button>
+          )}
         </div>
+
+        {rerunError && (
+          <div className="task-detail-rerun-error">{rerunError}</div>
+        )}
 
         {task.description && (
           <p className="task-detail-description">{task.description}</p>

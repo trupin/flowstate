@@ -156,6 +156,7 @@ export const api = {
       post<{ status: string }>(`/api/flows/${flowName}/tasks/reorder`, {
         task_ids: taskIds,
       }),
+    rerun: (taskId: string) => post<QueuedTask>(`/api/tasks/${taskId}/rerun`),
   },
   open: (path: string, command?: string) =>
     post<{ status: string; path: string; command: string }>('/api/open', {
