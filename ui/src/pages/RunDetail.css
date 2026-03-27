@@ -141,8 +141,44 @@
   flex: 2;
   min-width: 280px;
   position: relative;
-  border-left: 1px solid var(--border);
+  border-left: none;
   overflow: hidden;
+}
+
+/* --- Resize handle (UI-049) --- */
+
+.resize-handle {
+  width: 4px;
+  cursor: col-resize;
+  background: transparent;
+  transition: background 0.15s;
+  flex-shrink: 0;
+  position: relative;
+}
+
+.resize-handle::after {
+  content: '';
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: -3px;
+  right: -3px;
+}
+
+.resize-handle:hover,
+.resize-handle:active {
+  background: var(--accent);
+}
+
+/* Prevent text selection and pointer events on children while resizing */
+.run-detail-main.is-resizing {
+  cursor: col-resize;
+  user-select: none;
+}
+
+.run-detail-main.is-resizing .run-detail-graph,
+.run-detail-main.is-resizing .run-detail-logs {
+  pointer-events: none;
 }
 
 .run-detail-loading {

@@ -99,6 +99,16 @@
   border-radius: 8px;
 }
 
+/* Subtask count badge (UI-053) */
+.node-pill-subtask-badge {
+  font-size: 10px;
+  margin-left: 4px;
+  background: rgba(255, 255, 255, 0.25);
+  padding: 1px 5px;
+  border-radius: 8px;
+  letter-spacing: 0.3px;
+}
+
 /* Selected node highlight */
 .node-pill-selected {
   border-color: var(--accent) !important;

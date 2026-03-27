@@ -24,6 +24,7 @@ export interface GraphViewProps {
   taskElapsed?: Map<string, number>;
   taskDirs?: Map<string, string>;
   taskCwds?: Map<string, string>;
+  taskExecutionIds?: Map<string, string>;
   worktreePath?: string;
   activeEdges?: Set<string>;
   traversedEdges?: Set<string>;
@@ -31,6 +32,8 @@ export interface GraphViewProps {
   selectedNode?: string | null;
   onNodeClick?: (nodeName: string) => void;
   waitUntil?: Map<string, string>;
+  runId?: string;
+  subtaskVersion?: number;
 }
 
 // --- Layout ---
@@ -92,6 +95,9 @@ function convertToReactFlowNodes(
   taskCwds?: Map<string, string>,
   worktreePath?: string,
   selectedNode?: string | null,
+  taskExecutionIds?: Map<string, string>,
+  runId?: string,
+  subtaskVersion?: number,
 ): Node<NodePillData>[] {
   return nodeDefs.map((n) => {
     const hasExecution = statuses?.has(n.name) ?? false;
@@ -113,6 +119,9 @@ function convertToReactFlowNodes(
         worktreeDir: worktreePath,
         hasExecution,
         isSelected: selectedNode === n.name,
+        runId,
+        taskExecutionId: taskExecutionIds?.get(n.name),
+        subtaskVersion,
       },
       position: { x: 0, y: 0 },
     };
@@ -187,6 +196,7 @@ function GraphViewInner({
   taskElapsed,
   taskDirs,
   taskCwds,
+  taskExecutionIds,
   worktreePath,
   activeEdges,
   traversedEdges,
@@ -194,6 +204,8 @@ function GraphViewInner({
   selectedNode,
   onNodeClick,
   waitUntil,
+  runId,
+  subtaskVersion,
 }: GraphViewProps) {
   const { fitView } = useReactFlow();
   const containerRef = useRef<HTMLDivElement>(null);
@@ -211,6 +223,9 @@ function GraphViewInner({
         taskCwds,
         worktreePath,
         selectedNode,
+        taskExecutionIds,
+        runId,
+        subtaskVersion,
       ),
     [
       nodes,
@@ -222,6 +237,9 @@ function GraphViewInner({
       taskCwds,
       worktreePath,
       selectedNode,
+      taskExecutionIds,
+      runId,
+      subtaskVersion,
     ],
   );
   const nodeOrder = useMemo(() => {

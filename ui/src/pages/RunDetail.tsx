@@ -1,4 +1,4 @@
-import { useMemo, useState, useEffect } from 'react';
+import { useMemo, useState, useEffect, useRef, useCallback } from 'react';
 import { useParams } from 'react-router-dom';
 import { useFlowRun } from '../hooks/useFlowRun';
 import { GraphView } from '../components/GraphView';
@@ -16,6 +16,10 @@ import type {
 } from '../api/types';
 import './RunDetail.css';
 
+const STORAGE_KEY = 'flowstate-log-panel-width';
+const MIN_LOG_WIDTH = 280;
+const MIN_GRAPH_WIDTH = 200;
+
 export function RunDetail() {
   const { id } = useParams<{ id: string }>();
   const {
@@ -29,6 +33,7 @@ export function RunDetail() {
     isManualSelection,
     runningTaskNames,
     logs,
+    clearLogs,
     isConnected,
     send,
     subtaskVersion,
@@ -43,6 +48,54 @@ export function RunDetail() {
   const [showOrchestrator, setShowOrchestrator] = useState(false);
   const [orchestrators, setOrchestrators] = useState<OrchestratorInfo[]>([]);
   const [showResults, setShowResults] = useState(false);
+
+  // --- UI-049: Resizable panel state ---
+  const mainRef = useRef<HTMLDivElement>(null);
+  const [logPanelWidth, setLogPanelWidth] = useState<number | null>(() => {
+    const saved = localStorage.getItem(STORAGE_KEY);
+    return saved ? parseInt(saved, 10) : null;
+  });
+  const [isDragging, setIsDragging] = useState(false);
+
+  const handleResizeMouseDown = useCallback((e: React.MouseEvent) => {
+    e.preventDefault();
+    setIsDragging(true);
+  }, []);
+
+  useEffect(() => {
+    if (!isDragging) return;
+
+    const handleMouseMove = (e: MouseEvent) => {
+      const container = mainRef.current;
+      if (!container) return;
+      const rect = container.getBoundingClientRect();
+      const newLogWidth = rect.right - e.clientX;
+      const clamped = Math.max(
+        MIN_LOG_WIDTH,
+        Math.min(newLogWidth, rect.width - MIN_GRAPH_WIDTH),
+      );
+      setLogPanelWidth(clamped);
+    };
+
+    const handleMouseUp = () => {
+      setIsDragging(false);
+    };
+
+    document.addEventListener('mousemove', handleMouseMove);
+    document.addEventListener('mouseup', handleMouseUp);
+    return () => {
+      document.removeEventListener('mousemove', handleMouseMove);
+      document.removeEventListener('mouseup', handleMouseUp);
+    };
+  }, [isDragging]);
+
+  // Persist to localStorage when dragging ends
+  useEffect(() => {
+    if (isDragging) return;
+    if (logPanelWidth !== null) {
+      localStorage.setItem(STORAGE_KEY, String(logPanelWidth));
+    }
+  }, [isDragging, logPanelWidth]);
 
   // Fetch orchestrators once the run is available
   const runLoaded = run !== null;
@@ -99,6 +152,13 @@ export function RunDetail() {
     return map;
   }, [tasks]);
 
+  // Build task execution ID map for subtask badges on graph nodes (UI-053)
+  const taskExecutionIds = useMemo(() => {
+    const map = new Map<string, string>();
+    tasks.forEach((task, nodeName) => map.set(nodeName, task.id));
+    return map;
+  }, [tasks]);
+
   // Get logs for the effective task (manual or auto-selected)
   const selectedTaskExecution = effectiveTask
     ? tasks.get(effectiveTask)
@@ -106,6 +166,13 @@ export function RunDetail() {
   const selectedLogs = selectedTaskExecution
     ? (logs.get(selectedTaskExecution.id) ?? [])
     : [];
+
+  // --- UI-050: Clear logs handler ---
+  const handleClear = useCallback(() => {
+    if (selectedTaskExecution?.id) {
+      clearLogs(selectedTaskExecution.id);
+    }
+  }, [selectedTaskExecution?.id, clearLogs]);
 
   // Build task execution info for the log viewer details panel
   const taskExecutionInfo: TaskExecutionInfo | null = useMemo(() => {
@@ -270,8 +337,21 @@ export function RunDetail() {
         )}
       </div>
 
-      <div className="run-detail-main">
-        <div className="run-detail-graph">
+      <div
+        ref={mainRef}
+        className={`run-detail-main${isDragging ? ' is-resizing' : ''}`}
+      >
+        <div
+          className="run-detail-graph"
+          style={
+            logPanelWidth != null
+              ? {
+                  flex: 'none',
+                  width: `calc(100% - ${String(logPanelWidth)}px - 4px)`,
+                }
+              : undefined
+          }
+        >
           <GraphView
             nodes={graphNodes}
             edges={graphEdges}
@@ -280,6 +360,7 @@ export function RunDetail() {
             taskElapsed={taskElapsed}
             taskDirs={taskDirs}
             taskCwds={taskCwds}
+            taskExecutionIds={taskExecutionIds}
             worktreePath={detail?.worktree_path}
             activeEdges={activeEdges}
             traversedEdges={traversedEdges}
@@ -288,10 +369,21 @@ export function RunDetail() {
             onNodeClick={(nodeName) =>
               selectTask(nodeName === effectiveTask ? null : nodeName)
             }
+            runId={id}
+            subtaskVersion={subtaskVersion}
           />
         </div>
 
-        <div className="run-detail-logs">
+        <div className="resize-handle" onMouseDown={handleResizeMouseDown} />
+
+        <div
+          className="run-detail-logs"
+          style={
+            logPanelWidth != null
+              ? { flex: 'none', width: logPanelWidth }
+              : undefined
+          }
+        >
           {showOrchestrator ? (
             <OrchestratorConsole
               runId={id!}
@@ -305,6 +397,7 @@ export function RunDetail() {
               isAutoFollow={isAutoFollow}
               showFollowButton={showFollowButton}
               onFollowClick={clearManualSelection}
+              onClear={handleClear}
               runId={id}
               taskExecutionId={selectedTaskExecution?.id}
               subtaskVersion={subtaskVersion}

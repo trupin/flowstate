@@ -1,5 +1,6 @@
 import { Handle, Position, type NodeProps, type Node } from '@xyflow/react';
 import type { TaskStatus } from '../api/types';
+import { useSubtasks } from '../hooks/useSubtasks';
 import './NodePill.css';
 
 // --- Public data interface ---
@@ -16,6 +17,9 @@ export interface NodePillData {
   hasExecution?: boolean;
   waitUntil?: string;
   isSelected?: boolean;
+  runId?: string;
+  taskExecutionId?: string;
+  subtaskVersion?: number;
   [key: string]: unknown;
 }
 
@@ -32,6 +36,15 @@ export function NodePill({ data }: NodeProps<Node<NodePillData>>) {
   const statusClass = `status-${data.status}`;
   const typeClass = `type-${data.nodeType}`;
   const selectedClass = data.isSelected ? 'node-pill-selected' : '';
+
+  // UI-053: Fetch subtask counts for this node
+  const { subtasks } = useSubtasks(
+    data.runId,
+    data.taskExecutionId,
+    data.subtaskVersion ?? 0,
+  );
+  const subtaskTotal = subtasks.length;
+  const subtaskDone = subtasks.filter((s) => s.status === 'done').length;
 
   return (
     <div
@@ -55,6 +68,11 @@ export function NodePill({ data }: NodeProps<Node<NodePillData>>) {
         <span className="node-pill-name">{truncateName(data.label)}</span>
         {(data.generation ?? 1) > 1 && (
           <span className="node-pill-generation">x{data.generation}</span>
+        )}
+        {subtaskTotal > 0 && (
+          <span className="node-pill-subtask-badge">
+            {subtaskDone}/{subtaskTotal}
+          </span>
         )}
       </div>
 

@@ -20,6 +20,7 @@ interface UseFlowRunReturn {
   isManualSelection: boolean;
   runningTaskNames: string[];
   logs: Map<string, LogEntry[]>;
+  clearLogs: (taskExecutionId: string) => void;
   isConnected: boolean;
   send: (data: unknown) => void;
   subtaskVersion: number;
@@ -383,6 +384,14 @@ export function useFlowRun(runId: string): UseFlowRunReturn {
     setIsManualSelection(false);
   }, []);
 
+  const clearLogs = useCallback((taskExecutionId: string) => {
+    setLogs((prev) => {
+      const next = new Map(prev);
+      next.set(taskExecutionId, []);
+      return next;
+    });
+  }, []);
+
   return {
     run,
     tasks,
@@ -394,6 +403,7 @@ export function useFlowRun(runId: string): UseFlowRunReturn {
     isManualSelection,
     runningTaskNames,
     logs,
+    clearLogs,
     isConnected,
     send,
     subtaskVersion,
