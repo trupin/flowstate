@@ -135,20 +135,60 @@ flow implement_flowstate {
         """
     }
 
+    task committer {
+        prompt = """
+        You are the committer. All verification has passed. Your job is to
+        create a clean git commit with the implementation changes.
+
+        ## Steps
+
+        1. Read the summaries from previous tasks to understand what was
+           implemented and which issue IDs were addressed.
+        2. Run `git status` to see what files were changed.
+        3. Run `git diff` to review the changes.
+        4. Stage ONLY the implementation files (no issue files, no flow files,
+           no SUMMARY.md or coordination files):
+           ```
+           git add <specific changed files>
+           ```
+        5. Commit with the format:
+           ```
+           [ISSUE-ID] Short imperative description
+
+           - Key change 1
+           - Key change 2
+
+           Implemented by Flowstate self-hosting flow.
+           ```
+        6. If multiple issues were implemented, use the primary issue ID
+           in the commit message and mention others in the body.
+
+        ## Rules
+        - Only `git add` and `git commit` — never push, never force
+        - Only stage files that were actually changed for the implementation
+        - Do not stage files in ~/.flowstate/ or coordination directories
+        - Review the diff before committing to ensure quality
+
+        ## Output
+        In your SUMMARY.md: the commit hash, commit message, and files committed.
+        """
+    }
+
     exit done {
         prompt = """
-        All implementation work has passed verification.
+        Implementation is complete and committed.
 
         Write a final summary:
         1. Which issues were implemented (IDs and titles)
         2. What files were changed
-        3. Verification results
-        4. Notes for the human reviewer before committing
+        3. The commit hash and message
+        4. Any notes for the human reviewer
         """
     }
 
     planner -> [engine_dev, ui_dev]
     [engine_dev, ui_dev] -> verifier
-    verifier -> done when "all verification checks pass and implementation is correct"
+    verifier -> committer when "all verification checks pass and implementation is correct"
     verifier -> planner when "verification failed or implementation needs fixes"
+    committer -> done
 }
