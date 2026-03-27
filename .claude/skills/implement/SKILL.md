@@ -76,23 +76,23 @@ If the ready issue is in `shared/` (e.g., SHARED-001):
 
 For DSL issues:
 - Use the Agent tool to spawn the `dsl-dev` agent.
-- Pass the issue ID(s) and instruct it to read the issue file, implement, test, and report back.
+- Pass the issue ID(s) and instruct it to read the issue file, implement, test, verify E2E, and report back.
 
 For state issues:
 - Use the Agent tool to spawn the `state-dev` agent.
-- Pass the issue ID(s) and instruct it to read the issue file, implement, test, and report back.
+- Pass the issue ID(s) and instruct it to read the issue file, implement, test, verify E2E, and report back.
 
 For engine issues:
 - Use the Agent tool to spawn the `engine-dev` agent.
-- Pass the issue ID(s) and instruct it to read the issue file, implement, test, and report back.
+- Pass the issue ID(s) and instruct it to read the issue file, implement, test, verify E2E, and report back.
 
 For server issues:
 - Use the Agent tool to spawn the `server-dev` agent.
-- Pass the issue ID(s) and instruct it to read the issue file, implement, test, and report back.
+- Pass the issue ID(s) and instruct it to read the issue file, implement, test, verify E2E, and report back.
 
 For UI issues:
 - Use the Agent tool to spawn the `ui-dev` agent.
-- Pass the issue ID(s) and instruct it to read the issue file, implement, test, and report back.
+- Pass the issue ID(s) and instruct it to read the issue file, implement, test, verify E2E, and report back.
 
 If a sprint contract was produced in step 3, include the contract file path so the domain agent knows what the evaluator will verify.
 
@@ -106,9 +106,11 @@ When a domain agent reports completion:
 2. **Run checks**: `/test` and `/lint` to verify correctness. If checks fail, report failures to the domain agent for fixing. Loop until checks pass.
 3. **Evaluate** (if evaluator active): If `.claude/agents/evaluator.md` exists:
    - Spawn the evaluator agent for this issue (or the sprint batch).
+   - The evaluator will audit the E2E proof-of-work for credibility and completeness.
    - If FAIL: send the eval verdict file (`issues/evals/<ISSUE-ID>-eval.md`) to the domain agent for fixing. After fixes, re-run `/test` + `/lint`, then re-evaluate.
    - Loop up to 3 iterations. If still failing after 3 attempts, escalate to user with the eval file.
    - If PASS: proceed to audit.
+   If evaluator is not active: spot-check that the "E2E Verification Log" section is present and not placeholder text. If missing, send back to the domain agent.
 4. **Decide whether to audit**: Run `/audit <ISSUE-ID>` only when:
    - The issue is P0 (critical path)
    - The issue touches shared contracts or cross-domain interfaces

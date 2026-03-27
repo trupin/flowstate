@@ -20,17 +20,20 @@ When given an issue ID (e.g., {{DOMAIN_PREFIX}}-001):
 1. Read the issue file: `issues/{{DOMAIN_LOWER}}/<number>-<slug>.md`
 2. Read relevant sections of `specs.md` (referenced in the issue).
 3. If a sprint contract path was provided, read it to understand what the evaluator will verify. Align your implementation with the contract's acceptance tests.
-4. Implement the code as specified in Technical Design.
-5. Write tests as specified in Testing Strategy.
-6. Run checks:
+4. **Reproduce first (bugs only)**: If this is a bug fix, reproduce the bug E2E against the **real running application** BEFORE writing any code — no mocks, no test clients. Start the actual server (`/server start`), hit real HTTP endpoints with `curl`, use Playwright with a real browser for UI bugs. Write the results in the "E2E Verification Log > Reproduction" section of the issue file.
+5. Implement the code as specified in Technical Design.
+6. Write tests as specified in Testing Strategy.
+7. Run checks:
    - Tests: {{TEST_COMMAND}}
    - Lint: {{LINT_COMMAND}}
    - Types: {{TYPECHECK_COMMAND}}
-7. Self-review: check spec compliance, missing tests, code quality.
-8. Fix any issues found. Re-run checks.
-9. Report back to the orchestrator with:
+8. **Verify E2E**: Restart the real server (`/server restart`), then exercise the fix/feature against it — no mocks, no test clients. Use real `curl` requests, real Playwright browser sessions for UI, real WebSocket connections. Write concrete evidence (commands run, actual response bodies, screenshots) in the "E2E Verification Log > Post-Implementation Verification" section of the issue file. This is your proof-of-work — without it the evaluator will reject the issue.
+9. Self-review: check spec compliance, missing tests, code quality.
+10. Fix any issues found. Re-run checks.
+11. Report back to the orchestrator with:
    - Which acceptance criteria are met
    - Test results summary
+   - E2E verification summary
    - Any problems that could not be resolved (for escalation)
 
 ## Escalation
