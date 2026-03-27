@@ -23,6 +23,7 @@ from flowstate.engine.acp_client import (
     AcpHarness,
     _AcpBridgeClient,
     _extract_tool_call_content_text,
+    _is_noise_chunk,
     _map_acp_update_to_stream_event,
     _serialize_raw_io,
 )
@@ -400,6 +401,152 @@ class TestAcpEventMapping:
 
         assert event is not None
         assert "def hello():" in event.content["content"]
+
+
+# ---------------------------------------------------------------------------
+# Tests: Noise chunk filtering
+# ---------------------------------------------------------------------------
+
+
+class TestIsNoiseChunk:
+    """Test _is_noise_chunk helper for streaming fragment filtering."""
+
+    # -- Noise (should be filtered) --
+
+    def test_empty_string_is_noise(self) -> None:
+        assert _is_noise_chunk("") is True
+
+    def test_whitespace_only_is_noise(self) -> None:
+        assert _is_noise_chunk("   ") is True
+        assert _is_noise_chunk("\t") is True
+        assert _is_noise_chunk("\n") is True
+        assert _is_noise_chunk("  \n\t  ") is True
+
+    def test_single_period_is_noise(self) -> None:
+        assert _is_noise_chunk(".") is True
+
+    def test_single_comma_is_noise(self) -> None:
+        assert _is_noise_chunk(",") is True
+
+    def test_single_colon_is_noise(self) -> None:
+        assert _is_noise_chunk(":") is True
+
+    def test_single_semicolon_is_noise(self) -> None:
+        assert _is_noise_chunk(";") is True
+
+    def test_single_dash_is_noise(self) -> None:
+        assert _is_noise_chunk("-") is True
+
+    def test_single_punctuation_with_surrounding_whitespace_is_noise(self) -> None:
+        assert _is_noise_chunk(" . ") is True
+        assert _is_noise_chunk("\n,\n") is True
+
+    # -- Not noise (should pass through) --
+
+    def test_single_letter_passes(self) -> None:
+        assert _is_noise_chunk("a") is False
+
+    def test_single_digit_passes(self) -> None:
+        assert _is_noise_chunk("5") is False
+
+    def test_multi_char_punctuation_passes(self) -> None:
+        assert _is_noise_chunk("...") is False
+        assert _is_noise_chunk("---") is False
+        assert _is_noise_chunk("::") is False
+
+    def test_word_passes(self) -> None:
+        assert _is_noise_chunk("Hello") is False
+
+    def test_sentence_passes(self) -> None:
+        assert _is_noise_chunk("Hello world.") is False
+
+    def test_multiline_content_passes(self) -> None:
+        assert _is_noise_chunk("line1\nline2") is False
+
+    def test_code_snippet_passes(self) -> None:
+        assert _is_noise_chunk("def foo():") is False
+
+
+class TestNoiseFilterInEventMapping:
+    """Test that noise filtering is applied in _map_acp_update_to_stream_event."""
+
+    def test_empty_message_chunk_returns_none(self) -> None:
+        update = _make_agent_message_chunk("")
+        event = _map_acp_update_to_stream_event(update)
+        assert event is None
+
+    def test_whitespace_message_chunk_returns_none(self) -> None:
+        update = _make_agent_message_chunk("   ")
+        event = _map_acp_update_to_stream_event(update)
+        assert event is None
+
+    def test_single_period_message_chunk_returns_none(self) -> None:
+        update = _make_agent_message_chunk(".")
+        event = _map_acp_update_to_stream_event(update)
+        assert event is None
+
+    def test_single_comma_message_chunk_returns_none(self) -> None:
+        update = _make_agent_message_chunk(",")
+        event = _map_acp_update_to_stream_event(update)
+        assert event is None
+
+    def test_empty_thought_chunk_returns_none(self) -> None:
+        update = _make_agent_thought_chunk("")
+        event = _map_acp_update_to_stream_event(update)
+        assert event is None
+
+    def test_single_punctuation_thought_chunk_returns_none(self) -> None:
+        update = _make_agent_thought_chunk(".")
+        event = _map_acp_update_to_stream_event(update)
+        assert event is None
+
+    def test_meaningful_message_chunk_passes(self) -> None:
+        update = _make_agent_message_chunk("Hello world")
+        event = _map_acp_update_to_stream_event(update)
+        assert event is not None
+        assert event.type == StreamEventType.ASSISTANT
+        assert event.content["message"]["content"][0]["text"] == "Hello world"
+
+    def test_meaningful_thought_chunk_passes(self) -> None:
+        update = _make_agent_thought_chunk("Let me analyze this")
+        event = _map_acp_update_to_stream_event(update)
+        assert event is not None
+        assert event.type == StreamEventType.ASSISTANT
+        assert event.content["thinking"] is True
+
+    def test_single_letter_message_chunk_passes(self) -> None:
+        """Single alphanumeric chars pass through -- could be start of a streaming word."""
+        update = _make_agent_message_chunk("a")
+        event = _map_acp_update_to_stream_event(update)
+        assert event is not None
+        assert event.content["message"]["content"][0]["text"] == "a"
+
+    def test_multi_char_punctuation_passes(self) -> None:
+        """Multi-character punctuation like '...' must not be filtered."""
+        update = _make_agent_message_chunk("...")
+        event = _map_acp_update_to_stream_event(update)
+        assert event is not None
+
+    def test_tool_call_start_not_affected(self) -> None:
+        """Tool call events are never filtered, even with short titles."""
+        update = _make_tool_call_start("tc-1", ".")
+        event = _map_acp_update_to_stream_event(update)
+        assert event is not None
+        assert event.type == StreamEventType.TOOL_USE
+
+    def test_tool_call_progress_not_affected(self) -> None:
+        """Tool result events are never filtered."""
+        update = _make_tool_call_progress("tc-1", ".", "completed")
+        event = _map_acp_update_to_stream_event(update)
+        assert event is not None
+        assert event.type == StreamEventType.TOOL_RESULT
+
+    def test_plan_update_not_affected(self) -> None:
+        """System events are never filtered."""
+        update = _make_plan_update([{"title": "", "status": ""}])
+        event = _map_acp_update_to_stream_event(update)
+        assert event is not None
+        assert event.type == StreamEventType.SYSTEM
 
 
 # ---------------------------------------------------------------------------
