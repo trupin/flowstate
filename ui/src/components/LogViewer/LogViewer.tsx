@@ -10,6 +10,7 @@ import type {
 import { ApiError, api } from '../../api/client';
 import { ClickablePath } from '../ClickablePath';
 import { ToolCallBlock } from './ToolCallBlock';
+import { SUBTASK_URL_PATTERN, getInputCommand } from './subtaskDetection';
 import { CollapsibleSection } from './CollapsibleSection';
 import { SubtaskProgress } from './SubtaskProgress';
 import { useSubtasks } from '../../hooks/useSubtasks';
@@ -526,6 +527,12 @@ function isNoiseText(text: string): boolean {
 
 type VisibilityCategory = 'visible' | 'noise' | 'hidden';
 
+/** Detect if a parsed tool_use input is a subtask API call (POST/PATCH to /subtasks). */
+function isSubtaskToolCall(input: Record<string, unknown>): boolean {
+  const cmd = getInputCommand(input);
+  return cmd != null && SUBTASK_URL_PATTERN.test(cmd);
+}
+
 function classifyEntry(
   content: string,
   logType?: LogEntry['log_type'],
@@ -549,6 +556,25 @@ function classifyEntry(
     parsed.content.trim() === 'Tool completed'
   )
     return 'noise';
+  // Tool calls: noise by default, subtask API calls remain visible
+  if (parsed.kind === 'tool_use') {
+    return isSubtaskToolCall(parsed.input) ? 'visible' : 'noise';
+  }
+  if (parsed.kind === 'tool_result') return 'noise';
+  return 'visible';
+}
+
+/** Classify a grouped entry for filtering. Tool call groups use the tool_use classification. */
+function classifyGroup(group: GroupedEntry): VisibilityCategory {
+  if (group.type === 'tool_call') {
+    // Subtask tool calls are visible, all others are noise
+    return isSubtaskToolCall(group.toolUse.input) ? 'visible' : 'noise';
+  }
+  if (group.type === 'single') {
+    return classifyEntry(group.entry.content, group.entry.log_type);
+  }
+  // merged_thinking and merged_assistant are always visible (noise fragments
+  // are already excluded during the merging step in groupLogEntries)
   return 'visible';
 }
 
@@ -861,24 +887,37 @@ export function LogViewer({
   const [interrupting, setInterrupting] = useState(false);
   const [inputError, setInputError] = useState<string | null>(null);
 
-  const filteredLogs = useMemo(() => {
-    const filtered: LogEntry[] = [];
+  // Pipeline: remove hidden entries -> group -> filter groups by visibility.
+  // Grouping before filtering ensures tool_use + tool_result pairs stay together
+  // so that subtask tool calls get their result data for rendering.
+  const nonHiddenLogs = useMemo(() => {
+    const result: LogEntry[] = [];
     for (const entry of logs) {
       const category = classifyEntry(entry.content, entry.log_type);
-      if (category === 'noise') {
-        if (verbose) filtered.push(entry);
-      } else if (category === 'visible') {
-        filtered.push(entry);
+      if (category !== 'hidden') {
+        result.push(entry);
       }
-      // 'hidden' entries are always excluded
+    }
+    return result;
+  }, [logs]);
+
+  const allGroups = useMemo(
+    () => groupLogEntries(nonHiddenLogs),
+    [nonHiddenLogs],
+  );
+
+  const groupedEntries = useMemo(() => {
+    const filtered: GroupedEntry[] = [];
+    for (const group of allGroups) {
+      const category = classifyGroup(group);
+      if (category === 'noise') {
+        if (verbose) filtered.push(group);
+      } else if (category === 'visible') {
+        filtered.push(group);
+      }
     }
     return filtered;
-  }, [logs, verbose]);
-
-  const groupedEntries = useMemo(
-    () => groupLogEntries(filteredLogs),
-    [filteredLogs],
-  );
+  }, [allGroups, verbose]);
 
   // Auto-scroll when pinned and new logs arrive
   useEffect(() => {
@@ -1050,7 +1089,7 @@ export function LogViewer({
           groupedEntries.map((grouped, index) => {
             const isLast = index === groupedEntries.length - 1;
             if (grouped.type === 'tool_call') {
-              const key = grouped.ids.join('-');
+              const key = grouped.toolUse.toolId || `tool-${String(index)}`;
               return (
                 <div key={key} className="log-line log-type-tool_use">
                   <span className="log-timestamp">
