@@ -1,5 +1,9 @@
 <p align="center">
-  <img src="logo.png" alt="Flowstate" width="360">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="logo.png" width="360">
+    <source media="(prefers-color-scheme: light)" srcset="logo-light.png" width="360">
+    <img src="logo-light.png" alt="Flowstate" width="360">
+  </picture>
 </p>
 
 <p align="center">
