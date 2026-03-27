@@ -32,6 +32,16 @@ When given an issue ID (e.g., UI-001):
    - Build/lint results
    - Any problems that could not be resolved (for escalation)
 
+## Visual Bug Fixes
+
+**Always reproduce before fixing.** When fixing a visual/CSS/layout bug:
+
+1. **Reproduce first** using Playwright with `headless=False` at the user's viewport size. Take a screenshot and confirm you can see the bug.
+2. If you cannot reproduce, try different viewport sizes (1470x956 for MacBook Air, 1280x800 for smaller laptops) and browsers (`p.webkit.launch()` for Safari). Ask the orchestrator for the user's exact window size if needed.
+3. **Never write a fix you haven't visually confirmed** is needed. If you can't see the bug, you can't fix it.
+4. After applying the fix, rebuild (`cd ui && npm run build`), verify with the same Playwright reproduction scenario, and confirm the bug is gone in the screenshot.
+5. Include before/after screenshots in your report to the orchestrator.
+
 ## Escalation
 
 Handle these yourself:
