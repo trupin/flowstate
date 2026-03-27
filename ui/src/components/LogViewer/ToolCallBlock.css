@@ -158,3 +158,60 @@
   font-style: italic;
   font-size: 11px;
 }
+
+/* --- Subtask event styles --- */
+
+.log-subtask-event {
+  padding: 2px 8px;
+  color: var(--accent);
+  font-size: 12px;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  cursor: pointer;
+  user-select: none;
+  font-family: var(--font-sans);
+  white-space: normal;
+  line-height: 1.6;
+}
+
+.log-subtask-event:hover {
+  opacity: 0.85;
+}
+
+.log-subtask-icon {
+  flex-shrink: 0;
+  font-size: 12px;
+}
+
+.log-subtask-text {
+  min-width: 0;
+  overflow: hidden;
+}
+
+.log-subtask-text strong {
+  font-weight: 600;
+}
+
+.log-subtask-status-done {
+  color: var(--success);
+  font-weight: 500;
+}
+
+.log-subtask-status-in_progress {
+  color: var(--accent);
+  font-weight: 500;
+}
+
+.log-subtask-status-todo {
+  color: var(--text-secondary);
+}
+
+.log-subtask-status-blocked {
+  color: var(--error);
+}
+
+.log-subtask-status-skipped {
+  color: var(--text-secondary);
+  font-style: italic;
+}
