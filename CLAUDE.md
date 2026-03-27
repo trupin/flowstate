@@ -137,7 +137,7 @@ Every issue follows this cycle, enforced by domain agents and the orchestrator:
 4. **Check** — Run linters and type checkers (`/lint`, `/check` for Python, `cd ui && npm run lint` for UI).
 5. **Verify E2E** — Restart the real server, then exercise the fix/feature against it — no mocks, no test clients. Use real HTTP requests (`curl`), real Playwright browser sessions for UI, real WebSocket connections. Document exact commands and observed output in the issue's "E2E Verification Log > Post-Implementation Verification" section. This proof-of-work is mandatory — without it the evaluator will reject the issue.
 6. **Audit** — Self-audit: check for spec compliance, missing tests, code quality issues.
-7. **Refactor** — Fix any issues found in audit. Re-run tests to confirm no regressions.
+7. **Refactor** — Fix any issues found in audit. Re-run tests to confirm no regressions. If refactoring changes behavior, re-run E2E verification.
 8. **Evaluate** *(if evaluator active)* — Orchestrator runs the evaluator agent. The evaluator checks that E2E proof-of-work is present and credible. If FAIL, domain agent receives the eval verdict and fixes. Loop up to 3 times.
 9. **Surface** — If something cannot be resolved, escalate (see Escalation Protocol).
 10. **Report** — Mark issue as done and report to orchestrator.

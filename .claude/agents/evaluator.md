@@ -99,6 +99,7 @@ Write a verdict file at `issues/evals/<ISSUE-ID>-eval.md`:
 |-------|--------|-------|
 | Verification log present | PASS/FAIL | |
 | Commands are specific and concrete | PASS/FAIL | |
+| Real E2E (no mocks/TestClient) | PASS/FAIL | |
 | Scenarios cover acceptance criteria | PASS/FAIL | |
 | Server restarted after changes | PASS/FAIL | |
 | Reproduction logged before fix (bugs) | PASS/FAIL/N/A | |

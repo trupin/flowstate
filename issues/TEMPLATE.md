@@ -44,7 +44,7 @@ open a real browser with Playwright if UI is involved. For bugs, include
 reproduction steps. For features, describe how to exercise the feature end-to-end.
 
 ### Reproduction Steps (bugs only)
-1. Start server: `uv run flowstate server --port 9090`
+1. Start server: `uv run flowstate serve`
 2. [steps to trigger the bug]
 3. Expected: [what should happen]
 4. Actual: [what goes wrong]
