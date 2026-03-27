@@ -12,6 +12,7 @@ import '@xyflow/react/dist/style.css';
 import dagre from 'dagre';
 import type { FlowNodeDef, FlowEdgeDef, TaskStatus } from '../../api/types';
 import { NodePill, type NodePillData } from '../NodePill';
+import { ConditionalEdge } from './ConditionalEdge';
 import './GraphView.css';
 
 // --- Props ---
@@ -79,11 +80,6 @@ function runDagreLayout(
 }
 
 // --- Conversion helpers ---
-
-function truncate(text: string, maxLen: number): string {
-  if (text.length <= maxLen) return text;
-  return text.slice(0, maxLen - 1) + '\u2026';
-}
 
 function convertToReactFlowNodes(
   nodeDefs: FlowNodeDef[],
@@ -154,20 +150,17 @@ function convertToReactFlowEdges(
       stroke = 'var(--accent)';
     }
 
+    const useConditionalEdge =
+      e.edge_type === 'conditional' && !isBackEdge && e.condition;
+
     return {
       id,
       source,
       target,
-      type: 'smoothstep',
-      label: isBackEdge
-        ? undefined
-        : e.condition
-          ? truncate(e.condition, 40)
-          : undefined,
-      labelBgPadding: [6, 4] as [number, number],
-      labelBgBorderRadius: 4,
-      labelBgStyle: { fill: 'var(--bg-secondary)', fillOpacity: 0.95 },
-      labelStyle: { fill: 'var(--text-primary)', fontSize: 11 },
+      type: useConditionalEdge ? 'conditional' : 'smoothstep',
+      ...(useConditionalEdge
+        ? { data: { condition: e.condition, stroke, isActive, isTraversed } }
+        : {}),
       style: {
         strokeDasharray: e.edge_type === 'conditional' ? '5 5' : undefined,
         stroke,
@@ -184,6 +177,10 @@ function convertToReactFlowEdges(
 
 const nodeTypes = {
   flowNode: NodePill,
+};
+
+const edgeTypes = {
+  conditional: ConditionalEdge,
 };
 
 // --- Inner component (must be inside ReactFlowProvider) ---
@@ -320,6 +317,7 @@ function GraphViewInner({
         nodes={layoutedNodes}
         edges={layoutedEdges}
         nodeTypes={nodeTypes}
+        edgeTypes={edgeTypes}
         onNodeClick={handleNodeClick}
         nodesDraggable={!readOnly}
         nodesConnectable={false}
@@ -327,7 +325,7 @@ function GraphViewInner({
         fitView
         proOptions={{ hideAttribution: true }}
       >
-        <Controls />
+        <Controls showInteractive={false} />
         <Background color="var(--border)" gap={20} />
       </ReactFlow>
     </div>
