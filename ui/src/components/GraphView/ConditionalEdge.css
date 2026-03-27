@@ -34,10 +34,6 @@
 }
 
 .conditional-edge-popover {
-  position: absolute;
-  top: 50%;
-  left: 28px;
-  transform: translateY(-50%);
   max-width: 300px;
   min-width: 120px;
   background: var(--bg-secondary);
@@ -49,6 +45,6 @@
   box-shadow: 0 4px 12px rgba(0, 0, 0, 0.3);
   white-space: pre-wrap;
   word-break: break-word;
-  z-index: 10;
+  z-index: 10000;
   pointer-events: all;
 }

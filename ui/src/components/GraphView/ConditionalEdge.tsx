@@ -1,8 +1,10 @@
 import { useState, useCallback, useEffect, useRef } from 'react';
+import { createPortal } from 'react-dom';
 import {
   BaseEdge,
   EdgeLabelRenderer,
   getSmoothStepPath,
+  useOnViewportChange,
   type EdgeProps,
   type Edge,
 } from '@xyflow/react';
@@ -30,14 +32,44 @@ export function ConditionalEdge({
 }: EdgeProps<ConditionalEdgeType>) {
   const [expanded, setExpanded] = useState(false);
   const containerRef = useRef<HTMLDivElement>(null);
+  const iconRef = useRef<HTMLDivElement>(null);
+  const popoverRef = useRef<HTMLDivElement>(null);
+  const [popoverPos, setPopoverPos] = useState<{
+    top: number;
+    left: number;
+  } | null>(null);
 
+  // Close popover on viewport pan/zoom
+  const handleViewportChange = useCallback(() => {
+    setExpanded(false);
+  }, []);
+
+  useOnViewportChange({
+    onStart: handleViewportChange,
+  });
+
+  // Compute popover position from icon bounding rect when expanded
+  useEffect(() => {
+    if (expanded && iconRef.current) {
+      const rect = iconRef.current.getBoundingClientRect();
+      setPopoverPos({
+        top: rect.top + rect.height / 2,
+        left: rect.right + 8,
+      });
+    } else {
+      setPopoverPos(null);
+    }
+  }, [expanded]);
+
+  // Outside-click handler: check both the icon container and portaled popover
   useEffect(() => {
     if (!expanded) return;
     const handleClickOutside = (e: MouseEvent) => {
-      if (
-        containerRef.current &&
-        !containerRef.current.contains(e.target as Node)
-      ) {
+      const target = e.target as Node;
+      const clickedInContainer =
+        containerRef.current?.contains(target) ?? false;
+      const clickedInPopover = popoverRef.current?.contains(target) ?? false;
+      if (!clickedInContainer && !clickedInPopover) {
         setExpanded(false);
       }
     };
@@ -84,6 +116,7 @@ export function ConditionalEdge({
             }}
           >
             <div
+              ref={iconRef}
               className={iconClass}
               onClick={handleIconClick}
               role="button"
@@ -92,12 +125,26 @@ export function ConditionalEdge({
             >
               if
             </div>
-            {expanded && (
-              <div className="conditional-edge-popover">{condition}</div>
-            )}
           </div>
         </EdgeLabelRenderer>
       )}
+      {expanded &&
+        popoverPos &&
+        createPortal(
+          <div
+            ref={popoverRef}
+            className="conditional-edge-popover"
+            style={{
+              position: 'fixed',
+              top: popoverPos.top,
+              left: popoverPos.left,
+              transform: 'translateY(-50%)',
+            }}
+          >
+            {condition}
+          </div>,
+          document.body,
+        )}
     </>
   );
 }

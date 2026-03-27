@@ -334,6 +334,7 @@
 | UI-056     | Remove lock button from graph controls                    | ui     | P2       | —           | done |
 | UI-057     | Collapse conditional edge labels into clickable icons     | ui     | P1       | —           | done |
 | UI-058     | Condition popover overlaps target node — open upward      | ui     | P1       | —           | done |
+| UI-059     | Condition popover renders behind graph nodes              | ui     | P1       | —           | done |
 
 
 ---
