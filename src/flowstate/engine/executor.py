@@ -1695,6 +1695,152 @@ class FlowExecutor:
             )
             self._resume_event.set()
 
+    async def restart_from_task(
+        self,
+        flow: Flow,
+        flow_run_id: str,
+        task_execution_id: str,
+        action: str,
+        parameters: dict[str, str | float | bool] | None = None,
+    ) -> str:
+        """Restart a cancelled/failed flow from a specific task.
+
+        Sets up executor state (normally done in ``execute()``) and then
+        calls ``retry_task()`` or ``skip_task()`` before entering the main
+        loop.  This allows retry/skip to work on flows whose executor was
+        removed after cancellation (ENGINE-053).
+
+        Args:
+            flow: The parsed Flow AST.
+            flow_run_id: The existing flow run ID to restart.
+            task_execution_id: The failed task to retry or skip.
+            action: ``"retry"`` or ``"skip"``.
+            parameters: Template parameters (used for prompt expansion).
+
+        Returns:
+            The flow_run_id (same as input).
+        """
+        if action not in ("retry", "skip"):
+            raise ValueError(f"Invalid action: {action!r}. Must be 'retry' or 'skip'.")
+
+        params = parameters or {}
+
+        # 1. Load the flow run from DB
+        flow_run = self._db.get_flow_run(flow_run_id)
+        if flow_run is None:
+            raise ValueError(f"Flow run not found: {flow_run_id}")
+
+        data_dir = flow_run.data_dir
+        workspace = flow_run.default_workspace or "."
+
+        # If the flow has no workspace, inject the resolved one
+        if flow.workspace is None:
+            from dataclasses import replace
+
+            flow = replace(flow, workspace=workspace)
+
+        # 2. Expand templates in all node prompts
+        expanded_prompts: dict[str, str] = {}
+        for node_name, node in flow.nodes.items():
+            expanded_prompts[node_name] = expand_templates(node.prompt, params)
+
+        # 3. Initialize budget guard (use remaining budget or reset)
+        budget = BudgetGuard(flow.budget_seconds)
+
+        # 4. Store shared state for control operations
+        self._flow = flow
+        self._flow_run_id = flow_run_id
+        self._data_dir = data_dir
+        self._expanded_prompts = expanded_prompts
+        self._budget = budget
+        self._paused = False
+        self._cancelled = False
+        self._resume_event.clear()
+        # Task queue context: restart_from_task is not task-aware
+        self._task_id = None
+        self._task_row = None
+
+        # 5. Un-cancel the flow: transition to running
+        old_status = flow_run.status
+        self._db.update_flow_run_status(flow_run_id, "running")
+        self._emit(
+            FlowEvent(
+                type=EventType.FLOW_STATUS_CHANGED,
+                flow_run_id=flow_run_id,
+                timestamp=_now_iso(),
+                payload={
+                    "old_status": old_status,
+                    "new_status": "running",
+                    "reason": f"Restarted via {action} on task {task_execution_id}",
+                },
+            )
+        )
+
+        # 6. Call retry_task() or skip_task() to create the new task execution
+        if action == "retry":
+            await self.retry_task(flow_run_id, task_execution_id)
+        else:
+            await self.skip_task(flow_run_id, task_execution_id)
+
+        # 7. Enter the main loop
+        pending = self._pending_tasks
+        completed_queue: asyncio.Queue[str] = asyncio.Queue()
+        self._completed_queue = completed_queue
+
+        while pending or self._running_tasks or self._paused:
+            if self._cancelled:
+                break
+
+            if self._paused:
+                await self._resume_event.wait()
+                self._resume_event.clear()
+                if self._cancelled:
+                    break
+                continue
+
+            ready = list(pending)
+            for task_id in ready:
+                if self._paused or self._cancelled:
+                    break
+                pending.discard(task_id)
+                await self._semaphore.acquire()
+                atask = asyncio.create_task(
+                    self._execute_single_task(
+                        flow_run_id=flow_run_id,
+                        task_execution_id=task_id,
+                        flow=flow,
+                        expanded_prompts=expanded_prompts,
+                        data_dir=data_dir,
+                        budget=budget,
+                        completed_queue=completed_queue,
+                    )
+                )
+                self._running_tasks[task_id] = atask
+
+            if self._cancelled:
+                break
+
+            if self._paused and not self._running_tasks:
+                continue
+
+            if self._running_tasks and not completed_queue.qsize():
+                completed_id = await completed_queue.get()
+            elif completed_queue.qsize():
+                completed_id = completed_queue.get_nowait()
+            else:
+                break
+
+            self._running_tasks.pop(completed_id, None)
+            self._semaphore.release()
+
+            should_stop = await self._process_completed_task(
+                completed_id, flow_run_id, flow, expanded_prompts, data_dir, budget, pending
+            )
+            if should_stop:
+                return flow_run_id
+
+        return flow_run_id
+
     # ------------------------------------------------------------------ #
     # Wait node execution
     # ------------------------------------------------------------------ #
@@ -2289,11 +2435,23 @@ class FlowExecutor:
                 if not messages:
                     break
 
-                # Mark messages as processed and re-invoke with combined prompt
+                # Mark messages as processed and re-invoke with combined prompt.
+                # Use run_task_resume() instead of prompt() because the ACP
+                # session is destroyed after each subprocess exits (its finally
+                # block removes the session from _sessions).  run_task_resume()
+                # spawns a fresh subprocess and loads the persisted session
+                # from disk, which is the correct way to continue after the
+                # original stream has ended (ENGINE-052).
                 self._db.mark_messages_processed(task_execution_id)
                 combined_prompt = self._format_user_messages(messages)
                 assert session_id is not None  # guaranteed by initialization above
-                re_stream = harness.prompt(session_id, combined_prompt)
+                cwd = task_exec.cwd
+                re_stream = harness.run_task_resume(
+                    combined_prompt,
+                    cwd,
+                    session_id,
+                    skip_permissions=skip_perms,
+                )
                 exit_code = await self._stream_events(
                     re_stream, task_execution_id, flow_run_id, session_id
                 )

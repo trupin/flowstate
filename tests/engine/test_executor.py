@@ -4826,6 +4826,7 @@ class InterruptableMockManager:
 
     def __init__(self) -> None:
         self.calls: list[tuple[str, str, str]] = []
+        self.resume_calls: list[tuple[str, str, str]] = []
         self.prompt_calls: list[tuple[str, str]] = []
         self.interrupt_calls: list[str] = []
         self.kill_calls: list[str] = []
@@ -4888,6 +4889,7 @@ class InterruptableMockManager:
         *,
         skip_permissions: bool = False,
     ) -> AsyncGenerator[StreamEvent, None]:
+        self.resume_calls.append((prompt, workspace, resume_session_id))
         exit_code, extra_events = self._find_response(prompt)
         for evt in extra_events:
             yield evt
@@ -5135,9 +5137,12 @@ class TestReInvocationLoop:
         assert run is not None
         assert run.status == "completed"
 
-        # The prompt() method should have been called with the re-invocation message
+        # run_task_resume() should have been called with the re-invocation message
+        # (ENGINE-052: run_task_resume replaces prompt for dead ACP sessions)
         reinvoc_prompts = [
-            msg for _, msg in mock_mgr.prompt_calls if "use pytest not unittest" in msg
+            prompt
+            for prompt, _ws, _sid in mock_mgr.resume_calls
+            if "use pytest not unittest" in prompt
         ]
         assert len(reinvoc_prompts) >= 1
         assert "Address these messages" in reinvoc_prompts[0]
@@ -5156,8 +5161,10 @@ class TestReInvocationLoop:
         flow = _make_linear_flow(node_names=["start", "finish"])
         flow_run_id = await executor.execute(flow, {}, "/workspace")
 
-        # No prompt() calls should have been made (only run_task calls)
+        # No re-invocation calls should have been made (only run_task calls)
         assert len(mock_mgr.prompt_calls) == 0
+        # resume_calls should only contain initial session-context resumes, not message re-invocations
+        # (a flow without messages should not trigger any message-driven resume_calls)
 
         run = db.get_flow_run(flow_run_id)
         assert run is not None
@@ -5201,8 +5208,11 @@ class TestReInvocationLoop:
         assert db.get_flow_run(flow_run_id).status == "completed"  # type: ignore[union-attr]
 
         # Both messages should appear in a single re-invocation prompt
+        # (ENGINE-052: uses run_task_resume instead of prompt)
         reinvoc_prompts = [
-            msg for _, msg in mock_mgr.prompt_calls if "Address these messages" in msg
+            prompt
+            for prompt, _ws, _sid in mock_mgr.resume_calls
+            if "Address these messages" in prompt
         ]
         assert len(reinvoc_prompts) >= 1
         assert "use pytest not unittest" in reinvoc_prompts[0]
@@ -5391,9 +5401,11 @@ class TestInterruptAndResume:
         assert run is not None
         assert run.status == "completed"
 
-        # Verify the re-invocation prompt was sent via prompt()
+        # Verify the re-invocation was sent via run_task_resume() (ENGINE-052)
         reinvoc_prompts = [
-            msg for _, msg in mock_mgr.prompt_calls if "please continue with pytest" in msg
+            prompt
+            for prompt, _ws, _sid in mock_mgr.resume_calls
+            if "please continue with pytest" in prompt
         ]
         assert len(reinvoc_prompts) >= 1
 
@@ -5674,9 +5686,12 @@ class TestInterruptDoesNotCauseFailure:
 
         await asyncio.wait_for(exec_task, timeout=10)
 
-        # Verify prompt() was called with the user's message
+        # Verify run_task_resume() was called with the user's message
+        # (ENGINE-052: uses run_task_resume instead of prompt to handle dead ACP sessions)
         reinvoc_prompts = [
-            msg for _, msg in mock_mgr.prompt_calls if "switch to using pytest fixtures" in msg
+            prompt
+            for prompt, _ws, _sid in mock_mgr.resume_calls
+            if "switch to using pytest fixtures" in prompt
         ]
         assert (
             len(reinvoc_prompts) >= 1
@@ -5730,6 +5745,158 @@ class TestInterruptDoesNotCauseFailure:
         run = db.get_flow_run(flow_run_id)
         assert run is not None
         assert run.status == "completed"
+
+
+# ---------------------------------------------------------------------------
+# Tests: ENGINE-052 — Fix message re-invocation after interrupt (dead session)
+# ---------------------------------------------------------------------------
+
+
+class TestMessageReinvocationUsesResume:
+    """After interrupt + message, run_task_resume() is used instead of prompt().
+
+    ENGINE-052: The ACP session is destroyed when the subprocess exits.  After
+    interrupt, the re-invocation loop must call run_task_resume() (which spawns a
+    fresh subprocess and loads the persisted session) rather than prompt() (which
+    requires a live session).
+    """
+
+    async def test_reinvocation_uses_run_task_resume_not_prompt(self) -> None:
+        """After interrupt and message, run_task_resume() is called, not prompt()."""
+        db = _make_db()
+        _events, callback = _collect_events()
+        mock_mgr = InterruptableMockManager()
+        executor = FlowExecutor(db, callback, mock_mgr, max_concurrent=4)
+
+        flow = _make_linear_flow(node_names=["start", "work", "finish"])
+        mock_mgr.task_delays["work"] = 5.0
+
+        exec_task = asyncio.create_task(executor.execute(flow, {}, "/workspace"))
+
+        # Wait for "work" to start running
+        work_task_id: str | None = None
+        for _ in range(200):
+            await asyncio.sleep(0.01)
+            runs = db.list_flow_runs()
+            if runs:
+                tasks = db.list_task_executions(runs[0].id)
+                for t in tasks:
+                    if t.node_name == "work" and t.status == "running":
+                        work_task_id = t.id
+                        break
+            if work_task_id:
+                break
+        assert work_task_id is not None
+
+        # Interrupt and send a message
+        await executor.interrupt_task(work_task_id)
+        await asyncio.sleep(0.1)
+        await executor.send_message(work_task_id, "please use pytest")
+
+        await asyncio.wait_for(exec_task, timeout=10)
+
+        # run_task_resume must have been called (not prompt)
+        resume_prompts = [
+            prompt for prompt, _ws, _sid in mock_mgr.resume_calls if "please use pytest" in prompt
+        ]
+        assert (
+            len(resume_prompts) >= 1
+        ), "run_task_resume() was not called with user message after interrupt"
+
+        # prompt() must NOT have been called for the re-invocation
+        prompt_msgs = [msg for _sid, msg in mock_mgr.prompt_calls if "please use pytest" in msg]
+        assert (
+            len(prompt_msgs) == 0
+        ), "prompt() was called instead of run_task_resume() — dead session bug"
+
+    async def test_multiple_interrupt_message_cycles(self) -> None:
+        """Multiple interrupt -> message cycles work in sequence."""
+        db = _make_db()
+        _events, callback = _collect_events()
+        mock_mgr = InterruptableMockManager()
+        executor = FlowExecutor(db, callback, mock_mgr, max_concurrent=4)
+
+        flow = _make_linear_flow(node_names=["start", "work", "finish"])
+        mock_mgr.task_delays["work"] = 10.0
+
+        exec_task = asyncio.create_task(executor.execute(flow, {}, "/workspace"))
+
+        # Wait for "work" to start running
+        work_task_id: str | None = None
+        for _ in range(200):
+            await asyncio.sleep(0.01)
+            runs = db.list_flow_runs()
+            if runs:
+                tasks = db.list_task_executions(runs[0].id)
+                for t in tasks:
+                    if t.node_name == "work" and t.status == "running":
+                        work_task_id = t.id
+                        break
+            if work_task_id:
+                break
+        assert work_task_id is not None
+
+        # Cycle 1: interrupt + message
+        await executor.interrupt_task(work_task_id)
+        await asyncio.sleep(0.1)
+        await executor.send_message(work_task_id, "first correction")
+
+        # Wait for the re-invocation to complete (task goes back to running)
+        for _ in range(100):
+            await asyncio.sleep(0.01)
+            task = db.get_task_execution(work_task_id)
+            if task and task.status == "running":
+                break
+
+        # The re-invocation completed with exit_code=0 so the task should
+        # have completed.  Let the flow finish.
+        await asyncio.wait_for(exec_task, timeout=10)
+
+        # Verify at least one resume_call contained the first message
+        resume_msgs = [p for p, _ws, _sid in mock_mgr.resume_calls if "first correction" in p]
+        assert len(resume_msgs) >= 1, "First interrupt+message cycle did not trigger resume"
+
+    async def test_message_on_completed_prompt_uses_resume(self) -> None:
+        """Sending a message to a task whose initial prompt completed (non-interrupted)
+        also uses run_task_resume()."""
+        db = _make_db()
+        _events, callback = _collect_events()
+        mock_mgr = InterruptableMockManager()
+        executor = FlowExecutor(db, callback, mock_mgr, max_concurrent=4)
+
+        # 2 node flow: start -> finish, so "start" runs and we message it
+        flow = _make_linear_flow(node_names=["start", "work", "finish"])
+        # "work" takes a small delay to give us time to queue a message
+        mock_mgr.task_delays["work"] = 0.3
+
+        exec_task = asyncio.create_task(executor.execute(flow, {}, "/workspace"))
+
+        # Wait for "work" to start running
+        work_task_id: str | None = None
+        for _ in range(200):
+            await asyncio.sleep(0.01)
+            runs = db.list_flow_runs()
+            if runs:
+                tasks = db.list_task_executions(runs[0].id)
+                for t in tasks:
+                    if t.node_name == "work" and t.status == "running":
+                        work_task_id = t.id
+                        break
+            if work_task_id:
+                break
+        assert work_task_id is not None
+
+        # Queue a message while the task is running (it will be picked up
+        # after the initial prompt completes)
+        await executor.send_message(work_task_id, "extra instructions")
+
+        await asyncio.wait_for(exec_task, timeout=10)
+
+        # The re-invocation should use run_task_resume, not prompt
+        resume_msgs = [p for p, _ws, _sid in mock_mgr.resume_calls if "extra instructions" in p]
+        assert (
+            len(resume_msgs) >= 1
+        ), "run_task_resume() was not called for queued message after prompt completion"
 
 
 # ---------------------------------------------------------------------------
@@ -6341,3 +6508,274 @@ class TestCancelKillsHarness:
         # Verify a cancelled status event was emitted
         status_events = [e for e in events if e.type == EventType.FLOW_STATUS_CHANGED]
         assert any(e.payload.get("new_status") == "cancelled" for e in status_events)
+
+
+# ---------------------------------------------------------------------------
+# Tests: ENGINE-053 — restart_from_task for cancelled flows
+# ---------------------------------------------------------------------------
+
+
+class TestRestartFromTask:
+    """Test restart_from_task(): retry/skip on cancelled flows that have no active executor."""
+
+    async def test_retry_on_cancelled_flow_completes(self) -> None:
+        """Cancel a flow, then restart via retry_task. Flow should complete."""
+        db = _make_db()
+        events, callback = _collect_events()
+        mock_mgr = MockSubprocessManager()
+        mock_mgr.task_delays["work"] = 2.0
+        executor = FlowExecutor(db, callback, mock_mgr)
+
+        flow = _make_linear_flow()
+
+        # Run and cancel
+        exec_task = asyncio.create_task(executor.execute(flow, {}, "/workspace"))
+        await asyncio.sleep(0.15)
+        runs = db.list_flow_runs()
+        assert runs
+        flow_run_id = runs[0].id
+        await executor.cancel(flow_run_id)
+        await exec_task
+
+        run = db.get_flow_run(flow_run_id)
+        assert run is not None
+        assert run.status == "cancelled"
+
+        # Find the failed "work" task
+        tasks = db.list_task_executions(flow_run_id)
+        failed_work = [t for t in tasks if t.node_name == "work" and t.status == "failed"]
+        assert len(failed_work) >= 1
+        failed_task_id = failed_work[0].id
+
+        # Remove the delay so retry completes quickly
+        mock_mgr.task_delays.clear()
+
+        # Create a fresh executor (simulating what the server would do)
+        events.clear()
+        new_executor = FlowExecutor(db, callback, mock_mgr)
+        await new_executor.restart_from_task(
+            flow=flow,
+            flow_run_id=flow_run_id,
+            task_execution_id=failed_task_id,
+            action="retry",
+        )
+
+        # Flow should be completed
+        run = db.get_flow_run(flow_run_id)
+        assert run is not None
+        assert run.status == "completed", f"Expected 'completed' but got '{run.status}'"
+
+        # Verify status transition event: cancelled -> running
+        status_events = [e for e in events if e.type == EventType.FLOW_STATUS_CHANGED]
+        assert any(
+            e.payload.get("old_status") == "cancelled" and e.payload.get("new_status") == "running"
+            for e in status_events
+        ), "Expected cancelled -> running transition event"
+
+    async def test_retry_creates_new_generation(self) -> None:
+        """Retry via restart_from_task creates a new task execution with incremented generation."""
+        db = _make_db()
+        _events, callback = _collect_events()
+        mock_mgr = MockSubprocessManager()
+        mock_mgr.task_delays["work"] = 2.0
+        executor = FlowExecutor(db, callback, mock_mgr)
+
+        flow = _make_linear_flow()
+
+        # Run and cancel
+        exec_task = asyncio.create_task(executor.execute(flow, {}, "/workspace"))
+        await asyncio.sleep(0.15)
+        runs = db.list_flow_runs()
+        assert runs
+        flow_run_id = runs[0].id
+        await executor.cancel(flow_run_id)
+        await exec_task
+
+        # Find the failed "work" task
+        tasks = db.list_task_executions(flow_run_id)
+        failed_work = [t for t in tasks if t.node_name == "work" and t.status == "failed"]
+        assert len(failed_work) >= 1
+        old_gen = failed_work[0].generation
+
+        mock_mgr.task_delays.clear()
+        new_executor = FlowExecutor(db, callback, mock_mgr)
+        await new_executor.restart_from_task(
+            flow=flow,
+            flow_run_id=flow_run_id,
+            task_execution_id=failed_work[0].id,
+            action="retry",
+        )
+
+        # Find the new "work" task execution
+        tasks = db.list_task_executions(flow_run_id)
+        work_tasks = [t for t in tasks if t.node_name == "work"]
+        assert len(work_tasks) >= 2, "Expected at least 2 work task executions (original + retry)"
+        new_gen = max(t.generation for t in work_tasks)
+        assert new_gen > old_gen, f"Expected generation > {old_gen}, got {new_gen}"
+
+    async def test_skip_on_cancelled_flow_continues(self) -> None:
+        """Cancel a flow, then restart via skip. Subsequent nodes should execute."""
+        db = _make_db()
+        _events, callback = _collect_events()
+        mock_mgr = MockSubprocessManager()
+        mock_mgr.task_delays["work"] = 2.0
+        executor = FlowExecutor(db, callback, mock_mgr)
+
+        flow = _make_linear_flow()
+
+        # Run and cancel
+        exec_task = asyncio.create_task(executor.execute(flow, {}, "/workspace"))
+        await asyncio.sleep(0.15)
+        runs = db.list_flow_runs()
+        assert runs
+        flow_run_id = runs[0].id
+        await executor.cancel(flow_run_id)
+        await exec_task
+
+        # Find the failed "work" task
+        tasks = db.list_task_executions(flow_run_id)
+        failed_work = [t for t in tasks if t.node_name == "work" and t.status == "failed"]
+        assert len(failed_work) >= 1
+
+        mock_mgr.task_delays.clear()
+        new_executor = FlowExecutor(db, callback, mock_mgr)
+        await new_executor.restart_from_task(
+            flow=flow,
+            flow_run_id=flow_run_id,
+            task_execution_id=failed_work[0].id,
+            action="skip",
+        )
+
+        # The skipped task's successor ("finish") should have been created and executed
+        run = db.get_flow_run(flow_run_id)
+        assert run is not None
+        assert run.status == "completed", f"Expected 'completed' but got '{run.status}'"
+
+        # The original work task should be "skipped"
+        orig_task = db.get_task_execution(failed_work[0].id)
+        assert orig_task is not None
+        assert orig_task.status == "skipped"
+
+    async def test_flow_status_transitions_cancelled_running_completed(self) -> None:
+        """Flow status goes: cancelled -> running -> completed."""
+        db = _make_db()
+        events, callback = _collect_events()
+        mock_mgr = MockSubprocessManager()
+        mock_mgr.task_delays["work"] = 2.0
+        executor = FlowExecutor(db, callback, mock_mgr)
+
+        flow = _make_linear_flow()
+
+        # Run and cancel
+        exec_task = asyncio.create_task(executor.execute(flow, {}, "/workspace"))
+        await asyncio.sleep(0.15)
+        runs = db.list_flow_runs()
+        assert runs
+        flow_run_id = runs[0].id
+        await executor.cancel(flow_run_id)
+        await exec_task
+
+        tasks = db.list_task_executions(flow_run_id)
+        failed_work = [t for t in tasks if t.node_name == "work" and t.status == "failed"]
+
+        events.clear()
+        mock_mgr.task_delays.clear()
+        new_executor = FlowExecutor(db, callback, mock_mgr)
+        await new_executor.restart_from_task(
+            flow=flow,
+            flow_run_id=flow_run_id,
+            task_execution_id=failed_work[0].id,
+            action="retry",
+        )
+
+        run = db.get_flow_run(flow_run_id)
+        assert run is not None
+        assert run.status == "completed"
+
+        # Verify the status transitions in events
+        status_events = [e for e in events if e.type == EventType.FLOW_STATUS_CHANGED]
+        statuses = [(e.payload["old_status"], e.payload["new_status"]) for e in status_events]
+        assert (
+            "cancelled",
+            "running",
+        ) in statuses, f"Expected cancelled->running transition, got: {statuses}"
+
+    async def test_invalid_action_raises(self) -> None:
+        """Invalid action (not 'retry' or 'skip') raises ValueError."""
+        db = _make_db()
+        _events, callback = _collect_events()
+        mock_mgr = MockSubprocessManager()
+        executor = FlowExecutor(db, callback, mock_mgr)
+
+        flow = _make_linear_flow()
+
+        import pytest
+
+        with pytest.raises(ValueError, match="Invalid action"):
+            await executor.restart_from_task(
+                flow=flow,
+                flow_run_id="nonexistent",
+                task_execution_id="nonexistent",
+                action="invalid",
+            )
+
+    async def test_nonexistent_flow_run_raises(self) -> None:
+        """restart_from_task with non-existent flow_run_id raises ValueError."""
+        db = _make_db()
+        _events, callback = _collect_events()
+        mock_mgr = MockSubprocessManager()
+        executor = FlowExecutor(db, callback, mock_mgr)
+
+        flow = _make_linear_flow()
+
+        import pytest
+
+        with pytest.raises(ValueError, match="Flow run not found"):
+            await executor.restart_from_task(
+                flow=flow,
+                flow_run_id="nonexistent-run-id",
+                task_execution_id="nonexistent-task-id",
+                action="retry",
+            )
+
+    async def test_subsequent_nodes_run_after_retry(self) -> None:
+        """After retrying a cancelled task, subsequent nodes in the flow execute normally."""
+        db = _make_db()
+        _events, callback = _collect_events()
+        mock_mgr = MockSubprocessManager()
+        mock_mgr.task_delays["work"] = 2.0
+        executor = FlowExecutor(db, callback, mock_mgr)
+
+        flow = _make_linear_flow(node_names=["start", "work", "verify", "finish"])
+
+        exec_task = asyncio.create_task(executor.execute(flow, {}, "/workspace"))
+        await asyncio.sleep(0.15)
+        runs = db.list_flow_runs()
+        assert runs
+        flow_run_id = runs[0].id
+        await executor.cancel(flow_run_id)
+        await exec_task
+
+        tasks = db.list_task_executions(flow_run_id)
+        failed_work = [t for t in tasks if t.node_name == "work" and t.status == "failed"]
+        assert len(failed_work) >= 1
+
+        mock_mgr.task_delays.clear()
+        new_executor = FlowExecutor(db, callback, mock_mgr)
+        await new_executor.restart_from_task(
+            flow=flow,
+            flow_run_id=flow_run_id,
+            task_execution_id=failed_work[0].id,
+            action="retry",
+        )
+
+        run = db.get_flow_run(flow_run_id)
+        assert run is not None
+        assert run.status == "completed"
+
+        # Verify that "verify" and "finish" nodes were also executed
+        tasks = db.list_task_executions(flow_run_id)
+        verify_tasks = [t for t in tasks if t.node_name == "verify" and t.status == "completed"]
+        finish_tasks = [t for t in tasks if t.node_name == "finish" and t.status == "completed"]
+        assert len(verify_tasks) >= 1, "Verify node did not execute after retry"
+        assert len(finish_tasks) >= 1, "Finish node did not execute after retry"
