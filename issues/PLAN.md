@@ -353,6 +353,8 @@
 | Issue  | Title                                                      | Domain | Priority | Depends On | Status |
 | ------ | ---------------------------------------------------------- | ------ | -------- | ---------- | ------ |
 | UI-061 | Replace Clear and Show all buttons with Verbose toggle     | ui     | P1       | —          | done |
+| UI-062 | Show harness provider in flow detail + document config     | ui     | P1       | —          | done |
+| UI-063 | Make tool calls verbose-only and show full tool details    | ui     | P1       | —          | done |
 
 
 ---
