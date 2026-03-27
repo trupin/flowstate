@@ -1,4 +1,4 @@
-import { useState, useCallback } from 'react';
+import { useState, useCallback, useEffect, useRef } from 'react';
 import {
   BaseEdge,
   EdgeLabelRenderer,
@@ -29,6 +29,21 @@ export function ConditionalEdge({
   data,
 }: EdgeProps<ConditionalEdgeType>) {
   const [expanded, setExpanded] = useState(false);
+  const containerRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (!expanded) return;
+    const handleClickOutside = (e: MouseEvent) => {
+      if (
+        containerRef.current &&
+        !containerRef.current.contains(e.target as Node)
+      ) {
+        setExpanded(false);
+      }
+    };
+    document.addEventListener('mousedown', handleClickOutside);
+    return () => document.removeEventListener('mousedown', handleClickOutside);
+  }, [expanded]);
 
   const [edgePath, labelX, labelY] = getSmoothStepPath({
     sourceX,
@@ -61,6 +76,7 @@ export function ConditionalEdge({
       {condition && (
         <EdgeLabelRenderer>
           <div
+            ref={containerRef}
             style={{
               position: 'absolute',
               transform: `translate(-50%, -50%) translate(${String(labelX)}px,${String(labelY)}px)`,
