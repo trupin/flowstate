@@ -131,6 +131,14 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None]:
     ws_hub = WebSocketHub()
     ws_hub.set_run_manager(run_manager)
     ws_hub.set_db(db)
+    harness_mgr = getattr(app.state, "harness_manager", None)
+    ws_hub.set_executor_config(
+        harness=app.state.harness,
+        max_concurrent=config.max_concurrent_tasks,
+        worktree_cleanup=config.worktree_cleanup,
+        harness_mgr=harness_mgr,
+        server_base_url=f"http://{config.server_host}:{config.server_port}",
+    )
     app.state.ws_hub = ws_hub
 
     # Initialize flow registry

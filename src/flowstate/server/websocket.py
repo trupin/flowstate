@@ -17,6 +17,7 @@ from starlette.websockets import WebSocket, WebSocketDisconnect
 
 if TYPE_CHECKING:
     from flowstate.engine.events import FlowEvent
+    from flowstate.engine.harness import Harness, HarnessManager
     from flowstate.server.run_manager import RunManager
     from flowstate.state.repository import FlowstateDB
 
@@ -49,6 +50,12 @@ class WebSocketHub:
         self._db: FlowstateDB | None = None
         # Background tasks (prevent garbage collection)
         self._background_tasks: set[asyncio.Task[None]] = set()
+        # Executor construction config (set via set_executor_config)
+        self._harness: Harness | None = None
+        self._max_concurrent: int = 4
+        self._worktree_cleanup: bool = True
+        self._harness_mgr: HarnessManager | None = None
+        self._server_base_url: str | None = None
 
     def set_run_manager(self, run_manager: RunManager) -> None:
         """Set the RunManager reference for control action delegation."""
@@ -57,6 +64,21 @@ class WebSocketHub:
     def set_db(self, db: FlowstateDB) -> None:
         """Set the FlowstateDB reference for event replay on reconnection."""
         self._db = db
+
+    def set_executor_config(
+        self,
+        harness: Harness,
+        max_concurrent: int = 4,
+        worktree_cleanup: bool = True,
+        harness_mgr: HarnessManager | None = None,
+        server_base_url: str | None = None,
+    ) -> None:
+        """Store config needed to construct FlowExecutor for restart_from_task."""
+        self._harness = harness
+        self._max_concurrent = max_concurrent
+        self._worktree_cleanup = worktree_cleanup
+        self._harness_mgr = harness_mgr
+        self._server_base_url = server_base_url
 
     @property
     def subscriptions(self) -> dict[str, set[WebSocket]]:
@@ -190,7 +212,7 @@ class WebSocketHub:
                 )
                 return
             task_id = payload.get("task_execution_id")
-            await self._handle_task_control(action, flow_run_id, task_id)
+            await self._handle_task_control(action, flow_run_id, task_id, websocket)
         else:
             await self._send_safe(
                 websocket,
@@ -242,14 +264,46 @@ class WebSocketHub:
             await executor.cancel(actual_run_id)
 
     async def _handle_task_control(
-        self, action: str, flow_run_id: str, task_id: str | None
+        self,
+        action: str,
+        flow_run_id: str,
+        task_id: str | None,
+        websocket: WebSocket | None = None,
     ) -> None:
-        """Delegate retry_task/skip_task to the FlowExecutor."""
-        if not self._run_manager or not task_id:
+        """Delegate retry_task/skip_task to the FlowExecutor.
+
+        If no active executor exists and the run is in a terminal state,
+        attempts to reconstruct an executor via ``restart_from_task()``.
+        Sends error responses back to the client instead of silently failing.
+        """
+        if not self._run_manager:
             return
+        if not task_id:
+            if websocket:
+                await self._send_safe(
+                    websocket,
+                    {
+                        "type": "error",
+                        "payload": {"message": "task_execution_id is required"},
+                    },
+                )
+            return
+
         executor = self._run_manager.get_executor(flow_run_id)
         if not executor:
+            # Attempt restart for terminal flows
+            restart_action = "retry" if action == "retry_task" else "skip"
+            ok = await self._try_restart_from_task(flow_run_id, task_id, restart_action, websocket)
+            if not ok and websocket:
+                await self._send_safe(
+                    websocket,
+                    {
+                        "type": "error",
+                        "payload": {"message": f"No active executor for run {flow_run_id}"},
+                    },
+                )
             return
+
         try:
             if action == "retry_task":
                 await executor.retry_task(flow_run_id, task_id)
@@ -257,6 +311,67 @@ class WebSocketHub:
                 await executor.skip_task(flow_run_id, task_id)
         except (ValueError, RuntimeError) as e:
             logger.warning("Task control failed: %s", e)
+            if websocket:
+                await self._send_safe(
+                    websocket,
+                    {
+                        "type": "error",
+                        "payload": {"message": f"Task control failed: {e}"},
+                    },
+                )
+
+    async def _try_restart_from_task(
+        self,
+        flow_run_id: str,
+        task_id: str,
+        action: str,
+        websocket: WebSocket | None = None,
+    ) -> bool:
+        """Attempt to reconstruct an executor for a terminal flow run.
+
+        Returns True if restart was successfully initiated, False otherwise.
+        """
+        if not self._db or not self._run_manager or not self._harness:
+            return False
+
+        run = self._db.get_flow_run(flow_run_id)
+        if not run or run.status not in ("cancelled", "failed", "budget_exceeded"):
+            return False
+
+        flow_def = self._db.get_flow_definition(run.flow_definition_id)
+        if not flow_def:
+            return False
+
+        try:
+            from flowstate.dsl.parser import parse_flow
+            from flowstate.engine.executor import FlowExecutor
+
+            flow_ast = parse_flow(flow_def.source_dsl)
+
+            executor = FlowExecutor(
+                db=self._db,
+                event_callback=self.on_flow_event,
+                harness=self._harness,
+                max_concurrent=self._max_concurrent,
+                worktree_cleanup=self._worktree_cleanup,
+                harness_mgr=self._harness_mgr,
+                server_base_url=self._server_base_url,
+            )
+
+            restart_coro = executor.restart_from_task(flow_ast, flow_run_id, task_id, action)
+            await self._run_manager.start_run(flow_run_id, executor, restart_coro)
+            return True
+        except Exception as e:
+            logger.warning("Failed to restart flow run %s: %s", flow_run_id, e)
+            if websocket:
+                await self._send_safe(
+                    websocket,
+                    {
+                        "type": "error",
+                        "payload": {"message": f"Failed to restart flow: {e}"},
+                    },
+                )
+            return False
 
     async def _replay_events(
         self, websocket: WebSocket, flow_run_id: str, after_timestamp: str

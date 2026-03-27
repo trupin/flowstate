@@ -654,10 +654,89 @@ async def cancel_run(request: Request, run_id: str) -> dict[str, str]:
     return {"status": "cancelled"}
 
 
+def _create_restart_executor(request: Request) -> FlowExecutor:
+    """Create a new FlowExecutor for restarting a terminal flow run."""
+    db = _get_db(request)
+    config = request.app.state.config
+    harness = request.app.state.harness
+    ws_hub = request.app.state.ws_hub
+    harness_mgr = _get_harness_mgr(request)
+
+    return FlowExecutor(
+        db=db,
+        event_callback=ws_hub.on_flow_event,
+        harness=harness,
+        max_concurrent=config.max_concurrent_tasks,
+        worktree_cleanup=config.worktree_cleanup,
+        harness_mgr=harness_mgr,
+        server_base_url=f"http://{config.server_host}:{config.server_port}",
+    )
+
+
+async def _restart_from_task(
+    request: Request,
+    run_id: str,
+    task_id: str,
+    action: str,
+) -> None:
+    """Reconstruct an executor for a terminal flow run and restart from a task.
+
+    Looks up the flow definition from the DB, parses the DSL, creates a new
+    FlowExecutor, calls ``restart_from_task()``, and registers it with the
+    RunManager as a background task.
+
+    Raises:
+        FlowstateError(404): If the run or flow definition is not found.
+        FlowstateError(409): If the run is not in a restartable state.
+        FlowstateError(400): If the flow DSL cannot be parsed.
+    """
+    db = _get_db(request)
+    run = db.get_flow_run(run_id)
+    if not run:
+        raise FlowstateError(f"Run '{run_id}' not found", status_code=404)
+    if run.status not in ("cancelled", "failed", "budget_exceeded"):
+        raise FlowstateError(
+            f"Run '{run_id}' is not in a restartable state (status: {run.status})",
+            status_code=409,
+        )
+
+    flow_def = db.get_flow_definition(run.flow_definition_id)
+    if not flow_def:
+        raise FlowstateError(
+            f"Flow definition for run '{run_id}' not found",
+            status_code=404,
+        )
+
+    try:
+        flow_ast = parse_flow(flow_def.source_dsl)
+    except Exception as e:
+        raise FlowstateError(
+            f"Failed to parse flow definition: {e}",
+            status_code=400,
+        ) from e
+
+    executor = _create_restart_executor(request)
+    run_manager = _get_run_manager(request)
+
+    # restart_from_task is both the setup and the execution loop
+    restart_coro = executor.restart_from_task(flow_ast, run_id, task_id, action)
+    await run_manager.start_run(run_id, executor, restart_coro)
+
+
 @router.post("/runs/{run_id}/tasks/{task_id}/retry")
 async def retry_task(request: Request, run_id: str, task_id: str) -> dict[str, str]:
-    """Retry a failed task execution."""
-    executor = _get_executor_or_error(request, run_id)
+    """Retry a failed task execution.
+
+    If no active executor exists (flow is in a terminal state), reconstructs
+    one using ``restart_from_task()`` from ENGINE-053.
+    """
+    run_manager = _get_run_manager(request)
+    executor = run_manager.get_executor(run_id)
+
+    if executor is None:
+        await _restart_from_task(request, run_id, task_id, "retry")
+        return {"status": "running"}
+
     flow_run_id = getattr(executor, "_flow_run_id", None) or run_id
     try:
         await executor.retry_task(flow_run_id, task_id)
@@ -668,8 +747,18 @@ async def retry_task(request: Request, run_id: str, task_id: str) -> dict[str, s
 
 @router.post("/runs/{run_id}/tasks/{task_id}/skip")
 async def skip_task(request: Request, run_id: str, task_id: str) -> dict[str, str]:
-    """Skip a failed task execution."""
-    executor = _get_executor_or_error(request, run_id)
+    """Skip a failed task execution.
+
+    If no active executor exists (flow is in a terminal state), reconstructs
+    one using ``restart_from_task()`` from ENGINE-053.
+    """
+    run_manager = _get_run_manager(request)
+    executor = run_manager.get_executor(run_id)
+
+    if executor is None:
+        await _restart_from_task(request, run_id, task_id, "skip")
+        return {"status": "skipped"}
+
     flow_run_id = getattr(executor, "_flow_run_id", None) or run_id
     try:
         await executor.skip_task(flow_run_id, task_id)
