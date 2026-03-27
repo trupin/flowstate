@@ -246,8 +246,13 @@ def build_task_management_instructions(
 
     lines = [
         "\n\n## Task Management",
-        "You have a subtask management system. Use it to break your work into "
-        "subtasks and track progress.",
+        "You have a subtask management system. Break your work into subtasks "
+        "and track each one through its full lifecycle: create → `in_progress` → `done`.",
+        "",
+        "For every subtask:",
+        "1. **Create** it before you start the work.",
+        "2. **Mark it `in_progress`** when you begin working on it.",
+        "3. **Mark it `done`** when the work is complete.",
         "",
         "### Create a subtask",
         f"curl -s -X POST {task_url} \\",
@@ -276,8 +281,12 @@ def build_task_management_instructions(
     lines.extend(
         [
             "",
-            "Note: Subtask tracking is optional. If any API call fails, "
-            "continue your main work — do not retry or debug the subtask API.",
+            "### Before you exit",
+            "Before finishing your work, list your subtasks and confirm every one "
+            "is marked `done`. Update any that are not `done`.",
+            "",
+            "Note: If a subtask API call fails, continue your main work — "
+            "do not retry or debug the API. But always attempt to update subtask status.",
         ]
     )
 

@@ -1498,6 +1498,109 @@ class TestCycleNoneContext:
         assert "Judge Feedback" not in implement_gen2.prompt_text
 
 
+class TestUnconditionalEdgeCycleGeneration:
+    """Unconditional edge cycle re-entry increments generation (ENGINE-055)."""
+
+    async def test_unconditional_cycle_increments_generation(self) -> None:
+        """When a node is re-entered via an unconditional edge, generation should increment."""
+        db = _make_db()
+        _events, callback = _collect_events()
+
+        # Custom mock that fails on the Nth call to a node, causing on_error=pause.
+        call_counts: dict[str, int] = {}
+
+        class FailOnSecondCallManager(MockSubprocessManager):
+            """Fails when 'alpha' is called a second time so the cycle pauses."""
+
+            async def run_task(
+                self_inner,
+                prompt: str,
+                workspace: str,
+                session_id: str,
+                *,
+                skip_permissions: bool = False,
+            ) -> AsyncGenerator[StreamEvent, None]:
+                if "Do the alpha step" in prompt:
+                    call_counts["alpha"] = call_counts.get("alpha", 0) + 1
+                    if call_counts["alpha"] >= 2:
+                        yield StreamEvent(
+                            type=StreamEventType.SYSTEM,
+                            content={
+                                "event": "process_exit",
+                                "exit_code": 1,
+                                "stderr": "Intentional failure",
+                            },
+                            raw="Process exited with code 1",
+                        )
+                        return
+                yield StreamEvent(
+                    type=StreamEventType.SYSTEM,
+                    content={"event": "process_exit", "exit_code": 0, "stderr": ""},
+                    raw="Process exited with code 0",
+                )
+
+        mock_mgr = FailOnSecondCallManager()
+
+        # Build a cyclic flow: entry -> alpha -> beta -> alpha (all unconditional)
+        nodes = {
+            "entry": Node(name="entry", node_type=NodeType.ENTRY, prompt="Do the entry step"),
+            "alpha": Node(name="alpha", node_type=NodeType.TASK, prompt="Do the alpha step"),
+            "beta": Node(name="beta", node_type=NodeType.TASK, prompt="Do the beta step"),
+        }
+        edges = (
+            Edge(edge_type=EdgeType.UNCONDITIONAL, source="entry", target="alpha"),
+            Edge(edge_type=EdgeType.UNCONDITIONAL, source="alpha", target="beta"),
+            Edge(edge_type=EdgeType.UNCONDITIONAL, source="beta", target="alpha"),
+        )
+        flow = Flow(
+            name="unconditional-cycle",
+            budget_seconds=3600,
+            on_error=ErrorPolicy.PAUSE,
+            context=ContextMode.HANDOFF,
+            workspace="/workspace",
+            nodes=nodes,
+            edges=edges,
+        )
+
+        executor = FlowExecutor(db, callback, mock_mgr)
+        # Flow will pause when alpha fails on 2nd call; use _execute_until_paused
+        flow_run_id, exec_task = await _execute_until_paused(executor, flow, {}, "/workspace", db)
+
+        tasks = db.list_task_executions(flow_run_id)
+        alpha_tasks = [t for t in tasks if t.node_name == "alpha"]
+
+        # alpha should have been created twice: generation 1 and generation 2
+        assert len(alpha_tasks) == 2
+        generations = sorted(t.generation for t in alpha_tasks)
+        assert generations == [1, 2], f"Expected generations [1, 2] but got {generations}"
+
+        # beta should have run once with generation 1
+        beta_tasks = [t for t in tasks if t.node_name == "beta"]
+        assert len(beta_tasks) == 1
+        assert beta_tasks[0].generation == 1
+
+        # Clean up: cancel the executor to let the background task finish
+        await executor.cancel(flow_run_id)
+        with contextlib.suppress(asyncio.CancelledError):
+            await exec_task
+
+    async def test_non_cyclic_unconditional_uses_generation_one(self) -> None:
+        """Non-cyclic unconditional edges should still use generation 1."""
+        db = _make_db()
+        _events, callback = _collect_events()
+        mock_mgr = MockSubprocessManager()
+        executor = FlowExecutor(db, callback, mock_mgr)
+
+        flow = _make_linear_flow(node_names=["start", "work", "finish"])
+        flow_run_id = await executor.execute(flow, {}, "/workspace")
+
+        tasks = db.list_task_executions(flow_run_id)
+        for task in tasks:
+            assert (
+                task.generation == 1
+            ), f"Node {task.node_name} has generation {task.generation}, expected 1"
+
+
 class TestEdgeTransitionRecorded:
     """After a conditional transition, verify edge_transitions record in DB."""
 
@@ -6236,7 +6339,7 @@ class TestBuildTaskManagementInstructions:
             run_id="r1",
             task_execution_id="t1",
         )
-        assert "optional" in result.lower()
+        assert "api call fails" in result.lower()
         assert "continue" in result.lower()
         assert "do not retry" in result.lower()
 
@@ -6248,8 +6351,59 @@ class TestBuildTaskManagementInstructions:
             task_execution_id="t1",
             predecessor_task_execution_id="t0",
         )
-        assert "optional" in result.lower()
+        assert "api call fails" in result.lower()
         assert "continue" in result.lower()
+
+    def test_lifecycle_instructions_present(self) -> None:
+        """Instructions describe the full subtask lifecycle: create -> in_progress -> done."""
+        result = build_task_management_instructions(
+            server_base_url="http://localhost:9000",
+            run_id="r1",
+            task_execution_id="t1",
+        )
+        assert "in_progress" in result
+        assert "`done`" in result
+        assert "lifecycle" in result.lower()
+
+    def test_before_you_exit_section_present(self) -> None:
+        """Instructions include a 'Before you exit' section reminding agents to complete subtasks."""
+        result = build_task_management_instructions(
+            server_base_url="http://localhost:9000",
+            run_id="r1",
+            task_execution_id="t1",
+        )
+        assert "### Before you exit" in result
+        assert "done" in result.lower()
+        # Should tell agent to list and update subtasks before finishing
+        assert "list" in result.lower()
+
+    def test_before_you_exit_with_predecessor(self) -> None:
+        """'Before you exit' section is present even when predecessor is included."""
+        result = build_task_management_instructions(
+            server_base_url="http://localhost:9000",
+            run_id="r1",
+            task_execution_id="t1",
+            predecessor_task_execution_id="t0",
+        )
+        assert "### Before you exit" in result
+
+    def test_optional_not_in_tracking_discipline(self) -> None:
+        """The word 'optional' should not appear — tracking discipline is not optional."""
+        result = build_task_management_instructions(
+            server_base_url="http://localhost:9000",
+            run_id="r1",
+            task_execution_id="t1",
+        )
+        assert "optional" not in result.lower()
+
+    def test_resilience_note_encourages_status_updates(self) -> None:
+        """The resilience note tells agents to always attempt status updates."""
+        result = build_task_management_instructions(
+            server_base_url="http://localhost:9000",
+            run_id="r1",
+            task_execution_id="t1",
+        )
+        assert "always attempt to update subtask status" in result.lower()
 
 
 def _make_tasks_flow(
