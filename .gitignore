@@ -32,6 +32,8 @@ flowstate.db
 .claude/plans/
 .claude/handoffs/
 .claude/settings.local.json
+.claude/project.configured
+.claude/scheduled_tasks.lock
 
 # IDE
 .vscode/
