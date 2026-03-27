@@ -303,7 +303,7 @@
 
 | Issue      | Title                                                     | Domain | Priority | Depends On  | Status |
 | ---------- | --------------------------------------------------------- | ------ | -------- | ----------- | ------ |
-| UI-048     | Fix node generation badges missing for some nodes in cycle flows | ui | P1  | —           | todo   |
+| UI-048     | Fix node generation badges missing for some nodes in cycle flows | ui | P1  | —           | done        |
 
 
 ---

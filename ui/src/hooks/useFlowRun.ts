@@ -262,7 +262,12 @@ export function useFlowRun(runId: string): UseFlowRunReturn {
       .then((detail) => {
         setRun(detail);
         const taskMap = new Map<string, TaskExecution>();
-        detail.tasks.forEach((t) => taskMap.set(t.node_name, t));
+        detail.tasks.forEach((t) => {
+          const existing = taskMap.get(t.node_name);
+          if (!existing || t.generation > existing.generation) {
+            taskMap.set(t.node_name, t);
+          }
+        });
         setTasks(taskMap);
         setEdges(detail.edges);
         // Sync running task names from fetched data
