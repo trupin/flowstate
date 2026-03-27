@@ -35,9 +35,9 @@
 
 .conditional-edge-popover {
   position: absolute;
-  bottom: 28px;
-  left: 50%;
-  transform: translateX(-50%);
+  top: 50%;
+  left: 28px;
+  transform: translateY(-50%);
   max-width: 300px;
   min-width: 120px;
   background: var(--bg-secondary);
