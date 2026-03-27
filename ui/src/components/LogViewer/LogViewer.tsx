@@ -1,7 +1,12 @@
 import { useRef, useEffect, useState, useMemo, useCallback } from 'react';
 import Markdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
-import type { LogEntry, NodeType, TaskStatus } from '../../api/types';
+import type {
+  LogEntry,
+  NodeType,
+  TaskExecution,
+  TaskStatus,
+} from '../../api/types';
 import { ApiError, api } from '../../api/client';
 import { ClickablePath } from '../ClickablePath';
 import { ToolCallBlock } from './ToolCallBlock';
@@ -33,6 +38,9 @@ export interface LogViewerProps {
   runId?: string;
   taskExecutionId?: string;
   subtaskVersion?: number;
+  executions?: TaskExecution[];
+  selectedExecutionIndex?: number;
+  onExecutionSelect?: (index: number) => void;
 }
 
 function formatTimestamp(iso: string): string {
@@ -829,6 +837,9 @@ export function LogViewer({
   runId,
   taskExecutionId,
   subtaskVersion = 0,
+  executions,
+  selectedExecutionIndex,
+  onExecutionSelect,
 }: LogViewerProps) {
   const { subtasks, loading: subtasksLoading } = useSubtasks(
     runId,
@@ -1017,6 +1028,19 @@ export function LogViewer({
       </div>
       {showDetails && taskExecution && (
         <NodeDetailsPanel execution={taskExecution} />
+      )}
+      {executions && executions.length > 1 && (
+        <div className="execution-tabs">
+          {executions.map((exec, i) => (
+            <button
+              key={exec.id}
+              className={`execution-tab ${i === selectedExecutionIndex ? 'active' : ''}`}
+              onClick={() => onExecutionSelect?.(i)}
+            >
+              Run {i + 1}
+            </button>
+          ))}
+        </div>
       )}
       {taskExecutionId && (
         <SubtaskProgress subtasks={subtasks} loading={subtasksLoading} />

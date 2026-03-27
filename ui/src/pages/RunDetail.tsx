@@ -10,6 +10,7 @@ import { ResultsModal } from '../components/ResultsModal/ResultsModal';
 import { expandEdges } from '../utils/edges';
 import { api } from '../api/client';
 import type {
+  TaskExecution,
   TaskStatus,
   OrchestratorInfo,
   FlowRunDetail as FlowRunDetailType,
@@ -25,6 +26,7 @@ export function RunDetail() {
   const {
     run,
     tasks,
+    allTaskExecutions,
     edges,
     selectedTask,
     selectTask,
@@ -44,6 +46,20 @@ export function RunDetail() {
   const effectiveTask = selectedTask ?? autoSelectedTask;
   const isAutoFollow = !isManualSelection && effectiveTask !== null;
   const showFollowButton = isManualSelection && runningTaskNames.length > 0;
+
+  // Execution picker: which execution index is selected for nodes with multiple runs
+  const [selectedExecutionIndex, setSelectedExecutionIndex] = useState<
+    number | null
+  >(null);
+
+  // Reset execution picker when the user switches to a different node
+  const prevEffectiveTaskRef = useRef(effectiveTask);
+  useEffect(() => {
+    if (prevEffectiveTaskRef.current !== effectiveTask) {
+      setSelectedExecutionIndex(null);
+      prevEffectiveTaskRef.current = effectiveTask;
+    }
+  }, [effectiveTask]);
 
   const [showOrchestrator, setShowOrchestrator] = useState(false);
   const [orchestrators, setOrchestrators] = useState<OrchestratorInfo[]>([]);
@@ -159,10 +175,18 @@ export function RunDetail() {
     return map;
   }, [tasks]);
 
-  // Get logs for the effective task (manual or auto-selected)
-  const selectedTaskExecution = effectiveTask
-    ? tasks.get(effectiveTask)
-    : undefined;
+  // Get all executions for the selected node, and pick the active one
+  const nodeExecutions: TaskExecution[] = useMemo(
+    () => (effectiveTask ? (allTaskExecutions.get(effectiveTask) ?? []) : []),
+    [effectiveTask, allTaskExecutions],
+  );
+  const selectedTaskExecution: TaskExecution | undefined = useMemo(
+    () =>
+      nodeExecutions.length > 0
+        ? nodeExecutions[selectedExecutionIndex ?? nodeExecutions.length - 1]
+        : undefined,
+    [nodeExecutions, selectedExecutionIndex],
+  );
   const selectedLogs = selectedTaskExecution
     ? (logs.get(selectedTaskExecution.id) ?? [])
     : [];
@@ -401,6 +425,11 @@ export function RunDetail() {
               runId={id}
               taskExecutionId={selectedTaskExecution?.id}
               subtaskVersion={subtaskVersion}
+              executions={nodeExecutions}
+              selectedExecutionIndex={
+                selectedExecutionIndex ?? nodeExecutions.length - 1
+              }
+              onExecutionSelect={setSelectedExecutionIndex}
             />
           )}
         </div>
