@@ -1018,7 +1018,7 @@ export function LogViewer({
       {showDetails && taskExecution && (
         <NodeDetailsPanel execution={taskExecution} />
       )}
-      {showDetails && taskExecutionId && (
+      {taskExecutionId && (
         <SubtaskProgress subtasks={subtasks} loading={subtasksLoading} />
       )}
       <div
