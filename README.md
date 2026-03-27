@@ -1,6 +1,10 @@
-# Flowstate
+<p align="center">
+  <img src="logo.svg" alt="Flowstate" width="520">
+</p>
 
-State-machine orchestration for AI agents. Define workflows as directed graphs where nodes are tasks executed by Claude Code subprocesses and edges are transitions evaluated by judge agents.
+<p align="center">
+  State-machine orchestration for AI agents. Define workflows as directed graphs where nodes are tasks executed by Claude Code subprocesses and edges are transitions evaluated by judge agents.
+</p>
 
 ![Flowstate UI](demo/unit_test_gen_final.png)
 
