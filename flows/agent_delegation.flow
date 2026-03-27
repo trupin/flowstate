@@ -1,0 +1,106 @@
+flow agent_delegation {
+    budget = 30m
+    on_error = pause
+    context = handoff
+    skip_permissions = true
+    subtasks = true
+
+    input {
+        task_description: string = "Implement a simple HTTP health check endpoint"
+    }
+
+    entry planner {
+        prompt = """
+        You are a technical planner. Given this task:
+
+        {{task_description}}
+
+        Analyze what needs to be done and produce a clear implementation plan.
+        Break it into backend work and frontend work. If only one side is needed,
+        still describe what the other side should verify (e.g., "no frontend
+        changes needed — verify the API response format is correct").
+
+        Output a structured plan with:
+        1. Backend tasks (API, data model, business logic)
+        2. Frontend tasks (UI, components, API integration)
+        3. Acceptance criteria for the reviewer
+        """
+    }
+
+    task backend_dev {
+        prompt = """
+        You are a backend developer. Read the planner's implementation plan
+        and implement the backend portion.
+
+        Task: {{task_description}}
+
+        Focus on:
+        - API endpoints and route handlers
+        - Data models and validation
+        - Business logic and error handling
+        - Write clear code with type annotations
+
+        Use subtasks to track your progress on each piece of work.
+        If the plan says no backend work is needed, write a brief note
+        explaining why and mark yourself done.
+        """
+    }
+
+    task frontend_dev {
+        prompt = """
+        You are a frontend developer. Read the planner's implementation plan
+        and implement the frontend portion.
+
+        Task: {{task_description}}
+
+        Focus on:
+        - UI components and layout
+        - API client integration
+        - User interaction and error states
+        - Clean, typed TypeScript code
+
+        Use subtasks to track your progress on each piece of work.
+        If the plan says no frontend work is needed, write a brief note
+        explaining why and mark yourself done.
+        """
+    }
+
+    task reviewer {
+        judge = false
+        prompt = """
+        You are a code reviewer. The planner created an implementation plan,
+        and the backend and frontend developers have completed their work.
+
+        Task: {{task_description}}
+
+        Review their implementations against the planner's acceptance criteria.
+        Check for:
+        - Correctness: does it meet the requirements?
+        - Completeness: is anything missing?
+        - Quality: clean code, proper error handling, types?
+        - Integration: do backend and frontend work together?
+
+        Write your DECISION.json:
+        - If everything looks good: {"target": "done"}
+        - If more work is needed: {"target": "planner"} and explain what to fix
+        """
+    }
+
+    exit done {
+        prompt = """
+        The implementation is complete and has passed review.
+
+        Task: {{task_description}}
+
+        Write a final summary of what was built:
+        1. What was implemented (backend + frontend)
+        2. Key design decisions made
+        3. Any trade-offs or limitations to be aware of
+        """
+    }
+
+    planner -> [backend_dev, frontend_dev]
+    [backend_dev, frontend_dev] -> reviewer
+    reviewer -> done when "implementation is correct, complete, and meets all acceptance criteria"
+    reviewer -> planner when "implementation needs fixes or is incomplete"
+}

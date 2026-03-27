@@ -68,13 +68,15 @@ def server(
     )
 
     # CLI flags override config file values
-    final_host = host or cfg.server_host
-    final_port = port or cfg.server_port
+    if host:
+        cfg.server_host = host
+    if port:
+        cfg.server_port = port
 
     application = create_app(config=cfg, static_dir=True)
 
-    typer.echo(f"Starting Flowstate server on {final_host}:{final_port}")
-    uvicorn.run(application, host=final_host, port=final_port)
+    typer.echo(f"Starting Flowstate server on {cfg.server_host}:{cfg.server_port}")
+    uvicorn.run(application, host=cfg.server_host, port=cfg.server_port)
 
 
 @app.command()

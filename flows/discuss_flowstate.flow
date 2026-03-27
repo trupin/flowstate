@@ -30,6 +30,11 @@ flow discuss_flowstate {
 
         Read the moderator's prompt and the discussion so far, then contribute
         1-2 points. Be conversational and engaging. Address Bob directly.
+
+        Break your work into subtasks to track your progress. For example:
+        - "Review moderator's prompt and prior discussion"
+        - "Draft response with 1-2 key points"
+        Create each subtask, mark it in_progress while working, and done when finished.
         """
     }
 
@@ -41,6 +46,11 @@ flow discuss_flowstate {
         Read what Alice just said and respond with your own perspective. You may
         agree, add nuance, or raise new points. Build on the discussion and add
         1-2 new insights. Be conversational and address Alice directly.
+
+        Break your work into subtasks to track your progress. For example:
+        - "Read Alice's latest points"
+        - "Formulate response with new insights"
+        Create each subtask, mark it in_progress while working, and done when finished.
         """
     }
 

@@ -24,7 +24,7 @@ class FlowstateConfig:
     """Configuration for the Flowstate server and runtime."""
 
     server_host: str = "127.0.0.1"
-    server_port: int = 8080
+    server_port: int = 9090
     max_concurrent_tasks: int = 4
     default_budget: str = "1h"
     judge_model: str = "sonnet"

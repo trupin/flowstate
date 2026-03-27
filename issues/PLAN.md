@@ -303,7 +303,24 @@
 
 | Issue      | Title                                                     | Domain | Priority | Depends On  | Status |
 | ---------- | --------------------------------------------------------- | ------ | -------- | ----------- | ------ |
-| UI-048     | Fix node generation badges missing for some nodes in cycle flows | ui | P1  | —           | done        |
+| UI-048     | Fix node generation badges missing for some nodes in cycle flows | ui | P1  | —           | done   |
+| ENGINE-052 | Fix message re-invocation after interrupt (dead ACP session) | engine | P0    | —           | todo   |
+| ENGINE-053 | Support retry/skip on cancelled flows (re-create executor) | engine | P0     | —           | todo   |
+| SERVER-018 | Handle retry/skip when no active executor exists          | server | P0       | ENGINE-053  | todo   |
+| UI-049     | Add draggable resize handle between graph and log panel   | ui     | P1       | —           | todo   |
+| UI-050     | Fix Clear button in log viewer (onClear prop not wired)   | ui     | P1       | —           | todo   |
+| UI-051     | Fix rerun button staying visible after hover in task queue | ui     | P1       | —           | todo   |
+| SERVER-019 | Fix CLI port override not propagating to config            | server | P0       | —           | done   |
+
+
+### Phase 19 — Subtask UI Improvements
+
+
+| Issue      | Title                                                     | Domain | Priority | Depends On  | Status |
+| ---------- | --------------------------------------------------------- | ------ | -------- | ----------- | ------ |
+| UI-052     | Show subtask progress bar in log viewer without Details click | ui  | P1       | —           | todo   |
+| UI-053     | Show subtask count badge on graph node pills              | ui     | P1       | —           | todo   |
+| UI-054     | Format subtask events as styled log entries               | ui     | P1       | —           | todo   |
 
 
 ---

@@ -1,0 +1,154 @@
+flow implement_flowstate {
+    budget = 30m
+    on_error = pause
+    context = handoff
+    skip_permissions = true
+    subtasks = true
+    worktree = true
+    workspace = "/Users/theophanerupin/code/flowstate"
+
+    input {
+        issue_ids: string = "UI-050"
+    }
+
+    entry planner {
+        prompt = """
+        You are a technical planner for the Flowstate project. Read the
+        requested issue files and produce a detailed implementation plan.
+
+        **Issues to implement**: {{issue_ids}}
+
+        ## Steps
+
+        1. For each issue ID in the comma-separated list above:
+           - Determine the domain from the prefix (ENGINE-*, UI-*, DSL-*, etc.)
+           - Read the issue file from `issues/<domain>/NNN-<slug>.md`
+             (list the directory to find the exact filename)
+        2. Read the relevant agent spec:
+           - Engine issues: `agents/03-engine.md`
+           - UI issues: `agents/05-ui.md`
+
+        ## Output
+
+        In your SUMMARY.md, write:
+
+        ### Engine Work
+        For each ENGINE-* issue: issue ID, title, acceptance criteria,
+        files to modify, and the full Technical Design section.
+        If no engine issues: write "No engine work in this batch."
+
+        ### UI Work
+        For each UI-* issue: issue ID, title, acceptance criteria,
+        files to modify, and the full Technical Design section.
+        If no UI issues: write "No UI work in this batch."
+
+        ### Verification Commands
+        List the exact commands to run for verification.
+
+        Be thorough — the domain agents will only see your SUMMARY.md.
+        """
+    }
+
+    task engine_dev {
+        prompt = """
+        You are an engine developer for the Flowstate project. You work
+        exclusively in `src/flowstate/engine/` and `tests/engine/`.
+
+        Read the planner's context to find your implementation plan under
+        "### Engine Work". If it says "No engine work in this batch",
+        write "No engine work needed" in your SUMMARY.md and exit immediately.
+
+        ## Rules
+        - Only modify files in `src/flowstate/engine/` and `tests/engine/`
+        - Import from `flowstate.dsl.ast` and `flowstate.state.repository`
+          but NEVER modify those modules
+        - Never run git commands (no add, commit, push, checkout)
+        - Never disable lint rules — fix the underlying code
+        - Use subtasks to track your progress
+        - Run `uv run pytest tests/engine/ -x` to verify your changes
+        - Run `uv run ruff check src/flowstate/engine/` to check lint
+
+        ## Output
+        In your SUMMARY.md: what you implemented, files changed, test results.
+        """
+    }
+
+    task ui_dev {
+        prompt = """
+        You are a UI developer for the Flowstate project. You work
+        exclusively in the `ui/` directory.
+
+        Read the planner's context to find your implementation plan under
+        "### UI Work". If it says "No UI work in this batch",
+        write "No UI work needed" in your SUMMARY.md and exit immediately.
+
+        ## Rules
+        - Only modify files in `ui/`
+        - TypeScript only — never `.js` or `.jsx`
+        - Strict mode: no `any`, no `as` assertions, no `@ts-ignore`
+        - Named exports only, function components only
+        - CSS modules or plain CSS — no frameworks
+        - Never run git commands (no add, commit, push, checkout)
+        - Never disable lint rules — fix the underlying code
+        - Use subtasks to track your progress
+        - Run `cd ui && npm run lint` to check lint
+        - Run `cd ui && npm run build` to verify the build
+
+        ## Output
+        In your SUMMARY.md: what you implemented, files changed, lint/build results.
+        """
+    }
+
+    task verifier {
+        judge = false
+        prompt = """
+        You are a code verifier. The engine and UI developers have completed
+        their work. Run all verification commands and decide whether the
+        implementation is ready.
+
+        ## Steps
+
+        1. Read each developer's SUMMARY.md to understand what changed.
+        2. Run ALL applicable verification commands:
+
+           For Python changes:
+           ```
+           uv run pytest -x
+           uv run ruff check .
+           uv run pyright
+           ```
+
+           For UI changes:
+           ```
+           cd ui && npm run lint
+           cd ui && npm run build
+           ```
+
+        3. Based on results, decide the routing. The system will append
+           instructions for writing DECISION.json with the exact format
+           and available transitions — follow those instructions precisely.
+
+        ## Output
+        In your SUMMARY.md:
+        - List every check run and its result (PASS/FAIL)
+        - If failing: copy the exact error output so developers can fix it
+        """
+    }
+
+    exit done {
+        prompt = """
+        All implementation work has passed verification.
+
+        Write a final summary:
+        1. Which issues were implemented (IDs and titles)
+        2. What files were changed
+        3. Verification results
+        4. Notes for the human reviewer before committing
+        """
+    }
+
+    planner -> [engine_dev, ui_dev]
+    [engine_dev, ui_dev] -> verifier
+    verifier -> done when "all verification checks pass and implementation is correct"
+    verifier -> planner when "verification failed or implementation needs fixes"
+}
