@@ -318,7 +318,7 @@
 
 | Issue      | Title                                                     | Domain | Priority | Depends On  | Status |
 | ---------- | --------------------------------------------------------- | ------ | -------- | ----------- | ------ |
-| UI-052     | Show subtask progress bar in log viewer without Details click | ui  | P1       | —           | todo   |
+| UI-052     | Show subtask progress bar in log viewer without Details click | ui  | P1       | —           | done   |
 | UI-053     | Show subtask count badge on graph node pills              | ui     | P1       | —           | todo   |
 | UI-054     | Format subtask events as styled log entries               | ui     | P1       | —           | todo   |
 
