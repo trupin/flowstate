@@ -61,15 +61,18 @@ export function ConditionalEdge({
     }
   }, [expanded]);
 
-  // Outside-click handler: check both the icon container and portaled popover
+  // Outside-click handler: check both the icon and portaled popover
   useEffect(() => {
     if (!expanded) return;
     const handleClickOutside = (e: MouseEvent) => {
       const target = e.target as Node;
-      const clickedInContainer =
-        containerRef.current?.contains(target) ?? false;
+      const clickedOnIcon = iconRef.current?.contains(target) ?? false;
       const clickedInPopover = popoverRef.current?.contains(target) ?? false;
-      if (!clickedInContainer && !clickedInPopover) {
+      if (clickedOnIcon) {
+        // Let the icon's onClick toggle handle it
+        return;
+      }
+      if (!clickedInPopover) {
         setExpanded(false);
       }
     };
