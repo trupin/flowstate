@@ -76,6 +76,20 @@ def _build_subprocess_env(extra_env: dict[str, str] | None = None) -> dict[str, 
 # ---------------------------------------------------------------------------
 
 
+def _is_noise_chunk(text: str) -> bool:
+    """Filter streaming fragments that add no informational value.
+
+    Returns True for empty/whitespace-only text and single non-alphanumeric
+    characters (e.g. ``.``, ``,``, ``:``).  Single alphanumeric characters and
+    multi-character punctuation (``...``, ``---``) pass through because they
+    could be the start of a streaming word or meaningful content.
+    """
+    trimmed = text.strip()
+    if not trimmed:
+        return True
+    return len(trimmed) == 1 and not trimmed.isalnum()
+
+
 def _extract_tool_call_content_text(content_list: list[Any] | None) -> str | None:
     """Extract human-readable text from an ACP ToolCall content list.
 
@@ -131,6 +145,8 @@ def _map_acp_update_to_stream_event(update: object) -> StreamEvent | None:
 
     if isinstance(update, AgentMessageChunk):
         text = update.content.text if hasattr(update.content, "text") else str(update.content)
+        if _is_noise_chunk(text):
+            return None
         return StreamEvent(
             type=StreamEventType.ASSISTANT,
             content={"type": "assistant", "message": {"content": [{"text": text}]}},
@@ -139,6 +155,8 @@ def _map_acp_update_to_stream_event(update: object) -> StreamEvent | None:
 
     if isinstance(update, AgentThoughtChunk):
         text = update.content.text if hasattr(update.content, "text") else str(update.content)
+        if _is_noise_chunk(text):
+            return None
         return StreamEvent(
             type=StreamEventType.ASSISTANT,
             content={

@@ -10,6 +10,7 @@ import type {
 import { ApiError, api } from '../../api/client';
 import { ClickablePath } from '../ClickablePath';
 import { ToolCallBlock } from './ToolCallBlock';
+import { SUBTASK_URL_PATTERN, getInputCommand } from './subtaskDetection';
 import { CollapsibleSection } from './CollapsibleSection';
 import { SubtaskProgress } from './SubtaskProgress';
 import { useSubtasks } from '../../hooks/useSubtasks';
@@ -34,7 +35,6 @@ export interface LogViewerProps {
   isAutoFollow?: boolean;
   showFollowButton?: boolean;
   onFollowClick?: () => void;
-  onClear?: () => void;
   runId?: string;
   taskExecutionId?: string;
   subtaskVersion?: number;
@@ -518,12 +518,20 @@ function isNoiseText(text: string): boolean {
   if (trimmed === '') return true;
   // Bare markdown fences, quotes, list markers, emphasis markers
   if (/^[`>*_~\-\s]+$/.test(trimmed)) return true;
+  // Single non-alphanumeric character (period, comma, colon, etc.)
+  if (trimmed.length === 1 && /[^a-zA-Z0-9]/.test(trimmed)) return true;
   return false;
 }
 
 // --- Visibility classification ---
 
 type VisibilityCategory = 'visible' | 'noise' | 'hidden';
+
+/** Detect if a parsed tool_use input is a subtask API call (POST/PATCH to /subtasks). */
+function isSubtaskToolCall(input: Record<string, unknown>): boolean {
+  const cmd = getInputCommand(input);
+  return cmd != null && SUBTASK_URL_PATTERN.test(cmd);
+}
 
 function classifyEntry(
   content: string,
@@ -540,9 +548,33 @@ function classifyEntry(
     isNoiseText(parsed.text)
   )
     return 'hidden';
-  // Noise: system init, rate limit (accessible via "Show all")
+  // Noise: system init, rate limit, generic "Tool completed" (accessible via "Show all")
   if (parsed.kind === 'system_init') return 'noise';
   if (parsed.kind === 'rate_limit') return 'noise';
+  if (
+    parsed.kind === 'tool_result' &&
+    parsed.content.trim() === 'Tool completed'
+  )
+    return 'noise';
+  // Tool calls: noise by default, subtask API calls remain visible
+  if (parsed.kind === 'tool_use') {
+    return isSubtaskToolCall(parsed.input) ? 'visible' : 'noise';
+  }
+  if (parsed.kind === 'tool_result') return 'noise';
+  return 'visible';
+}
+
+/** Classify a grouped entry for filtering. Tool call groups use the tool_use classification. */
+function classifyGroup(group: GroupedEntry): VisibilityCategory {
+  if (group.type === 'tool_call') {
+    // Subtask tool calls are visible, all others are noise
+    return isSubtaskToolCall(group.toolUse.input) ? 'visible' : 'noise';
+  }
+  if (group.type === 'single') {
+    return classifyEntry(group.entry.content, group.entry.log_type);
+  }
+  // merged_thinking and merged_assistant are always visible (noise fragments
+  // are already excluded during the merging step in groupLogEntries)
   return 'visible';
 }
 
@@ -833,7 +865,6 @@ export function LogViewer({
   isAutoFollow = false,
   showFollowButton = false,
   onFollowClick,
-  onClear,
   runId,
   taskExecutionId,
   subtaskVersion = 0,
@@ -849,33 +880,44 @@ export function LogViewer({
   const containerRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
   const [pinned, setPinned] = useState(true);
-  const [showAll, setShowAll] = useState(false);
+  const [verbose, setVerbose] = useState(false);
   const [showDetails, setShowDetails] = useState(false);
   const [inputValue, setInputValue] = useState('');
   const [sending, setSending] = useState(false);
   const [interrupting, setInterrupting] = useState(false);
   const [inputError, setInputError] = useState<string | null>(null);
 
-  const { filteredLogs, noiseCount } = useMemo(() => {
-    const filtered: LogEntry[] = [];
-    let noise = 0;
+  // Pipeline: remove hidden entries -> group -> filter groups by visibility.
+  // Grouping before filtering ensures tool_use + tool_result pairs stay together
+  // so that subtask tool calls get their result data for rendering.
+  const nonHiddenLogs = useMemo(() => {
+    const result: LogEntry[] = [];
     for (const entry of logs) {
       const category = classifyEntry(entry.content, entry.log_type);
-      if (category === 'noise') {
-        noise++;
-        if (showAll) filtered.push(entry);
-      } else if (category === 'visible') {
-        filtered.push(entry);
+      if (category !== 'hidden') {
+        result.push(entry);
       }
-      // 'hidden' entries are always excluded
     }
-    return { filteredLogs: filtered, noiseCount: noise };
-  }, [logs, showAll]);
+    return result;
+  }, [logs]);
 
-  const groupedEntries = useMemo(
-    () => groupLogEntries(filteredLogs),
-    [filteredLogs],
+  const allGroups = useMemo(
+    () => groupLogEntries(nonHiddenLogs),
+    [nonHiddenLogs],
   );
+
+  const groupedEntries = useMemo(() => {
+    const filtered: GroupedEntry[] = [];
+    for (const group of allGroups) {
+      const category = classifyGroup(group);
+      if (category === 'noise') {
+        if (verbose) filtered.push(group);
+      } else if (category === 'visible') {
+        filtered.push(group);
+      }
+    }
+    return filtered;
+  }, [allGroups, verbose]);
 
   // Auto-scroll when pinned and new logs arrive
   useEffect(() => {
@@ -889,7 +931,7 @@ export function LogViewer({
   useEffect(() => {
     if (!isAutoFollow) {
       setPinned(true);
-      setShowAll(false);
+      setVerbose(false);
       setShowDetails(false);
     }
   }, [taskName, isAutoFollow]);
@@ -994,19 +1036,13 @@ export function LogViewer({
               Details
             </button>
           )}
-          {noiseCount > 0 && (
-            <button
-              className={`log-viewer-show-all ${showAll ? 'active' : ''}`}
-              onClick={() => setShowAll((prev) => !prev)}
-              title={
-                showAll
-                  ? 'Hide system noise'
-                  : `Show all (${noiseCount} hidden)`
-              }
-            >
-              {showAll ? 'Hide noise' : `Show all (${noiseCount})`}
-            </button>
-          )}
+          <button
+            className={`log-viewer-show-all ${verbose ? 'active' : ''}`}
+            onClick={() => setVerbose((prev) => !prev)}
+            title={verbose ? 'Showing all log entries' : 'Show all log entries'}
+          >
+            Verbose
+          </button>
           <button
             className={`log-viewer-pin ${pinned ? 'active' : ''}`}
             onClick={() => {
@@ -1020,9 +1056,6 @@ export function LogViewer({
             title={pinned ? 'Auto-scroll ON' : 'Auto-scroll OFF'}
           >
             {pinned ? '\u2B07 Pinned' : '\u2B07 Unpinned'}
-          </button>
-          <button onClick={onClear} title="Clear logs (client-side only)">
-            Clear
           </button>
         </div>
       </div>
@@ -1056,7 +1089,7 @@ export function LogViewer({
           groupedEntries.map((grouped, index) => {
             const isLast = index === groupedEntries.length - 1;
             if (grouped.type === 'tool_call') {
-              const key = grouped.ids.join('-');
+              const key = grouped.toolUse.toolId || `tool-${String(index)}`;
               return (
                 <div key={key} className="log-line log-type-tool_use">
                   <span className="log-timestamp">

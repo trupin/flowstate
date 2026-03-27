@@ -16,14 +16,9 @@ interface SubtaskEvent {
   status: string;
 }
 
-const SUBTASK_URL_PATTERN = /\/subtasks(?:\/|$)/;
-const SUBTASK_METHOD_PATTERN = /(?:^|\s)-X\s+(POST|PATCH)\b/;
+import { SUBTASK_URL_PATTERN, getInputCommand } from './subtaskDetection';
 
-function getInputCommand(input: Record<string, unknown>): string | null {
-  if (typeof input.command === 'string') return input.command;
-  if (typeof input.description === 'string') return input.description;
-  return null;
-}
+const SUBTASK_METHOD_PATTERN = /(?:^|\s)-X\s+(POST|PATCH)\b/;
 
 function detectSubtaskEvent(
   input: Record<string, unknown>,

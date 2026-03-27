@@ -6933,3 +6933,269 @@ class TestRestartFromTask:
         finish_tasks = [t for t in tasks if t.node_name == "finish" and t.status == "completed"]
         assert len(verify_tasks) >= 1, "Verify node did not execute after retry"
         assert len(finish_tasks) >= 1, "Finish node did not execute after retry"
+
+
+# ---------------------------------------------------------------------------
+# Tests: Auto-complete subtasks on task exit (ENGINE-056)
+# ---------------------------------------------------------------------------
+
+
+class TestAutoCompleteSubtasksOnSuccess:
+    """Subtasks in todo/in_progress are auto-completed when a task exits with code 0."""
+
+    async def test_subtasks_auto_completed_integration(self) -> None:
+        """Integration: subtasks created before task completion are auto-marked done."""
+        db = _make_db()
+        events, _callback = _collect_events()
+        mock_mgr = MockSubprocessManager()
+
+        # We need to inject subtasks during the task run. Use a tool_use event
+        # to simulate the agent creating subtasks via the mock subprocess.
+        # Instead, we'll create subtasks in the DB after the task execution is
+        # created but before it completes. To do this, we hook into the event
+        # callback to create subtasks when TASK_STARTED fires.
+        subtask_ids: list[str] = []
+
+        def callback_with_subtasks(event: FlowEvent) -> None:
+            events.append(event)
+            if event.type == EventType.TASK_STARTED and event.payload.get("node_name") == "work":
+                task_exec_id = str(event.payload["task_execution_id"])
+                s1 = db.create_agent_subtask(task_exec_id, "Research API docs")
+                s2 = db.create_agent_subtask(task_exec_id, "Write implementation")
+                s3 = db.create_agent_subtask(task_exec_id, "Write tests")
+                # Mark one as in_progress
+                db.update_agent_subtask(s2.id, "in_progress")
+                subtask_ids.extend([s1.id, s2.id, s3.id])
+
+        executor = FlowExecutor(db, callback_with_subtasks, mock_mgr)
+
+        flow = _make_linear_flow()
+        flow = Flow(
+            name=flow.name,
+            budget_seconds=flow.budget_seconds,
+            on_error=flow.on_error,
+            context=flow.context,
+            workspace=flow.workspace,
+            nodes=flow.nodes,
+            edges=flow.edges,
+            subtasks=True,
+        )
+
+        flow_run_id = await executor.execute(flow, {}, "/workspace")
+
+        # Verify flow completed
+        run = db.get_flow_run(flow_run_id)
+        assert run is not None
+        assert run.status == "completed"
+
+        # Verify all subtasks are now done
+        assert len(subtask_ids) == 3
+        for sid in subtask_ids:
+            sub = db.get_agent_subtask(sid)
+            assert sub is not None
+            assert sub.status == "done", f"Subtask {sub.title!r} should be done, got {sub.status!r}"
+
+        # Verify subtask.updated events were emitted
+        subtask_events = [e for e in events if e.type == EventType.SUBTASK_UPDATED]
+        assert len(subtask_events) == 3
+        # All should reference the work task
+        work_exec = next(t for t in db.list_task_executions(flow_run_id) if t.node_name == "work")
+        for se in subtask_events:
+            assert se.payload["task_execution_id"] == work_exec.id
+            assert se.payload["status"] == "done"
+
+    async def test_already_done_subtasks_still_emit_events(self) -> None:
+        """Subtasks already marked done are included in events (they are in the returned list)."""
+        db = _make_db()
+        events, _callback = _collect_events()
+        mock_mgr = MockSubprocessManager()
+        subtask_ids: list[str] = []
+
+        def callback_with_subtasks(event: FlowEvent) -> None:
+            events.append(event)
+            if event.type == EventType.TASK_STARTED and event.payload.get("node_name") == "work":
+                task_exec_id = str(event.payload["task_execution_id"])
+                s1 = db.create_agent_subtask(task_exec_id, "Already done task")
+                db.update_agent_subtask(s1.id, "done")
+                s2 = db.create_agent_subtask(task_exec_id, "Still todo task")
+                subtask_ids.extend([s1.id, s2.id])
+
+        executor = FlowExecutor(db, callback_with_subtasks, mock_mgr)
+
+        flow = _make_linear_flow()
+        flow = Flow(
+            name=flow.name,
+            budget_seconds=flow.budget_seconds,
+            on_error=flow.on_error,
+            context=flow.context,
+            workspace=flow.workspace,
+            nodes=flow.nodes,
+            edges=flow.edges,
+            subtasks=True,
+        )
+
+        await executor.execute(flow, {}, "/workspace")
+
+        # Both subtasks should be done
+        for sid in subtask_ids:
+            sub = db.get_agent_subtask(sid)
+            assert sub is not None
+            assert sub.status == "done"
+
+        # Events emitted for all done subtasks (including the one that was already done)
+        subtask_events = [e for e in events if e.type == EventType.SUBTASK_UPDATED]
+        assert len(subtask_events) == 2
+        titles = {str(e.payload["title"]) for e in subtask_events}
+        assert "Already done task" in titles
+        assert "Still todo task" in titles
+
+
+class TestNoAutoCompleteOnFailure:
+    """Subtasks are NOT auto-completed when a task fails (non-zero exit code)."""
+
+    async def test_subtasks_not_completed_on_failure(self) -> None:
+        """Subtasks remain in their current state when task fails."""
+        db = _make_db()
+        events, _callback = _collect_events()
+        mock_mgr = MockSubprocessManager()
+        # Configure 'work' to fail
+        mock_mgr.task_responses["work"] = (1, [])
+        subtask_ids: list[str] = []
+
+        def callback_with_subtasks(event: FlowEvent) -> None:
+            events.append(event)
+            if event.type == EventType.TASK_STARTED and event.payload.get("node_name") == "work":
+                task_exec_id = str(event.payload["task_execution_id"])
+                s1 = db.create_agent_subtask(task_exec_id, "Todo task")
+                s2 = db.create_agent_subtask(task_exec_id, "In progress task")
+                db.update_agent_subtask(s2.id, "in_progress")
+                subtask_ids.extend([s1.id, s2.id])
+
+        executor = FlowExecutor(db, callback_with_subtasks, mock_mgr)
+
+        flow = _make_linear_flow()
+        flow = Flow(
+            name=flow.name,
+            budget_seconds=flow.budget_seconds,
+            on_error=ErrorPolicy.ABORT,
+            context=flow.context,
+            workspace=flow.workspace,
+            nodes=flow.nodes,
+            edges=flow.edges,
+            subtasks=True,
+        )
+
+        flow_run_id = await executor.execute(flow, {}, "/workspace")
+
+        # Verify the flow did not complete successfully
+        run = db.get_flow_run(flow_run_id)
+        assert run is not None
+        assert run.status != "completed", f"Flow should not have completed, got {run.status}"
+
+        # Verify subtasks are NOT auto-completed
+        s1 = db.get_agent_subtask(subtask_ids[0])
+        assert s1 is not None
+        assert s1.status == "todo", f"Expected todo, got {s1.status}"
+
+        s2 = db.get_agent_subtask(subtask_ids[1])
+        assert s2 is not None
+        assert s2.status == "in_progress", f"Expected in_progress, got {s2.status}"
+
+        # No subtask.updated events should have been emitted
+        subtask_events = [e for e in events if e.type == EventType.SUBTASK_UPDATED]
+        assert len(subtask_events) == 0
+
+
+class TestNoAutoCompleteWhenSubtasksDisabled:
+    """When subtasks are not enabled for a flow/node, no auto-complete happens."""
+
+    async def test_no_auto_complete_when_subtasks_disabled(self) -> None:
+        """Subtasks are not auto-completed when flow.subtasks is False."""
+        db = _make_db()
+        events, callback = _collect_events()
+        mock_mgr = MockSubprocessManager()
+
+        executor = FlowExecutor(db, callback, mock_mgr)
+
+        # Default flow has subtasks=False
+        flow = _make_linear_flow()
+        assert flow.subtasks is False
+
+        flow_run_id = await executor.execute(flow, {}, "/workspace")
+
+        # Manually create subtasks (as if someone did it via the API)
+        task_execs = db.list_task_executions(flow_run_id)
+        work_exec = next(t for t in task_execs if t.node_name == "work")
+        db.create_agent_subtask(work_exec.id, "Should stay todo")
+
+        # The subtask should still be todo because auto-complete didn't run
+        # (subtasks=False). Note: we created it AFTER execution, so it wasn't
+        # affected. But more importantly, no subtask events were emitted during
+        # execution because subtasks were disabled.
+        subtask_events = [e for e in events if e.type == EventType.SUBTASK_UPDATED]
+        assert len(subtask_events) == 0
+
+
+class TestAutoCompleteSubtasksRepository:
+    """Direct tests for the complete_remaining_subtasks repository method."""
+
+    def _make_task_exec(self, db: FlowstateDB) -> str:
+        """Helper to create a flow run + task execution, returning the task exec ID."""
+        flow_def_id = db.create_flow_definition("test-flow", "source", "{}")
+        flow_run_id = db.create_flow_run(
+            flow_definition_id=flow_def_id,
+            data_dir="/tmp/test",
+            budget_seconds=3600,
+            on_error="pause",
+        )
+        task_exec_id = db.create_task_execution(
+            flow_run_id=flow_run_id,
+            node_name="work",
+            node_type="task",
+            generation=1,
+            context_mode="handoff",
+            cwd="/workspace",
+            task_dir="/tmp/test/work",
+            prompt_text="Do work",
+        )
+        return task_exec_id
+
+    def test_complete_remaining_marks_todo_and_in_progress(self) -> None:
+        """todo and in_progress subtasks become done; already-done stay done."""
+        db = _make_db()
+        task_exec_id = self._make_task_exec(db)
+
+        db.create_agent_subtask(task_exec_id, "Todo item")
+        s2 = db.create_agent_subtask(task_exec_id, "In progress item")
+        db.update_agent_subtask(s2.id, "in_progress")
+        s3 = db.create_agent_subtask(task_exec_id, "Done item")
+        db.update_agent_subtask(s3.id, "done")
+
+        result = db.complete_remaining_subtasks(task_exec_id)
+
+        assert len(result) == 3
+        for sub in result:
+            assert sub.status == "done"
+
+    def test_complete_remaining_empty_list(self) -> None:
+        """No subtasks: returns empty list, no error."""
+        db = _make_db()
+        task_exec_id = self._make_task_exec(db)
+
+        result = db.complete_remaining_subtasks(task_exec_id)
+        assert result == []
+
+    def test_complete_remaining_all_already_done(self) -> None:
+        """All subtasks already done: UPDATE affects 0 rows, returns all."""
+        db = _make_db()
+        task_exec_id = self._make_task_exec(db)
+
+        s1 = db.create_agent_subtask(task_exec_id, "Done 1")
+        db.update_agent_subtask(s1.id, "done")
+        s2 = db.create_agent_subtask(task_exec_id, "Done 2")
+        db.update_agent_subtask(s2.id, "done")
+
+        result = db.complete_remaining_subtasks(task_exec_id)
+        assert len(result) == 2
+        for sub in result:
+            assert sub.status == "done"

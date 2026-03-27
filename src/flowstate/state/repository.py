@@ -1289,3 +1289,25 @@ class FlowstateDB:
         )
         self._commit()
         return self.get_agent_subtask(subtask_id)
+
+    def complete_remaining_subtasks(self, task_execution_id: str) -> list[AgentSubtaskRow]:
+        """Mark all todo/in_progress subtasks as done and return all subtasks.
+
+        Used by the executor to auto-complete remaining subtasks when a task
+        exits successfully (exit code 0). Subtasks already marked 'done' are
+        unaffected by the UPDATE but included in the returned list.
+
+        Args:
+            task_execution_id: The parent task execution ID.
+
+        Returns:
+            All subtask rows for the task execution (after the update).
+        """
+        now = datetime.now(UTC).isoformat()
+        self._execute(
+            "UPDATE agent_subtasks SET status = 'done', updated_at = ? "
+            "WHERE task_execution_id = ? AND status IN ('todo', 'in_progress')",
+            (now, task_execution_id),
+        )
+        self._commit()
+        return self.list_agent_subtasks(task_execution_id)

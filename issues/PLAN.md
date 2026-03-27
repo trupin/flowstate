@@ -334,6 +334,27 @@
 | UI-056     | Remove lock button from graph controls                    | ui     | P2       | —           | done |
 | UI-057     | Collapse conditional edge labels into clickable icons     | ui     | P1       | —           | done |
 | UI-058     | Condition popover overlaps target node — open upward      | ui     | P1       | —           | done |
+| UI-059     | Condition popover renders behind graph nodes              | ui     | P1       | —           | done |
+| ENGINE-056 | Auto-complete remaining subtasks on task exit             | engine | P1       | —           | done |
+
+
+### Phase 21 — Log Quality
+
+
+| Issue      | Title                                                     | Domain | Priority | Depends On  | Status |
+| ---------- | --------------------------------------------------------- | ------ | -------- | ----------- | ------ |
+| ENGINE-057 | Filter noise streaming chunks at ACP bridge               | engine | P1       | —           | done |
+| UI-060     | Improve log noise classification                          | ui     | P1       | —           | done |
+
+
+### Phase 22 — Log Viewer UX
+
+
+| Issue  | Title                                                      | Domain | Priority | Depends On | Status |
+| ------ | ---------------------------------------------------------- | ------ | -------- | ---------- | ------ |
+| UI-061 | Replace Clear and Show all buttons with Verbose toggle     | ui     | P1       | —          | done |
+| UI-062 | Show harness provider in flow detail + document config     | ui     | P1       | —          | done |
+| UI-063 | Make tool calls verbose-only and show full tool details    | ui     | P1       | —          | done |
 
 
 ---

@@ -2506,6 +2506,24 @@ class FlowExecutor:
                         },
                     )
                 )
+                # Auto-complete remaining subtasks (ENGINE-056)
+                if _use_subtasks(flow, node):
+                    completed_subs = self._db.complete_remaining_subtasks(task_execution_id)
+                    for sub in completed_subs:
+                        if sub.status == "done":
+                            self._emit(
+                                FlowEvent(
+                                    type=EventType.SUBTASK_UPDATED,
+                                    flow_run_id=flow_run_id,
+                                    timestamp=_now_iso(),
+                                    payload={
+                                        "task_execution_id": task_execution_id,
+                                        "subtask_id": sub.id,
+                                        "title": sub.title,
+                                        "status": "done",
+                                    },
+                                )
+                            )
             else:
                 # When the flow is being cancelled, still mark as "failed" (DB
                 # schema constraint) but skip the TASK_FAILED event -- the
