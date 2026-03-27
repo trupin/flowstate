@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef, useCallback } from 'react';
+import { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { api } from '../../api/client';
 import { ClickablePath } from '../ClickablePath';
@@ -64,6 +64,7 @@ export function FlowDetailPanel({ flow, isEnabled }: FlowDetailPanelProps) {
   const navigate = useNavigate();
   const [recentRuns, setRecentRuns] = useState<FlowRun[]>([]);
   const [showSource, setShowSource] = useState(false);
+  const [showHarnessHelp, setShowHarnessHelp] = useState(false);
   const fetchingRef = useRef(false);
 
   // Fetch recent runs for this flow
@@ -103,6 +104,19 @@ export function FlowDetailPanel({ flow, isEnabled }: FlowDetailPanelProps) {
   }, [showSource, handleEscape]);
 
   const ast = flow.ast_json;
+
+  // Detect per-node harness overrides (nodes whose harness differs from the flow default)
+  const nodeHarnessOverrides = useMemo(() => {
+    if (!ast) return new Map<string, string>();
+    const flowHarness = ast.harness;
+    const overrides = new Map<string, string>();
+    for (const [nodeName, node] of Object.entries(ast.nodes)) {
+      if (node.harness != null && node.harness !== flowHarness) {
+        overrides.set(nodeName, node.harness);
+      }
+    }
+    return overrides;
+  }, [ast]);
 
   // Node summary
   const nodesByType = {
@@ -197,8 +211,38 @@ export function FlowDetailPanel({ flow, isEnabled }: FlowDetailPanelProps) {
               {ast.subtasks ? 'enabled' : 'disabled'}
             </span>
 
-            <span className="flow-settings-key">Harness</span>
+            <span className="flow-settings-key">
+              Harness{' '}
+              <span
+                className="flow-settings-info-icon"
+                onClick={() => setShowHarnessHelp((prev) => !prev)}
+                role="button"
+                tabIndex={0}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter' || e.key === ' ') {
+                    e.preventDefault();
+                    setShowHarnessHelp((prev) => !prev);
+                  }
+                }}
+                title="How to configure harness providers"
+              >
+                {'\u24D8'}
+              </span>
+            </span>
             <span className="flow-settings-value">{ast.harness}</span>
+            {showHarnessHelp && (
+              <>
+                <span className="flow-settings-help-spacer" />
+                <span className="flow-settings-help-text">
+                  Configure providers in <code>flowstate.toml</code>:{'\n'}
+                  <code>[harnesses.&lt;name&gt;]</code> with{' '}
+                  <code>command = [...]</code> and optional{' '}
+                  <code>env = {'{ }'}</code>. Set{' '}
+                  <code>harness = &quot;&lt;name&gt;&quot;</code> at flow or
+                  node level. Default: &quot;claude&quot;.
+                </span>
+              </>
+            )}
 
             <span className="flow-settings-key">Worktree</span>
             <span className="flow-settings-value">
@@ -221,23 +265,25 @@ export function FlowDetailPanel({ flow, isEnabled }: FlowDetailPanelProps) {
           Nodes ({flow.nodes.length})
         </h3>
         <div className="flow-node-summary">
-          {nodesByType.entry.length > 0 && (
-            <span className="flow-node-group">
-              <span className="flow-node-type-label">entry:</span>{' '}
-              {nodesByType.entry.join(', ')}
-            </span>
-          )}
-          {nodesByType.task.length > 0 && (
-            <span className="flow-node-group">
-              <span className="flow-node-type-label">task:</span>{' '}
-              {nodesByType.task.join(', ')}
-            </span>
-          )}
-          {nodesByType.exit.length > 0 && (
-            <span className="flow-node-group">
-              <span className="flow-node-type-label">exit:</span>{' '}
-              {nodesByType.exit.join(', ')}
-            </span>
+          {(['entry', 'task', 'exit'] as const).map(
+            (type) =>
+              nodesByType[type].length > 0 && (
+                <span key={type} className="flow-node-group">
+                  <span className="flow-node-type-label">{type}:</span>{' '}
+                  {nodesByType[type].map((name, i) => (
+                    <span key={name}>
+                      {i > 0 && ', '}
+                      {name}
+                      {nodeHarnessOverrides.has(name) && (
+                        <span className="flow-node-harness-override">
+                          {' '}
+                          (harness: {nodeHarnessOverrides.get(name)})
+                        </span>
+                      )}
+                    </span>
+                  ))}
+                </span>
+              ),
           )}
         </div>
       </section>

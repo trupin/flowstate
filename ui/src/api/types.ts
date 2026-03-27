@@ -72,7 +72,13 @@ export interface FlowAstJson {
   params: Array<{ name: string; type: string; default: unknown }>;
   nodes: Record<
     string,
-    { name: string; node_type: string; prompt: string; cwd?: string }
+    {
+      name: string;
+      node_type: string;
+      prompt: string;
+      cwd?: string;
+      harness?: string | null;
+    }
   >;
   edges: Array<{
     edge_type: string;
