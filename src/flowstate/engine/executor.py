@@ -810,6 +810,8 @@ class FlowExecutor:
         if expanded != join_node.prompt:
             prompt = prompt.replace(join_node.prompt, expanded)
 
+        prompt = _maybe_append_routing(prompt, flow, join_node, task_dir)
+
         join_task_id = self._db.create_task_execution(
             flow_run_id=flow_run_id,
             node_name=join_node.name,
