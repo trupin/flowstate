@@ -13,7 +13,25 @@ Manage Flowstate issues. Parse the subcommand from the first argument and the bo
 
 Create a new issue from a natural language description. **Thorough research and design thinking come first — filing comes last.**
 
-#### Phase 1: Deep Research
+#### Step 0: Assess Complexity
+
+Before starting, classify the task:
+
+**Simple** (single domain, clear scope, <3 files likely changed):
+- Bug fixes with obvious cause ("fix typo in X", "null check missing in Y")
+- Small config changes, dependency updates
+- Documentation fixes
+
+**Complex** (multi-domain, ambiguous scope, new feature, architectural impact):
+- New features or behaviors
+- Cross-domain changes
+- Anything requiring design decisions
+
+**For simple tasks**, skip directly to Phase 6 (Filing) — do a quick scan of the affected file(s) and file the issue with a lightweight Technical Design. No clarifying questions needed unless something is genuinely unclear.
+
+**For complex tasks**, follow the full research flow below.
+
+#### Phase 1: Deep Research (complex only)
 
 Before writing any issue file, investigate the codebase to understand the current state and surface design questions:
 
@@ -22,7 +40,7 @@ Before writing any issue file, investigate the codebase to understand the curren
 3. **Assess regression risk.** Identify what existing functionality could break. Run the existing test suite (`uv run pytest` for Python, `cd ui && npm run build` for UI) to establish a green baseline before filing. Note any fragile areas in the issue's Edge Cases section.
 4. **Check for prior art.** Search the codebase for similar patterns, existing utilities, or partially-implemented versions of the feature. Reference them in the Technical Design so the implementer doesn't reinvent.
 
-#### Phase 2: Ask Clarifying Questions
+#### Phase 2: Ask Clarifying Questions (complex only)
 
 Before filing, surface design blind spots and ambiguous boundaries. Ask the user about:
 
@@ -33,7 +51,7 @@ Before filing, surface design blind spots and ambiguous boundaries. Ask the user
 
 Do not file issues with ambiguous acceptance criteria. If you can't define "done" precisely, you need to ask more questions first. However, don't over-ask — if a reasonable default exists and the user's intent is clear, state your assumption and proceed.
 
-#### Phase 3: Plan the Issue Structure
+#### Phase 3: Plan the Issue Structure (complex only)
 
 For complex features that span multiple domains or have independent sub-tasks:
 
@@ -52,7 +70,7 @@ Every issue must have a concrete testing strategy. Think through:
 - **E2E / UI testing**: if the feature has user-visible behavior, describe how to verify it works end-to-end. Consider whether a Playwright E2E test is warranted (especially for features involving WebSocket state, real-time updates, or multi-step user flows). Reference existing E2E patterns in `tests/e2e/` if applicable.
 - **Regression surface**: list specific existing tests that should still pass, or areas to manually verify haven't broken.
 
-#### Phase 5: Update the Spec
+#### Phase 5: Update the Spec (complex only)
 
 `specs.md` is the source of truth for all behavior. If the new feature introduces behavior not yet covered by the spec, or modifies existing specified behavior, **update `specs.md` as part of filing the issue**:
 

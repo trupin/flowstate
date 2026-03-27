@@ -24,10 +24,14 @@ Flowstate is a state-machine orchestration system for AI agents. Nodes are tasks
   - `issues/engine/` — Engine domain issues (ENGINE-*).
   - `issues/server/` — Server domain issues (SERVER-*).
   - `issues/ui/` — UI domain issues (UI-*).
+  - `issues/evals/` — Evaluator verdict files (produced by evaluator agent).
+  - `issues/sprints/` — Sprint contract files (produced by sprint-planner agent).
 - `specs.md` — Full specification.
 - `agents/` — Detailed per-module implementation specs.
-- `.claude/agents/` — Domain-specific agent definitions (dsl-dev, state-dev, engine-dev, server-dev, ui-dev).
-- `.claude/skills/` — Reusable skills (check, lint, test, implement, review).
+- `.claude/agents/` — Agent definitions (domain: dsl-dev, state-dev, engine-dev, server-dev, ui-dev; specialized: evaluator, sprint-planner, spec-writer, context-manager).
+- `.claude/skills/` — Reusable skills (check, lint, test, implement, audit, evaluate, decompose, dashboard, pr, issue, server, e2e, create-flow).
+- `.claude/AGENT_TEMPLATE.md` — Template for generating new domain agents.
+- `.claude/handoffs/` — Context-manager handoff artifacts for session continuity (produced by context-manager agent).
 
 **Dependency direction: `dsl ← state ← engine ← server`. Never import upstream. The UI is fully independent.**
 
@@ -54,16 +58,32 @@ This project uses a multi-domain architecture with an orchestrator pattern.
 | **server-dev** | `src/flowstate/server/` | Implements server issues (SERVER-*). FastAPI, WebSocket hub, CLI, config |
 | **ui-dev** | `ui/` | Implements UI issues (UI-*). React, React Flow, WebSocket hooks |
 
+### Optional Specialized Agents
+
+These agents serve cross-cutting concerns, not specific domains.
+
+| Agent | Purpose | When to Use |
+|-------|---------|-------------|
+| **spec-writer** | Converts vague prompts into structured behavioral specs | Greenfield features, "build me X" scenarios |
+| **evaluator** | Tests the running app like a skeptical user (never reads source code) | Any issue with user-facing behavior |
+| **sprint-planner** | Defines testable "done" criteria before each implementation batch | Batches of 2+ issues, pairs with evaluator |
+| **context-manager** | Creates handoff artifacts for fresh-context restarts | Multi-session projects, periodic checkpoints |
+
 ### Orchestration Loop
 
-1. **Read `issues/PLAN.md`** to understand current state.
-2. **Find ready issues**: Scan the phase table for issues with status `todo` whose dependencies are all `done`.
-3. **Group by domain**: Collect ready DSL, state, engine, server, and UI issues separately.
-4. **Handle shared issues** (e.g., SHARED-001) yourself — they produce artifacts all domains consume.
-5. **Spawn domain agents**: Use the Agent tool to start the appropriate domain agent for each group. Domain agents run in parallel when multiple have ready work.
-6. **Verify completion**: When a domain agent reports done, verify by running the appropriate check skills (`/test`, `/lint`, `/check`).
-7. **Mark done**: Update the issue's Status field to `done` in both the issue file and `issues/PLAN.md`.
-8. **Repeat** until all issues are done or no more issues are ready.
+1. **Restore context** *(if context-manager active)*: Check `.claude/handoffs/` for recent handoff files. If found, spawn context-manager to restore session state.
+2. **Read `issues/PLAN.md`** to understand current state.
+3. **Find ready issues**: Scan the phase table for issues with status `todo` whose dependencies are all `done`.
+4. **Group by domain**: Collect ready DSL, state, engine, server, and UI issues separately.
+5. **Sprint contract** *(if evaluator active + batch > 1)*: Spawn sprint-planner to produce a sprint contract defining testable "done" criteria for this batch.
+6. **Handle shared issues** (e.g., SHARED-001) yourself — they produce artifacts all domains consume.
+7. **Spawn domain agents**: Use the Agent tool to start the appropriate domain agent for each group. Pass the sprint contract path (if one exists) alongside issue files. Domain agents run in parallel when multiple have ready work.
+8. **Verify completion**: When a domain agent reports done, verify by running the appropriate check skills (`/test`, `/lint`, `/check`).
+9. **Evaluate** *(if evaluator active)*: Spawn the evaluator agent to test the running application against specs and sprint contract. If FAIL, send the eval verdict back to the domain agent. Loop up to 3 times. If still failing, escalate to user.
+10. **Audit** *(for qualifying issues)*: Run `/audit` for P0 issues, cross-domain changes, large changes, and security-sensitive code.
+11. **Mark done**: Update the issue's Status field to `done` in both the issue file and `issues/PLAN.md`.
+12. **Checkpoint** *(if context-manager active)*: Every 3-5 completed issues, spawn context-manager to create a handoff artifact.
+13. **Repeat** until all issues are done or no more issues are ready.
 
 ### When to Spawn Which Agent
 
@@ -109,15 +129,16 @@ This applies even when the user describes the work inline. Capture it as a struc
 
 ## SDLC (Software Development Lifecycle)
 
-Every issue follows this cycle, enforced by domain agents:
+Every issue follows this cycle, enforced by domain agents and the orchestrator:
 
-1. **Implement** — Write code per the issue's Technical Design and Acceptance Criteria.
+1. **Implement** — Write code per the issue's Technical Design and Acceptance Criteria. Read the sprint contract (if one exists in `issues/sprints/`) to understand what the evaluator will verify.
 2. **Test** — Run tests per the issue's Testing Strategy. Write new tests for new code.
 3. **Check** — Run linters and type checkers (`/lint`, `/check` for Python, `cd ui && npm run lint` for UI).
-4. **Review** — Self-review: check for spec compliance, missing tests, code quality issues.
-5. **Refactor** — Fix any issues found in review. Re-run tests to confirm no regressions.
-6. **Surface** — If something cannot be resolved, escalate (see Escalation Protocol).
-7. **Report** — Mark issue as done and report to orchestrator.
+4. **Audit** — Self-audit: check for spec compliance, missing tests, code quality issues.
+5. **Refactor** — Fix any issues found in audit. Re-run tests to confirm no regressions.
+6. **Evaluate** *(if evaluator active)* — Orchestrator runs the evaluator agent against the running application. If FAIL, domain agent receives the eval verdict and fixes. Loop up to 3 times.
+7. **Surface** — If something cannot be resolved, escalate (see Escalation Protocol).
+8. **Report** — Mark issue as done and report to orchestrator.
 
 ### Definition of Done
 
@@ -126,19 +147,26 @@ An issue is done when:
 - Tests pass with no regressions.
 - Type checks pass (pyright for Python, build succeeds for UI).
 - Lint passes (ruff for Python, ESLint for UI).
+- Evaluator verdict is PASS (if evaluator is active).
 - Code follows project conventions.
 
 ## Available Skills
 
 | Skill | Purpose |
 |-------|---------|
-| `/check` | Validate a .flow file (parse + type-check) |
+| `/dashboard` | Quick project dashboard: issues, git state, what's actionable now |
+| `/decompose` | Decompose a feature into phased issues across domains |
+| `/implement` | Pick ready issues from plan and implement via domain agents |
+| `/issue` | Manage issues: create, close, implement, plan, refine, list, show |
+| `/evaluate` | Run the behavioral evaluator against completed issues |
+| `/audit` | Audit recent changes for defects, missing tests, spec drift |
 | `/lint` | Run all linters and formatters (ruff, pyright, eslint) |
 | `/test` | Run the test suite with optional module or test name filter |
-| `/implement` | Pick ready issues from plan and implement via domain agents |
-| `/review` | Review recent changes for defects, missing tests, spec drift |
+| `/check` | Validate a .flow file (parse + type-check) |
 | `/server` | Manage the dev server: start, stop, debug, logs, status, restart |
 | `/create-flow` | Create a new .flow state machine from a natural language description |
+| `/e2e` | Run real E2E tests with Playwright + Claude Code subprocesses |
+| `/pr` | Create a pull request from the current branch |
 
 ## Git Workflow
 
