@@ -7,7 +7,7 @@
 </p>
 
 <p align="center">
-  State-machine orchestration for AI agents. Define workflows as directed graphs where nodes are tasks executed by Claude Code subprocesses and edges are transitions evaluated by judge agents.
+  State-machine orchestration for AI agents. Define workflows as directed graphs where nodes are tasks and edges are transitions. Works with any <a href="https://agentclientprotocol.com/get-started/introduction">ACP-compatible</a> agent runtime — Claude Code, custom agents, or any provider that implements the Agent Communication Protocol.
 </p>
 
 ![Flowstate UI](demo/unit_test_gen_final.png)
