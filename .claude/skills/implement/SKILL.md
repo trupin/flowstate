@@ -62,7 +62,7 @@ If `.claude/agents/evaluator.md` exists AND the batch has more than 1 issue:
 2. Pass it the list of ready issue IDs.
 3. It produces a sprint contract at `issues/sprints/sprint-NNN.md`.
 
-Skip this step for single issues or trivial batches (P2, single-file changes).
+Skip this step for single issues.
 
 ## 4. Handle shared issues directly
 
@@ -104,7 +104,7 @@ When a domain agent reports completion:
 
 1. **Simplify**: Use `/simplify` on the changed code.
 2. **Run checks**: `/test` and `/lint` to verify correctness. If checks fail, report failures to the domain agent for fixing. Loop until checks pass.
-3. **Evaluate** (if evaluator active): If `.claude/agents/evaluator.md` exists:
+3. **Evaluate** (mandatory when evaluator active): If `.claude/agents/evaluator.md` exists, **always** run the evaluator — no exceptions, regardless of issue size or perceived triviality. Small issues compound; skipping evaluation defeats its purpose.
    - Spawn the evaluator agent for this issue (or the sprint batch).
    - The evaluator will audit the E2E proof-of-work for credibility and completeness.
    - If FAIL: send the eval verdict file (`issues/evals/<ISSUE-ID>-eval.md`) to the domain agent for fixing. After fixes, re-run `/test` + `/lint`, then re-evaluate.

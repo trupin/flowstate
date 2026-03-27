@@ -67,6 +67,39 @@
   color: var(--accent);
 }
 
+/* --- Execution picker tabs --- */
+
+.execution-tabs {
+  display: flex;
+  gap: 0;
+  border-bottom: 1px solid var(--border);
+  padding: 0 12px;
+  flex-shrink: 0;
+}
+
+.execution-tab {
+  background: none;
+  border: none;
+  border-bottom: 2px solid transparent;
+  color: var(--text-secondary);
+  font-size: 12px;
+  font-weight: 500;
+  padding: 6px 10px;
+  cursor: pointer;
+  transition:
+    color 0.15s,
+    border-color 0.15s;
+}
+
+.execution-tab:hover {
+  color: var(--text-primary);
+}
+
+.execution-tab.active {
+  color: var(--accent);
+  border-bottom-color: var(--accent);
+}
+
 /* --- Node details panel --- */
 
 .log-viewer-details {

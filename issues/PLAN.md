@@ -323,6 +323,19 @@
 | UI-054     | Format subtask events as styled log entries               | ui     | P1       | —           | done |
 
 
+### Phase 20 — Subtask Reliability
+
+
+| Issue      | Title                                                     | Domain | Priority | Depends On  | Status |
+| ---------- | --------------------------------------------------------- | ------ | -------- | ----------- | ------ |
+| ENGINE-054 | Agents don't complete subtasks before exiting             | engine | P1       | —           | done |
+| ENGINE-055 | Unconditional edges don't increment generation on cycle   | engine | P1       | —           | done |
+| UI-055     | Add execution picker when node has multiple runs          | ui     | P1       | —           | done |
+| UI-056     | Remove lock button from graph controls                    | ui     | P2       | —           | done |
+| UI-057     | Collapse conditional edge labels into clickable icons     | ui     | P1       | —           | done |
+| UI-058     | Condition popover overlaps target node — open upward      | ui     | P1       | —           | done |
+
+
 ---
 
 ## Cross-Domain Coordination

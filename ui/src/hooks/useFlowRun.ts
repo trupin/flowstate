@@ -12,6 +12,7 @@ import type {
 interface UseFlowRunReturn {
   run: FlowRun | null;
   tasks: Map<string, TaskExecution>;
+  allTaskExecutions: Map<string, TaskExecution[]>;
   edges: EdgeTransition[];
   selectedTask: string | null;
   selectTask: (nodeName: string | null) => void;
@@ -26,10 +27,34 @@ interface UseFlowRunReturn {
   subtaskVersion: number;
 }
 
+function upsertAllTaskExecutions(
+  setAllTaskExecutions: React.Dispatch<
+    React.SetStateAction<Map<string, TaskExecution[]>>
+  >,
+  nodeName: string,
+  taskExec: TaskExecution,
+) {
+  setAllTaskExecutions((prev) => {
+    const next = new Map(prev);
+    const list = [...(next.get(nodeName) ?? [])];
+    const existingIdx = list.findIndex((e) => e.id === taskExec.id);
+    if (existingIdx >= 0) {
+      list[existingIdx] = taskExec;
+    } else {
+      list.push(taskExec);
+    }
+    next.set(nodeName, list);
+    return next;
+  });
+}
+
 function applyEvent(
   event: FlowEvent,
   setRun: React.Dispatch<React.SetStateAction<FlowRun | null>>,
   setTasks: React.Dispatch<React.SetStateAction<Map<string, TaskExecution>>>,
+  setAllTaskExecutions: React.Dispatch<
+    React.SetStateAction<Map<string, TaskExecution[]>>
+  >,
   setEdges: React.Dispatch<React.SetStateAction<EdgeTransition[]>>,
   setLogs: React.Dispatch<React.SetStateAction<Map<string, LogEntry[]>>>,
   setRunningTaskNames: React.Dispatch<React.SetStateAction<string[]>>,
@@ -81,39 +106,47 @@ function applyEvent(
           : prev,
       );
       break;
-    case 'task.started':
+    case 'task.started': {
+      const startedExec: TaskExecution = {
+        id: payload.task_execution_id as string,
+        flow_run_id: event.flow_run_id,
+        node_name: payload.node_name as string,
+        node_type: (payload.node_type as TaskExecution['node_type']) ?? 'task',
+        status: 'running',
+        generation: payload.generation as number,
+        context_mode: (payload.context_mode as string) ?? 'full_history',
+        cwd: (payload.cwd as string) ?? '.',
+        task_dir: (payload.task_dir as string) ?? undefined,
+      };
       setTasks((prev) => {
         const next = new Map(prev);
         next.set(payload.node_name as string, {
           ...next.get(payload.node_name as string),
-          id: payload.task_execution_id as string,
-          flow_run_id: event.flow_run_id,
-          node_name: payload.node_name as string,
-          node_type:
-            (payload.node_type as TaskExecution['node_type']) ?? 'task',
-          status: 'running',
-          generation: payload.generation as number,
-          context_mode: (payload.context_mode as string) ?? 'full_history',
-          cwd: (payload.cwd as string) ?? '.',
-          task_dir: (payload.task_dir as string) ?? undefined,
+          ...startedExec,
         });
         return next;
       });
+      upsertAllTaskExecutions(
+        setAllTaskExecutions,
+        payload.node_name as string,
+        startedExec,
+      );
       setRunningTaskNames((prev) => {
         const name = payload.node_name as string;
         if (prev.includes(name)) return prev;
         return [...prev, name].sort();
       });
       break;
-    case 'task.completed':
+    }
+    case 'task.completed': {
+      const completedNodeName = payload.node_name as string;
       setTasks((prev) => {
         const next = new Map(prev);
-        const nodeName = payload.node_name as string;
-        const existing = next.get(nodeName);
-        next.set(nodeName, {
+        const existing = next.get(completedNodeName);
+        next.set(completedNodeName, {
           id: existing?.id ?? (payload.task_execution_id as string) ?? '',
           flow_run_id: existing?.flow_run_id ?? event.flow_run_id,
-          node_name: nodeName,
+          node_name: completedNodeName,
           node_type: existing?.node_type ?? 'task',
           status: 'completed',
           generation: existing?.generation ?? 1,
@@ -123,21 +156,37 @@ function applyEvent(
         });
         return next;
       });
+      setAllTaskExecutions((prev) => {
+        const next = new Map(prev);
+        const list = [...(next.get(completedNodeName) ?? [])];
+        const execId = (payload.task_execution_id as string | undefined) ?? '';
+        const idx = list.findIndex((e) => e.id === execId);
+        if (idx >= 0 && list[idx]) {
+          list[idx] = {
+            ...list[idx],
+            status: 'completed',
+            elapsed_seconds: payload.elapsed_seconds as number,
+          };
+          next.set(completedNodeName, list);
+        }
+        return next;
+      });
       setRunningTaskNames((prev) => {
-        const name = payload.node_name as string;
+        const name = completedNodeName;
         const filtered = prev.filter((n) => n !== name);
         return filtered.length === prev.length ? prev : filtered;
       });
       break;
-    case 'task.failed':
+    }
+    case 'task.failed': {
+      const failedNodeName = payload.node_name as string;
       setTasks((prev) => {
         const next = new Map(prev);
-        const nodeName = payload.node_name as string;
-        const existing = next.get(nodeName);
-        next.set(nodeName, {
+        const existing = next.get(failedNodeName);
+        next.set(failedNodeName, {
           id: existing?.id ?? (payload.task_execution_id as string) ?? '',
           flow_run_id: existing?.flow_run_id ?? event.flow_run_id,
-          node_name: nodeName,
+          node_name: failedNodeName,
           node_type: existing?.node_type ?? 'task',
           status: 'failed',
           generation: existing?.generation ?? 1,
@@ -147,12 +196,28 @@ function applyEvent(
         });
         return next;
       });
+      setAllTaskExecutions((prev) => {
+        const next = new Map(prev);
+        const list = [...(next.get(failedNodeName) ?? [])];
+        const execId = (payload.task_execution_id as string | undefined) ?? '';
+        const idx = list.findIndex((e) => e.id === execId);
+        if (idx >= 0 && list[idx]) {
+          list[idx] = {
+            ...list[idx],
+            status: 'failed',
+            error_message: payload.error_message as string,
+          };
+          next.set(failedNodeName, list);
+        }
+        return next;
+      });
       setRunningTaskNames((prev) => {
-        const name = payload.node_name as string;
+        const name = failedNodeName;
         const filtered = prev.filter((n) => n !== name);
         return filtered.length === prev.length ? prev : filtered;
       });
       break;
+    }
     case 'task.log':
       setLogs((prev) => {
         const next = new Map(prev);
@@ -171,15 +236,15 @@ function applyEvent(
         return next;
       });
       break;
-    case 'task.waiting':
+    case 'task.waiting': {
+      const waitingNodeName = payload.node_name as string;
       setTasks((prev) => {
         const next = new Map(prev);
-        const nodeName = payload.node_name as string;
-        const existing = next.get(nodeName);
-        next.set(nodeName, {
+        const existing = next.get(waitingNodeName);
+        next.set(waitingNodeName, {
           id: existing?.id ?? (payload.task_execution_id as string) ?? '',
           flow_run_id: existing?.flow_run_id ?? event.flow_run_id,
-          node_name: nodeName,
+          node_name: waitingNodeName,
           node_type: existing?.node_type ?? 'task',
           status: 'waiting',
           generation: existing?.generation ?? 1,
@@ -189,23 +254,51 @@ function applyEvent(
         });
         return next;
       });
+      setAllTaskExecutions((prev) => {
+        const next = new Map(prev);
+        const list = [...(next.get(waitingNodeName) ?? [])];
+        const execId = (payload.task_execution_id as string | undefined) ?? '';
+        const idx = list.findIndex((e) => e.id === execId);
+        if (idx >= 0 && list[idx]) {
+          list[idx] = {
+            ...list[idx],
+            status: 'waiting',
+            wait_until: payload.wait_until as string,
+          };
+          next.set(waitingNodeName, list);
+        }
+        return next;
+      });
       break;
-    case 'task.interrupted':
+    }
+    case 'task.interrupted': {
+      const interruptedNodeName = payload.node_name as string;
       setTasks((prev) => {
         const next = new Map(prev);
-        const nodeName = payload.node_name as string;
-        const existing = next.get(nodeName);
+        const existing = next.get(interruptedNodeName);
         if (existing) {
-          next.set(nodeName, { ...existing, status: 'interrupted' });
+          next.set(interruptedNodeName, { ...existing, status: 'interrupted' });
+        }
+        return next;
+      });
+      setAllTaskExecutions((prev) => {
+        const next = new Map(prev);
+        const list = [...(next.get(interruptedNodeName) ?? [])];
+        const execId = (payload.task_execution_id as string | undefined) ?? '';
+        const idx = list.findIndex((e) => e.id === execId);
+        if (idx >= 0 && list[idx]) {
+          list[idx] = { ...list[idx], status: 'interrupted' };
+          next.set(interruptedNodeName, list);
         }
         return next;
       });
       setRunningTaskNames((prev) => {
-        const name = payload.node_name as string;
+        const name = interruptedNodeName;
         const filtered = prev.filter((n) => n !== name);
         return filtered.length === prev.length ? prev : filtered;
       });
       break;
+    }
     case 'edge.transition':
       setEdges((prev) => [
         ...prev,
@@ -233,6 +326,9 @@ export function useFlowRun(runId: string): UseFlowRunReturn {
     useWebSocket(wsUrl);
   const [run, setRun] = useState<FlowRun | null>(null);
   const [tasks, setTasks] = useState<Map<string, TaskExecution>>(new Map());
+  const [allTaskExecutions, setAllTaskExecutions] = useState<
+    Map<string, TaskExecution[]>
+  >(new Map());
   const [edges, setEdges] = useState<EdgeTransition[]>([]);
   const [selectedTask, setSelectedTask] = useState<string | null>(null);
   const [isManualSelection, setIsManualSelection] = useState(false);
@@ -263,13 +359,26 @@ export function useFlowRun(runId: string): UseFlowRunReturn {
       .then((detail) => {
         setRun(detail);
         const taskMap = new Map<string, TaskExecution>();
+        const allExecsMap = new Map<string, TaskExecution[]>();
         detail.tasks.forEach((t) => {
+          // Keep latest for existing consumers
           const existing = taskMap.get(t.node_name);
           if (!existing || t.generation > existing.generation) {
             taskMap.set(t.node_name, t);
           }
+          // Collect all executions
+          const list = allExecsMap.get(t.node_name) ?? [];
+          list.push(t);
+          allExecsMap.set(t.node_name, list);
         });
+        // Sort each node's executions by started_at ascending
+        allExecsMap.forEach((execs) =>
+          execs.sort((a, b) =>
+            (a.started_at ?? '').localeCompare(b.started_at ?? ''),
+          ),
+        );
         setTasks(taskMap);
+        setAllTaskExecutions(allExecsMap);
         setEdges(detail.edges);
         // Sync running task names from fetched data
         const running = detail.tasks
@@ -319,6 +428,7 @@ export function useFlowRun(runId: string): UseFlowRunReturn {
         event,
         setRun,
         setTasks,
+        setAllTaskExecutions,
         setEdges,
         setLogs,
         setRunningTaskNames,
@@ -338,34 +448,38 @@ export function useFlowRun(runId: string): UseFlowRunReturn {
   // Fetch task logs from the API when a task is selected (manually or auto)
   // and we have no logs yet. This handles the case where the run completed
   // before the page loaded, so WebSocket log events were never received.
+  // Fetches logs for ALL executions of the selected node so that switching
+  // between runs in the execution picker has data immediately.
   useEffect(() => {
     if (!effectiveTask || !run) return;
-    const taskExec = tasks.get(effectiveTask);
-    if (!taskExec) return;
+    const nodeExecs = allTaskExecutions.get(effectiveTask) ?? [];
+    if (nodeExecs.length === 0) return;
 
-    // Only fetch if we don't already have logs for this task
-    const existingLogs = logs.get(taskExec.id);
-    if (existingLogs && existingLogs.length > 0) return;
+    for (const taskExec of nodeExecs) {
+      // Only fetch if we don't already have logs for this execution
+      const existingLogs = logs.get(taskExec.id);
+      if (existingLogs && existingLogs.length > 0) continue;
 
-    api.runs
-      .taskLogs(runId, taskExec.id)
-      .then((resp) => {
-        // The API returns { logs: [...], ... } but client types it as LogEntry[]
-        const logEntries: LogEntry[] = Array.isArray(resp)
-          ? resp
-          : ((resp as unknown as { logs: LogEntry[] }).logs ?? []);
-        if (logEntries.length > 0) {
-          setLogs((prev) => {
-            const next = new Map(prev);
-            next.set(taskExec.id, logEntries);
-            return next;
-          });
-        }
-      })
-      .catch(() => {
-        // Silently ignore fetch errors
-      });
-  }, [effectiveTask, tasks, run, runId, logs]);
+      api.runs
+        .taskLogs(runId, taskExec.id)
+        .then((resp) => {
+          // The API returns { logs: [...], ... } but client types it as LogEntry[]
+          const logEntries: LogEntry[] = Array.isArray(resp)
+            ? resp
+            : ((resp as unknown as { logs: LogEntry[] }).logs ?? []);
+          if (logEntries.length > 0) {
+            setLogs((prev) => {
+              const next = new Map(prev);
+              next.set(taskExec.id, logEntries);
+              return next;
+            });
+          }
+        })
+        .catch(() => {
+          // Silently ignore fetch errors
+        });
+    }
+  }, [effectiveTask, allTaskExecutions, run, runId, logs]);
 
   const selectTask = useCallback((nodeName: string | null) => {
     if (nodeName === null) {
@@ -395,6 +509,7 @@ export function useFlowRun(runId: string): UseFlowRunReturn {
   return {
     run,
     tasks,
+    allTaskExecutions,
     edges,
     selectedTask,
     selectTask,

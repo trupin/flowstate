@@ -608,10 +608,12 @@ class FlowExecutor:
             edge = outgoing[0]
             assert edge.target is not None
             ctx_mode = get_context_mode(edge, flow)
+            is_cycle = _has_been_executed(flow_run_id, edge.target, self._db)
+            target_gen = _get_next_generation(flow_run_id, edge.target, self._db) if is_cycle else 1
             next_task_id = self._create_task_execution(
                 flow_run_id=flow_run_id,
                 node=flow.nodes[edge.target],
-                generation=1,
+                generation=target_gen,
                 flow=flow,
                 expanded_prompt=expanded_prompts[edge.target],
                 data_dir=data_dir,
