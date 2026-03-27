@@ -338,6 +338,15 @@
 | ENGINE-056 | Auto-complete remaining subtasks on task exit             | engine | P1       | —           | done |
 
 
+### Phase 21 — Log Quality
+
+
+| Issue      | Title                                                     | Domain | Priority | Depends On  | Status |
+| ---------- | --------------------------------------------------------- | ------ | -------- | ----------- | ------ |
+| ENGINE-057 | Filter noise streaming chunks at ACP bridge               | engine | P1       | —           | done |
+| UI-060     | Improve log noise classification                          | ui     | P1       | —           | done |
+
+
 ---
 
 ## Cross-Domain Coordination
