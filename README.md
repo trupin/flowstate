@@ -110,6 +110,72 @@ uv run pyright                    # type check
 cd ui && npm run lint             # UI lint
 ```
 
+## Contributing with Claude Code
+
+This project is built with [Claude Code](https://claude.ai/claude-code) using a multi-agent architecture. The entire development workflow — from planning to implementation to evaluation — is driven by Claude Code agents and slash commands.
+
+### Issue tracker
+
+Issues live in `issues/` as structured markdown files, organized by domain:
+
+```
+issues/
+├── PLAN.md              # Phased execution plan with dependency tracking
+├── TEMPLATE.md          # Issue file format
+├── dsl/                 # DSL-* issues (parser, type checker)
+├── state/               # STATE-* issues (SQLite persistence)
+├── engine/              # ENGINE-* issues (executor, judge, budget)
+├── server/              # SERVER-* issues (API, WebSocket, CLI)
+├── ui/                  # UI-* issues (React frontend)
+├── shared/              # SHARED-* issues (cross-domain)
+├── evals/               # Evaluator verdict files
+└── sprints/             # Sprint contract files
+```
+
+`PLAN.md` is the master plan — a table of all issues across phases with status and dependency tracking. To find what to work on, look for issues with status `todo` whose dependencies are all `done`.
+
+### Agents
+
+Claude Code agents are defined in `.claude/agents/`. Each domain has a dedicated agent that knows its module, its constraints, and its test patterns:
+
+| Agent | Domain | What it does |
+|-------|--------|-------------|
+| `dsl-dev` | `src/flowstate/dsl/` | Lark grammar, parser, type checker |
+| `state-dev` | `src/flowstate/state/` | SQLite schema, repository, models |
+| `engine-dev` | `src/flowstate/engine/` | Executor, subprocess manager, judge, budget |
+| `server-dev` | `src/flowstate/server/` | FastAPI, WebSocket, CLI, config |
+| `ui-dev` | `ui/` | React, React Flow, WebSocket hooks |
+
+There are also specialized agents for cross-cutting concerns: `evaluator` (tests the running app like a skeptical user), `sprint-planner` (defines testable "done" criteria), `spec-writer` (turns vague ideas into structured specs), and `context-manager` (session continuity across conversations).
+
+### Slash commands
+
+Reusable skills in `.claude/skills/` are invoked as slash commands:
+
+| Command | Purpose |
+|---------|---------|
+| `/implement` | Pick ready issues from the plan and implement via domain agents |
+| `/decompose` | Break a feature into phased issues across domains |
+| `/dashboard` | Project status: issues, git state, what's actionable |
+| `/test` | Run the test suite |
+| `/lint` | Run all linters (ruff, pyright, eslint) |
+| `/evaluate` | Run the behavioral evaluator against completed work |
+| `/audit` | Check for defects, missing tests, spec drift |
+| `/issue` | Create, close, list, or refine issues |
+| `/e2e` | Run end-to-end tests with Playwright |
+| `/create-flow` | Generate a `.flow` file from a natural language description |
+
+### Workflow
+
+The typical workflow with Claude Code:
+
+1. Run `/dashboard` to see what's ready
+2. Run `/implement` — the orchestrator reads `PLAN.md`, finds ready issues, spawns the right domain agents in parallel, and verifies their work
+3. Agents implement, test, and lint. The orchestrator commits once everything passes
+4. Run `/evaluate` to test the running app against specs
+
+You can also work on individual issues directly by telling Claude Code which issue to implement, or create new issues with `/issue`.
+
 ## License
 
 MIT
