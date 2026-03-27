@@ -1,27 +1,26 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 520 120">
-  <!-- Icon: state machine graph -->
-  <g transform="translate(10, 12)">
-    <!-- Edges -->
-    <line x1="24" y1="34" x2="24" y2="40" stroke="#22c55e" stroke-width="2" opacity="0.5"/>
-    <line x1="24" y1="56" x2="12" y2="64" stroke="#22c55e" stroke-width="2" opacity="0.5"/>
-    <line x1="24" y1="56" x2="36" y2="64" stroke="#22c55e" stroke-width="2" opacity="0.5"/>
-    <line x1="12" y1="80" x2="24" y2="88" stroke="#22c55e" stroke-width="2" opacity="0.5"/>
-    <line x1="36" y1="80" x2="24" y2="88" stroke="#22c55e" stroke-width="2" opacity="0.5"/>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 200 64">
+  <!-- Wordmark — centered above the wave -->
+  <text x="100" y="30" text-anchor="middle" font-family="system-ui, -apple-system, 'Segoe UI', sans-serif" font-size="40" font-weight="700" letter-spacing="-1" fill="#132a1e">flow<tspan fill="#16a34a">state</tspan></text>
 
-    <!-- Entry node (diamond) -->
-    <polygon points="24,14 34,24 24,34 14,24" fill="#22c55e"/>
+  <!-- Sine wave, deep green left -->
+  <path d="M14,46 C28,34 42,34 56,46 C70,58 84,58 98,46" stroke="#16a34a" stroke-width="3" fill="none" opacity="0.45" stroke-linecap="round"/>
+  <!-- Dark slate right -->
+  <path d="M98,46 C112,34 126,34 140,46 C154,58 168,58 182,46" stroke="#132a1e" stroke-width="3" fill="none" opacity="0.3" stroke-linecap="round"/>
 
-    <!-- Task node (middle) -->
-    <rect x="14" y="40" width="20" height="16" rx="3" fill="#22c55e"/>
+  <!-- Entry node -->
+  <circle cx="14" cy="46" r="5" fill="none" stroke="#16a34a" stroke-width="2" opacity="0.8"/>
+  <circle cx="14" cy="46" r="2" fill="#16a34a" opacity="0.9"/>
 
-    <!-- Fork nodes -->
-    <rect x="2" y="64" width="20" height="16" rx="3" fill="#22c55e" opacity="0.8"/>
-    <rect x="26" y="64" width="20" height="16" rx="3" fill="#22c55e" opacity="0.8"/>
+  <!-- Green node -->
+  <circle cx="56" cy="46" r="3" fill="#16a34a" opacity="0.55"/>
 
-    <!-- Exit node (rounded) -->
-    <rect x="12" y="88" width="24" height="16" rx="8" fill="#16a34a"/>
-  </g>
+  <!-- Mid node -->
+  <circle cx="98" cy="46" r="3.5" fill="#16a34a" opacity="0.45"/>
 
-  <!-- Wordmark -->
-  <text x="68" y="78" font-family="system-ui, -apple-system, 'Segoe UI', sans-serif" font-size="56" font-weight="700" letter-spacing="-1.5" fill="#1e293b">flow<tspan fill="#22c55e">state</tspan></text>
+  <!-- Dark node -->
+  <circle cx="140" cy="46" r="3" fill="#132a1e" opacity="0.45"/>
+
+  <!-- Exit node -->
+  <circle cx="182" cy="46" r="5" fill="none" stroke="#132a1e" stroke-width="2" opacity="0.55"/>
+  <circle cx="182" cy="46" r="3" fill="#132a1e" opacity="0.6"/>
 </svg>

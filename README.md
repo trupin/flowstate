@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="logo.svg" alt="Flowstate" width="520">
+  <img src="logo.png" alt="Flowstate" width="520">
 </p>
 
 <p align="center">
