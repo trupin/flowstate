@@ -347,6 +347,14 @@
 | UI-060     | Improve log noise classification                          | ui     | P1       | —           | done |
 
 
+### Phase 22 — Log Viewer UX
+
+
+| Issue  | Title                                                      | Domain | Priority | Depends On | Status |
+| ------ | ---------------------------------------------------------- | ------ | -------- | ---------- | ------ |
+| UI-061 | Replace Clear and Show all buttons with Verbose toggle     | ui     | P1       | —          | done |
+
+
 ---
 
 ## Cross-Domain Coordination

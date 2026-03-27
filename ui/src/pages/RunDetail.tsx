@@ -35,7 +35,6 @@ export function RunDetail() {
     isManualSelection,
     runningTaskNames,
     logs,
-    clearLogs,
     isConnected,
     send,
     subtaskVersion,
@@ -190,13 +189,6 @@ export function RunDetail() {
   const selectedLogs = selectedTaskExecution
     ? (logs.get(selectedTaskExecution.id) ?? [])
     : [];
-
-  // --- UI-050: Clear logs handler ---
-  const handleClear = useCallback(() => {
-    if (selectedTaskExecution?.id) {
-      clearLogs(selectedTaskExecution.id);
-    }
-  }, [selectedTaskExecution?.id, clearLogs]);
 
   // Build task execution info for the log viewer details panel
   const taskExecutionInfo: TaskExecutionInfo | null = useMemo(() => {
@@ -421,7 +413,6 @@ export function RunDetail() {
               isAutoFollow={isAutoFollow}
               showFollowButton={showFollowButton}
               onFollowClick={clearManualSelection}
-              onClear={handleClear}
               runId={id}
               taskExecutionId={selectedTaskExecution?.id}
               subtaskVersion={subtaskVersion}

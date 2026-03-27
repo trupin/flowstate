@@ -34,7 +34,6 @@ export interface LogViewerProps {
   isAutoFollow?: boolean;
   showFollowButton?: boolean;
   onFollowClick?: () => void;
-  onClear?: () => void;
   runId?: string;
   taskExecutionId?: string;
   subtaskVersion?: number;
@@ -840,7 +839,6 @@ export function LogViewer({
   isAutoFollow = false,
   showFollowButton = false,
   onFollowClick,
-  onClear,
   runId,
   taskExecutionId,
   subtaskVersion = 0,
@@ -856,28 +854,26 @@ export function LogViewer({
   const containerRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
   const [pinned, setPinned] = useState(true);
-  const [showAll, setShowAll] = useState(false);
+  const [verbose, setVerbose] = useState(false);
   const [showDetails, setShowDetails] = useState(false);
   const [inputValue, setInputValue] = useState('');
   const [sending, setSending] = useState(false);
   const [interrupting, setInterrupting] = useState(false);
   const [inputError, setInputError] = useState<string | null>(null);
 
-  const { filteredLogs, noiseCount } = useMemo(() => {
+  const filteredLogs = useMemo(() => {
     const filtered: LogEntry[] = [];
-    let noise = 0;
     for (const entry of logs) {
       const category = classifyEntry(entry.content, entry.log_type);
       if (category === 'noise') {
-        noise++;
-        if (showAll) filtered.push(entry);
+        if (verbose) filtered.push(entry);
       } else if (category === 'visible') {
         filtered.push(entry);
       }
       // 'hidden' entries are always excluded
     }
-    return { filteredLogs: filtered, noiseCount: noise };
-  }, [logs, showAll]);
+    return filtered;
+  }, [logs, verbose]);
 
   const groupedEntries = useMemo(
     () => groupLogEntries(filteredLogs),
@@ -896,7 +892,7 @@ export function LogViewer({
   useEffect(() => {
     if (!isAutoFollow) {
       setPinned(true);
-      setShowAll(false);
+      setVerbose(false);
       setShowDetails(false);
     }
   }, [taskName, isAutoFollow]);
@@ -1001,19 +997,13 @@ export function LogViewer({
               Details
             </button>
           )}
-          {noiseCount > 0 && (
-            <button
-              className={`log-viewer-show-all ${showAll ? 'active' : ''}`}
-              onClick={() => setShowAll((prev) => !prev)}
-              title={
-                showAll
-                  ? 'Hide system noise'
-                  : `Show all (${noiseCount} hidden)`
-              }
-            >
-              {showAll ? 'Hide noise' : `Show all (${noiseCount})`}
-            </button>
-          )}
+          <button
+            className={`log-viewer-show-all ${verbose ? 'active' : ''}`}
+            onClick={() => setVerbose((prev) => !prev)}
+            title={verbose ? 'Showing all log entries' : 'Show all log entries'}
+          >
+            Verbose
+          </button>
           <button
             className={`log-viewer-pin ${pinned ? 'active' : ''}`}
             onClick={() => {
@@ -1027,9 +1017,6 @@ export function LogViewer({
             title={pinned ? 'Auto-scroll ON' : 'Auto-scroll OFF'}
           >
             {pinned ? '\u2B07 Pinned' : '\u2B07 Unpinned'}
-          </button>
-          <button onClick={onClear} title="Clear logs (client-side only)">
-            Clear
           </button>
         </div>
       </div>
