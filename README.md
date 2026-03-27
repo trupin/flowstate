@@ -19,7 +19,7 @@ Complex AI workflows need structure. Flowstate gives you:
 
 ## Example
 
-```
+```js
 flow discuss_flowstate {
     budget = 30m
     context = handoff
@@ -78,7 +78,7 @@ cd ui && npm install && npm run dev
 
 ## Architecture
 
-```
+```bash
 src/flowstate/
 ├── dsl/      # Lark parser + type checker
 ├── state/    # SQLite persistence

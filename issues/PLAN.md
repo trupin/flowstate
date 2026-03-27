@@ -298,6 +298,14 @@
 | UI-046     | View Results modal on completed runs                       | ui     | P1       | SERVER-017  | done   |
 
 
+### Phase 18 — Bug Fixes
+
+
+| Issue      | Title                                                     | Domain | Priority | Depends On  | Status |
+| ---------- | --------------------------------------------------------- | ------ | -------- | ----------- | ------ |
+| UI-048     | Fix node generation badges missing for some nodes in cycle flows | ui | P1  | —           | todo   |
+
+
 ---
 
 ## Cross-Domain Coordination
