@@ -113,8 +113,9 @@
   flex-shrink: 0;
 }
 
-/* Action buttons on task items */
-.task-action-btn {
+/* Action buttons on task items — scoped to .task-item to prevent
+   specificity conflicts with .task-rerun-btn defined in TaskDetail.css */
+.task-item .task-action-btn {
   background: none;
   border: none;
   color: var(--text-secondary);
@@ -125,24 +126,25 @@
   flex-shrink: 0;
   opacity: 0;
   transition: opacity 0.1s;
+  margin-left: 0;
 }
 
 .task-item:hover .task-action-btn {
   opacity: 1;
 }
 
-.task-action-btn:hover {
+.task-item .task-action-btn:hover {
   color: var(--text-primary);
   background: none;
 }
 
-.task-cancel-btn:hover,
-.task-remove-btn:hover {
+.task-item .task-cancel-btn:hover,
+.task-item .task-remove-btn:hover {
   color: var(--error);
 }
 
-.task-edit-btn:hover,
-.task-rerun-btn:hover {
+.task-item .task-edit-btn:hover,
+.task-item .task-rerun-btn:hover {
   color: var(--accent);
 }
 
