@@ -333,6 +333,7 @@
 | UI-055     | Add execution picker when node has multiple runs          | ui     | P1       | —           | done |
 | UI-056     | Remove lock button from graph controls                    | ui     | P2       | —           | done |
 | UI-057     | Collapse conditional edge labels into clickable icons     | ui     | P1       | —           | done |
+| UI-058     | Condition popover overlaps target node — open upward      | ui     | P1       | —           | done |
 
 
 ---
