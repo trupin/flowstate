@@ -518,6 +518,8 @@ function isNoiseText(text: string): boolean {
   if (trimmed === '') return true;
   // Bare markdown fences, quotes, list markers, emphasis markers
   if (/^[`>*_~\-\s]+$/.test(trimmed)) return true;
+  // Single non-alphanumeric character (period, comma, colon, etc.)
+  if (trimmed.length === 1 && /[^a-zA-Z0-9]/.test(trimmed)) return true;
   return false;
 }
 
@@ -540,9 +542,14 @@ function classifyEntry(
     isNoiseText(parsed.text)
   )
     return 'hidden';
-  // Noise: system init, rate limit (accessible via "Show all")
+  // Noise: system init, rate limit, generic "Tool completed" (accessible via "Show all")
   if (parsed.kind === 'system_init') return 'noise';
   if (parsed.kind === 'rate_limit') return 'noise';
+  if (
+    parsed.kind === 'tool_result' &&
+    parsed.content.trim() === 'Tool completed'
+  )
+    return 'noise';
   return 'visible';
 }
 
