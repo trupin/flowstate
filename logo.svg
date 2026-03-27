@@ -1,44 +1,27 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 520 120">
-  <defs>
-    <linearGradient id="nodeGrad" x1="0%" y1="0%" x2="100%" y2="100%">
-      <stop offset="0%" style="stop-color:#22c55e"/>
-      <stop offset="100%" style="stop-color:#16a34a"/>
-    </linearGradient>
-    <linearGradient id="edgeGrad" x1="0%" y1="0%" x2="100%" y2="0%">
-      <stop offset="0%" style="stop-color:#22c55e;stop-opacity:0.8"/>
-      <stop offset="100%" style="stop-color:#22c55e;stop-opacity:0.3"/>
-    </linearGradient>
-    <filter id="glow">
-      <feGaussianBlur stdDeviation="2" result="blur"/>
-      <feComposite in="SourceGraphic" in2="blur" operator="over"/>
-    </filter>
-  </defs>
-
   <!-- Icon: state machine graph -->
   <g transform="translate(10, 12)">
     <!-- Edges -->
-    <line x1="24" y1="24" x2="24" y2="48" stroke="#22c55e" stroke-width="2" stroke-opacity="0.5"/>
-    <line x1="24" y1="48" x2="12" y2="72" stroke="#22c55e" stroke-width="2" stroke-opacity="0.5"/>
-    <line x1="24" y1="48" x2="36" y2="72" stroke="#22c55e" stroke-width="2" stroke-opacity="0.5"/>
-    <line x1="12" y1="72" x2="24" y2="96" stroke="#22c55e" stroke-width="2" stroke-opacity="0.5"/>
-    <line x1="36" y1="72" x2="24" y2="96" stroke="#22c55e" stroke-width="2" stroke-opacity="0.5"/>
+    <line x1="24" y1="34" x2="24" y2="40" stroke="#22c55e" stroke-width="2" opacity="0.5"/>
+    <line x1="24" y1="56" x2="12" y2="64" stroke="#22c55e" stroke-width="2" opacity="0.5"/>
+    <line x1="24" y1="56" x2="36" y2="64" stroke="#22c55e" stroke-width="2" opacity="0.5"/>
+    <line x1="12" y1="80" x2="24" y2="88" stroke="#22c55e" stroke-width="2" opacity="0.5"/>
+    <line x1="36" y1="80" x2="24" y2="88" stroke="#22c55e" stroke-width="2" opacity="0.5"/>
 
     <!-- Entry node (diamond) -->
-    <polygon points="24,14 34,24 24,34 14,24" fill="url(#nodeGrad)" filter="url(#glow)"/>
+    <polygon points="24,14 34,24 24,34 14,24" fill="#22c55e"/>
 
     <!-- Task node (middle) -->
-    <rect x="14" y="40" width="20" height="16" rx="3" fill="url(#nodeGrad)" filter="url(#glow)"/>
+    <rect x="14" y="40" width="20" height="16" rx="3" fill="#22c55e"/>
 
     <!-- Fork nodes -->
-    <rect x="2" y="64" width="20" height="16" rx="3" fill="url(#nodeGrad)" opacity="0.85" filter="url(#glow)"/>
-    <rect x="26" y="64" width="20" height="16" rx="3" fill="url(#nodeGrad)" opacity="0.85" filter="url(#glow)"/>
+    <rect x="2" y="64" width="20" height="16" rx="3" fill="#22c55e" opacity="0.8"/>
+    <rect x="26" y="64" width="20" height="16" rx="3" fill="#22c55e" opacity="0.8"/>
 
     <!-- Exit node (rounded) -->
-    <rect x="12" y="88" width="24" height="16" rx="8" fill="url(#nodeGrad)" filter="url(#glow)"/>
+    <rect x="12" y="88" width="24" height="16" rx="8" fill="#16a34a"/>
   </g>
 
   <!-- Wordmark -->
-  <text x="68" y="78" font-family="system-ui, -apple-system, 'Segoe UI', sans-serif" font-size="56" font-weight="700" letter-spacing="-1.5" fill="#1e293b">
-    flow<tspan fill="#22c55e">state</tspan>
-  </text>
+  <text x="68" y="78" font-family="system-ui, -apple-system, 'Segoe UI', sans-serif" font-size="56" font-weight="700" letter-spacing="-1.5" fill="#1e293b">flow<tspan fill="#22c55e">state</tspan></text>
 </svg>
