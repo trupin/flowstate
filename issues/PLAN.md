@@ -376,6 +376,40 @@
 | UI-064     | Show sandbox indicator in flow detail panel                  | ui     | P2       | DSL-008            | done |
 
 
+### Phase 23c — OpenShell Sandbox Fixes
+
+
+| Issue      | Title                                                        | Domain | Priority | Depends On  | Status |
+| ---------- | ------------------------------------------------------------ | ------ | -------- | ----------- | ------ |
+| ENGINE-060 | Use openshell claude image and auto-providers for sandbox    | engine | P0       | ENGINE-059  | done |
+
+
+### Phase 24a — Lumon DSL Support
+
+
+| Issue   | Title                                                              | Domain | Priority | Depends On | Status |
+| ------- | ------------------------------------------------------------------ | ------ | -------- | ---------- | ------ |
+| DSL-014 | Add lumon and lumon_config settings to flow and node declarations  | dsl    | P0       | —          | todo   |
+
+
+### Phase 24b — Lumon Engine Integration
+
+
+| Issue      | Title                                                        | Domain | Priority | Depends On  | Status |
+| ---------- | ------------------------------------------------------------ | ------ | -------- | ----------- | ------ |
+| ENGINE-061 | Add lumon dependency and integrate deploy into task setup    | engine | P0       | DSL-014     | todo   |
+| ENGINE-062 | Adapt task output reading for lumon sandbox directory         | engine | P1       | ENGINE-061  | todo   |
+
+
+### Phase 24c — Lumon Server & UI
+
+
+| Issue      | Title                                                        | Domain | Priority | Depends On  | Status |
+| ---------- | ------------------------------------------------------------ | ------ | -------- | ----------- | ------ |
+| SERVER-021 | Expose lumon settings in flow and node API responses         | server | P1       | DSL-014     | todo   |
+| UI-065     | Show lumon security indicator in flow detail panel           | ui     | P1       | SERVER-021  | todo   |
+
+
 ---
 
 ## Cross-Domain Coordination
