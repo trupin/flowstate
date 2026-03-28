@@ -1712,3 +1712,149 @@ class TestSubtasksParameter:
         )
         with pytest.raises(FlowParseError):
             parse_flow(source)
+
+
+# ---------------------------------------------------------------------------
+# Additional: sandbox and sandbox_policy attributes (DSL-008)
+# ---------------------------------------------------------------------------
+
+
+class TestSandboxParameter:
+    """Test sandbox boolean and sandbox_policy string at flow level and node level."""
+
+    def test_flow_sandbox_true(self):
+        source = (
+            "flow f { budget = 1h on_error = pause context = handoff sandbox = true "
+            'entry a { prompt = "x" } exit b { prompt = "y" } a -> b }'
+        )
+        flow = parse_flow(source)
+        assert flow.sandbox is True
+
+    def test_flow_sandbox_false(self):
+        source = (
+            "flow f { budget = 1h on_error = pause context = handoff sandbox = false "
+            'entry a { prompt = "x" } exit b { prompt = "y" } a -> b }'
+        )
+        flow = parse_flow(source)
+        assert flow.sandbox is False
+
+    def test_flow_sandbox_default_is_false(self):
+        source = (
+            "flow f { budget = 1h on_error = pause context = handoff "
+            'entry a { prompt = "x" } exit b { prompt = "y" } a -> b }'
+        )
+        flow = parse_flow(source)
+        assert flow.sandbox is False
+
+    def test_flow_sandbox_policy_parses(self):
+        source = (
+            "flow f { budget = 1h on_error = pause context = handoff sandbox = true "
+            'sandbox_policy = "policies/strict.yaml" '
+            'entry a { prompt = "x" } exit b { prompt = "y" } a -> b }'
+        )
+        flow = parse_flow(source)
+        assert flow.sandbox_policy == "policies/strict.yaml"
+
+    def test_flow_sandbox_policy_default_is_none(self):
+        source = (
+            "flow f { budget = 1h on_error = pause context = handoff "
+            'entry a { prompt = "x" } exit b { prompt = "y" } a -> b }'
+        )
+        flow = parse_flow(source)
+        assert flow.sandbox_policy is None
+
+    def test_node_sandbox_true_on_entry(self):
+        source = (
+            "flow f { budget = 1h on_error = pause context = handoff sandbox = true "
+            'entry a { prompt = "x" sandbox = true } exit b { prompt = "y" } a -> b }'
+        )
+        flow = parse_flow(source)
+        assert flow.nodes["a"].sandbox is True
+
+    def test_node_sandbox_false_on_task(self):
+        source = (
+            "flow f { budget = 1h on_error = pause context = handoff sandbox = true "
+            'entry a { prompt = "x" } '
+            'task t { prompt = "work" sandbox = false } '
+            'exit b { prompt = "y" } a -> t t -> b }'
+        )
+        flow = parse_flow(source)
+        assert flow.nodes["t"].sandbox is False
+
+    def test_node_sandbox_true_on_exit(self):
+        source = (
+            "flow f { budget = 1h on_error = pause context = handoff sandbox = true "
+            'entry a { prompt = "x" } exit b { prompt = "y" sandbox = true } a -> b }'
+        )
+        flow = parse_flow(source)
+        assert flow.nodes["b"].sandbox is True
+
+    def test_node_sandbox_true_on_atomic(self):
+        source = (
+            "flow f { budget = 1h on_error = pause context = handoff sandbox = true "
+            'entry a { prompt = "x" } '
+            'atomic d { prompt = "deploy" sandbox = true } '
+            'exit b { prompt = "y" } a -> d d -> b }'
+        )
+        flow = parse_flow(source)
+        assert flow.nodes["d"].sandbox is True
+
+    def test_node_sandbox_default_is_none(self):
+        source = (
+            "flow f { budget = 1h on_error = pause context = handoff "
+            'entry a { prompt = "x" } exit b { prompt = "y" } a -> b }'
+        )
+        flow = parse_flow(source)
+        assert flow.nodes["a"].sandbox is None
+        assert flow.nodes["b"].sandbox is None
+
+    def test_node_sandbox_policy_parses(self):
+        source = (
+            "flow f { budget = 1h on_error = pause context = handoff sandbox = true "
+            'entry a { prompt = "x" sandbox = true sandbox_policy = "node-policy.yaml" } '
+            'exit b { prompt = "y" } a -> b }'
+        )
+        flow = parse_flow(source)
+        assert flow.nodes["a"].sandbox_policy == "node-policy.yaml"
+
+    def test_node_sandbox_policy_default_is_none(self):
+        source = (
+            "flow f { budget = 1h on_error = pause context = handoff "
+            'entry a { prompt = "x" } exit b { prompt = "y" } a -> b }'
+        )
+        flow = parse_flow(source)
+        assert flow.nodes["a"].sandbox_policy is None
+        assert flow.nodes["b"].sandbox_policy is None
+
+    def test_flow_and_node_sandbox_together(self):
+        """TEST-19: Combined flow and node sandbox attributes parse together."""
+        source = (
+            "flow f { budget = 1h on_error = pause context = handoff sandbox = true "
+            'sandbox_policy = "flow.yaml" '
+            'entry a { prompt = "x" } '
+            'task t { prompt = "work" sandbox = false } '
+            'exit b { prompt = "y" } a -> t t -> b }'
+        )
+        flow = parse_flow(source)
+        assert flow.sandbox is True
+        assert flow.sandbox_policy == "flow.yaml"
+        assert flow.nodes["t"].sandbox is False
+        assert flow.nodes["t"].sandbox_policy is None
+
+    def test_fixture_flow_sandbox(self):
+        """Parse the valid_sandbox.flow fixture and verify flow-level sandbox attrs."""
+        flow = parse_flow(load_fixture("valid_sandbox.flow"))
+        assert flow.sandbox is True
+        assert flow.sandbox_policy == "policies/strict.yaml"
+
+    def test_fixture_node_sandbox(self):
+        """Parse the valid_sandbox.flow fixture and verify node-level sandbox attrs."""
+        flow = parse_flow(load_fixture("valid_sandbox.flow"))
+        assert flow.nodes["prepare"].sandbox is True
+        assert flow.nodes["prepare"].sandbox_policy == "node-policy.yaml"
+        assert flow.nodes["build"].sandbox is False
+        assert flow.nodes["build"].sandbox_policy is None
+        assert flow.nodes["test_suite"].sandbox is None  # inherits from flow
+        assert flow.nodes["test_suite"].sandbox_policy is None
+        assert flow.nodes["deploy"].sandbox is True
+        assert flow.nodes["deploy"].sandbox_policy is None

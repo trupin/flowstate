@@ -36,6 +36,7 @@ def check_flow(flow: Flow) -> list[FlowTypeError]:
     errors.extend(_check_cycles(flow))
     errors.extend(_check_fork_join(flow))
     errors.extend(_check_scheduling(flow))
+    errors.extend(_check_sandbox(flow))
     return errors
 
 
@@ -849,5 +850,41 @@ def _check_scheduling(flow: Flow) -> list[FlowTypeError]:
                     node.name,
                 )
             )
+
+    return errors
+
+
+# ---------------------------------------------------------------------------
+# SB1: Sandbox rules
+# ---------------------------------------------------------------------------
+
+
+def _check_sandbox(flow: Flow) -> list[FlowTypeError]:
+    errors: list[FlowTypeError] = []
+
+    # SB1 (flow level): sandbox_policy requires sandbox = true
+    if flow.sandbox_policy is not None and not flow.sandbox:
+        errors.append(
+            FlowTypeError(
+                "SB1",
+                "sandbox_policy requires sandbox = true at flow level",
+                flow.name,
+            )
+        )
+
+    # SB1 (node level): sandbox_policy requires sandbox = true (explicit or inherited)
+    for node in flow.nodes.values():
+        if node.sandbox_policy is not None:
+            # Determine the effective sandbox value for this node
+            effective_sandbox = node.sandbox if node.sandbox is not None else flow.sandbox
+            if not effective_sandbox:
+                errors.append(
+                    FlowTypeError(
+                        "SB1",
+                        f"Node '{node.name}' sets sandbox_policy but sandbox is not enabled"
+                        " (sandbox must be true, either on the node or inherited from flow)",
+                        node.name,
+                    )
+                )
 
     return errors

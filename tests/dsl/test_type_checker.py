@@ -1735,3 +1735,123 @@ class TestSchedulingParserRoundTrip:
         assert flow.nodes["cooldown"].node_type == NodeType.WAIT
         assert flow.nodes["barrier"].node_type == NodeType.FENCE
         assert flow.nodes["deploy"].node_type == NodeType.ATOMIC
+
+
+# ===========================================================================
+# DSL-008: Sandbox rules (SB1)
+# ===========================================================================
+
+
+class TestSB1SandboxPolicyRequiresSandbox:
+    """SB1: sandbox_policy requires sandbox = true at flow and node level."""
+
+    def test_flow_sandbox_policy_without_sandbox_is_error(self) -> None:
+        """TEST-12: sandbox_policy at flow level with sandbox defaulting to false."""
+        flow = _minimal_flow(sandbox_policy="strict.yaml")
+        errors = check_flow(flow)
+        sb1 = _errors_with_rule(errors, "SB1")
+        assert len(sb1) == 1
+        assert "sandbox_policy requires sandbox = true" in sb1[0].message
+
+    def test_flow_sandbox_false_with_policy_is_error(self) -> None:
+        """TEST-13: explicit sandbox = false with sandbox_policy."""
+        flow = _minimal_flow(sandbox=False, sandbox_policy="strict.yaml")
+        errors = check_flow(flow)
+        sb1 = _errors_with_rule(errors, "SB1")
+        assert len(sb1) == 1
+
+    def test_flow_sandbox_true_with_policy_is_valid(self) -> None:
+        """TEST-17: sandbox = true with sandbox_policy is valid."""
+        flow = _minimal_flow(sandbox=True, sandbox_policy="strict.yaml")
+        errors = check_flow(flow)
+        sb1 = _errors_with_rule(errors, "SB1")
+        assert len(sb1) == 0
+
+    def test_flow_sandbox_true_without_policy_is_valid(self) -> None:
+        """TEST-18: sandbox = true without sandbox_policy is valid."""
+        flow = _minimal_flow(sandbox=True)
+        errors = check_flow(flow)
+        sb1 = _errors_with_rule(errors, "SB1")
+        assert len(sb1) == 0
+
+    def test_node_sandbox_false_with_policy_is_error(self) -> None:
+        """TEST-14: node sets sandbox = false with sandbox_policy."""
+        nodes = {
+            "start": Node(
+                name="start",
+                node_type=NodeType.ENTRY,
+                prompt="begin",
+                sandbox=False,
+                sandbox_policy="node.yaml",
+            ),
+            "end": Node(name="end", node_type=NodeType.EXIT, prompt="done"),
+        }
+        flow = _minimal_flow(nodes=nodes, sandbox=True)
+        errors = check_flow(flow)
+        sb1 = _errors_with_rule(errors, "SB1")
+        assert len(sb1) == 1
+        assert "start" in sb1[0].message
+
+    def test_node_sandbox_policy_inherits_false_from_flow_is_error(self) -> None:
+        """TEST-15: node sets sandbox_policy, inherits sandbox = false from flow."""
+        nodes = {
+            "start": Node(
+                name="start",
+                node_type=NodeType.ENTRY,
+                prompt="begin",
+                sandbox_policy="node.yaml",
+            ),
+            "end": Node(name="end", node_type=NodeType.EXIT, prompt="done"),
+        }
+        flow = _minimal_flow(nodes=nodes, sandbox=False)
+        errors = check_flow(flow)
+        sb1 = _errors_with_rule(errors, "SB1")
+        assert len(sb1) == 1
+        assert "start" in sb1[0].message
+
+    def test_node_sandbox_policy_inherits_true_from_flow_is_valid(self) -> None:
+        """TEST-16: node sets sandbox_policy, inherits sandbox = true from flow."""
+        nodes = {
+            "start": Node(
+                name="start",
+                node_type=NodeType.ENTRY,
+                prompt="begin",
+                sandbox_policy="node.yaml",
+            ),
+            "end": Node(name="end", node_type=NodeType.EXIT, prompt="done"),
+        }
+        flow = _minimal_flow(nodes=nodes, sandbox=True)
+        errors = check_flow(flow)
+        sb1 = _errors_with_rule(errors, "SB1")
+        assert len(sb1) == 0
+
+    def test_node_sandbox_true_with_policy_overrides_flow_false(self) -> None:
+        """Node with sandbox = true and sandbox_policy is valid even if flow sandbox = false."""
+        nodes = {
+            "start": Node(
+                name="start",
+                node_type=NodeType.ENTRY,
+                prompt="begin",
+                sandbox=True,
+                sandbox_policy="node.yaml",
+            ),
+            "end": Node(name="end", node_type=NodeType.EXIT, prompt="done"),
+        }
+        flow = _minimal_flow(nodes=nodes, sandbox=False)
+        errors = check_flow(flow)
+        sb1 = _errors_with_rule(errors, "SB1")
+        assert len(sb1) == 0
+
+    def test_no_sandbox_attrs_is_valid(self) -> None:
+        """Default flow (no sandbox attrs) has no SB1 errors."""
+        flow = _minimal_flow()
+        errors = check_flow(flow)
+        sb1 = _errors_with_rule(errors, "SB1")
+        assert len(sb1) == 0
+
+    def test_sandbox_fixture_type_checks(self) -> None:
+        """The valid_sandbox.flow fixture should type-check with no SB1 errors."""
+        flow = parse_flow(load_fixture("valid_sandbox.flow"))
+        errors = check_flow(flow)
+        sb1 = _errors_with_rule(errors, "SB1")
+        assert len(sb1) == 0

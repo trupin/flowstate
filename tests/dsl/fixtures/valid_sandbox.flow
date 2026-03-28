@@ -1,0 +1,36 @@
+// Test fixture: flow-level and node-level sandbox attributes
+flow sandboxed_pipeline {
+    budget = 2h
+    on_error = pause
+    context = handoff
+    sandbox = true
+    sandbox_policy = "policies/strict.yaml"
+
+    input {
+        task_name: string
+    }
+
+    entry prepare {
+        prompt = "Prepare environment"
+        sandbox = true
+        sandbox_policy = "node-policy.yaml"
+    }
+
+    task build {
+        prompt = "Build the project"
+        sandbox = false
+    }
+
+    task test_suite {
+        prompt = "Run tests"
+    }
+
+    exit deploy {
+        prompt = "Deploy to production"
+        sandbox = true
+    }
+
+    prepare -> build
+    build -> test_suite
+    test_suite -> deploy
+}
