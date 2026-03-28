@@ -4,7 +4,7 @@
 server
 
 ## Status
-todo
+in_progress
 
 ## Priority
 P1 (important)
@@ -72,11 +72,36 @@ Add the same check to `_create_restart_executor()` and the queue task execution 
 ## E2E Verification Log
 
 ### Post-Implementation Verification
-_[Agent fills this in]_
+
+**Test results** (9 tests, all passing):
+```
+tests/server/test_sandbox_preflight.py::TestSandboxedFlowWithoutOpenshellReturns400::test_start_run_sandboxed_no_openshell PASSED
+tests/server/test_sandbox_preflight.py::TestSandboxedFlowWithOpenshellProceeds::test_start_run_sandboxed_with_openshell PASSED
+tests/server/test_sandbox_preflight.py::TestNonSandboxedFlowSkipsCheck::test_start_run_plain_flow_no_check PASSED
+tests/server/test_sandbox_preflight.py::TestNodeLevelSandboxTriggersCheck::test_start_run_node_sandboxed_no_openshell PASSED
+tests/server/test_sandbox_preflight.py::TestErrorMessageIncludesInstallInstructions::test_error_body_contains_install_url PASSED
+tests/server/test_sandbox_preflight.py::TestRestartRetryPathsAlsoCheck::test_retry_terminal_sandboxed_no_openshell PASSED
+tests/server/test_sandbox_preflight.py::TestRestartRetryPathsAlsoCheck::test_skip_terminal_sandboxed_no_openshell PASSED
+tests/server/test_sandbox_preflight.py::TestRestartRetryPathsAlsoCheck::test_retry_terminal_plain_flow_proceeds PASSED
+tests/server/test_sandbox_preflight.py::TestTriggerScheduleSandboxCheck::test_trigger_sandboxed_schedule_no_openshell PASSED
+```
+
+**Regression check**: All 83 related server tests pass (test_run_management, test_restart_from_task, test_logs_schedules, test_sandbox_preflight). Only 4 pre-existing failures in test_app.py/test_cli.py (port 8080 vs 9090 config issue, unrelated).
+
+**Lint**: `uv run ruff check src/flowstate/server/ tests/server/` -- All checks passed!
+**Type check**: `uv run pyright src/flowstate/server/` -- 0 errors, 0 warnings, 0 informations
+
+**Code paths covered**:
+1. `start_run()` -- POST /api/flows/:id/runs (line ~314)
+2. `_restart_from_task()` -- used by retry_task and skip_task REST endpoints (line ~733)
+3. `trigger_schedule()` -- POST /api/schedules/:id/trigger (line ~1069)
+4. `_try_restart_from_task()` in websocket.py -- WebSocket-based restart (line ~349)
+
+**Conclusion**: All acceptance criteria met. Sandbox preflight check added to all 4 code paths that start flow runs.
 
 ## Completion Checklist
-- [ ] Unit tests written and passing
+- [x] Unit tests written and passing
 - [ ] `/simplify` run on all changed code
-- [ ] `/lint` passes (ruff, pyright, eslint)
-- [ ] Acceptance criteria verified
-- [ ] E2E verification log filled in with concrete evidence
+- [x] `/lint` passes (ruff, pyright, eslint)
+- [x] Acceptance criteria verified
+- [x] E2E verification log filled in with concrete evidence

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 import uuid
 from typing import TYPE_CHECKING, Any
 
@@ -266,6 +267,26 @@ def _get_harness_mgr(request: Request) -> Any:
     return getattr(request.app.state, "harness_manager", None)
 
 
+def _check_sandbox_requirements(flow_ast: Any) -> None:
+    """Raise FlowstateError(400) if the flow needs a sandbox but openshell is not installed.
+
+    Checks both the flow-level ``sandbox`` flag and each node's ``sandbox`` field.
+    If any of them is ``True``, verifies that ``openshell`` is on PATH.
+    """
+    from flowstate.dsl.ast import Flow
+
+    if not isinstance(flow_ast, Flow):
+        return
+
+    needs_sandbox = flow_ast.sandbox or any(n.sandbox is True for n in flow_ast.nodes.values())
+    if needs_sandbox and not shutil.which("openshell"):
+        raise FlowstateError(
+            "Flow requires sandbox but 'openshell' is not installed or not on PATH. "
+            "Install it: curl -LsSf https://raw.githubusercontent.com/NVIDIA/OpenShell/main/install.sh | sh",
+            status_code=400,
+        )
+
+
 @router.post("/flows/{flow_id}/runs", status_code=202)
 async def start_run(
     request: Request,
@@ -293,6 +314,9 @@ async def start_run(
 
     # Parse the flow AST from source DSL
     flow_ast = parse_flow(flow.source_dsl)
+
+    # Pre-flight: verify openshell is available if sandbox is enabled
+    _check_sandbox_requirements(flow_ast)
 
     # Create executor
     db = _get_db(request)
@@ -715,6 +739,9 @@ async def _restart_from_task(
             status_code=400,
         ) from e
 
+    # Pre-flight: verify openshell is available if sandbox is enabled
+    _check_sandbox_requirements(flow_ast)
+
     executor = _create_restart_executor(request)
     run_manager = _get_run_manager(request)
 
@@ -1034,6 +1061,9 @@ async def trigger_schedule(request: Request, schedule_id: str) -> dict[str, str]
             f"Scheduled flow is not valid: {e}",
             status_code=400,
         ) from e
+
+    # Pre-flight: verify openshell is available if sandbox is enabled
+    _check_sandbox_requirements(flow_ast)
 
     # Create executor and start run
     config = request.app.state.config

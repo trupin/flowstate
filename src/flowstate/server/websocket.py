@@ -348,6 +348,28 @@ class WebSocketHub:
 
             flow_ast = parse_flow(flow_def.source_dsl)
 
+            # Pre-flight: verify openshell is available if sandbox is enabled
+            import shutil
+
+            from flowstate.dsl.ast import Flow
+
+            if isinstance(flow_ast, Flow):
+                needs_sandbox = flow_ast.sandbox or any(
+                    n.sandbox is True for n in flow_ast.nodes.values()
+                )
+                if needs_sandbox and not shutil.which("openshell"):
+                    msg = (
+                        "Flow requires sandbox but 'openshell' is not installed or not on PATH. "
+                        "Install it: curl -LsSf "
+                        "https://raw.githubusercontent.com/NVIDIA/OpenShell/main/install.sh | sh"
+                    )
+                    if websocket:
+                        await self._send_safe(
+                            websocket,
+                            {"type": "error", "payload": {"message": msg}},
+                        )
+                    return False
+
             executor = FlowExecutor(
                 db=self._db,
                 event_callback=self.on_flow_event,
