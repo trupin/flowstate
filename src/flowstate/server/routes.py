@@ -268,12 +268,14 @@ def _get_harness_mgr(request: Request) -> Any:
     return getattr(request.app.state, "harness_manager", None)
 
 
-async def _check_sandbox_requirements(flow_ast: Any) -> None:
-    """Raise FlowstateError(400) if the flow needs a sandbox but openshell is not available.
+async def _check_sandbox_requirements(
+    flow_ast: Any, sandbox_name: str = "flowstate-claude"
+) -> None:
+    """Raise FlowstateError(400) if the flow needs a sandbox but requirements are not met.
 
     Checks both the flow-level ``sandbox`` flag and each node's ``sandbox`` field.
     If any of them is ``True``, verifies that ``openshell`` is on PATH and
-    that the OpenShell gateway is reachable.
+    that the named persistent sandbox exists and is Ready.
     """
     from flowstate.dsl.ast import Flow
 
@@ -292,27 +294,29 @@ async def _check_sandbox_requirements(flow_ast: Any) -> None:
             status_code=400,
         )
 
-    # Verify gateway is reachable
+    # Verify named sandbox exists and is Ready
     try:
         proc = await asyncio.create_subprocess_exec(
             "openshell",
             "sandbox",
-            "list",
+            "get",
+            sandbox_name,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
         )
-        _, stderr = await asyncio.wait_for(proc.communicate(), timeout=10)
-        if proc.returncode != 0:
-            stderr_text = stderr.decode() if stderr else ""
+        stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=10)
+        if proc.returncode != 0 or b"Ready" not in stdout:
             raise FlowstateError(
-                "OpenShell gateway is not reachable. "
-                f"Run 'openshell gateway start' first. Error: {stderr_text[:200]}",
+                f"Sandbox '{sandbox_name}' not found or not ready. "
+                f"Create it with: openshell sandbox create --name {sandbox_name} "
+                "--from <image> --auto-providers\n"
+                f"Then login: openshell sandbox connect {sandbox_name}  &&  claude login",
                 status_code=400,
             )
     except TimeoutError as exc:
         raise FlowstateError(
-            "OpenShell gateway is not reachable (timed out). "
-            "Run 'openshell gateway start' first.",
+            f"Sandbox check for '{sandbox_name}' timed out. "
+            "Is the OpenShell gateway running? Run 'openshell gateway start' first.",
             status_code=400,
         ) from exc
     except OSError as exc:
@@ -350,12 +354,12 @@ async def start_run(
     # Parse the flow AST from source DSL
     flow_ast = parse_flow(flow.source_dsl)
 
-    # Pre-flight: verify openshell is available if sandbox is enabled
-    await _check_sandbox_requirements(flow_ast)
-
     # Create executor
     db = _get_db(request)
     config = request.app.state.config
+
+    # Pre-flight: verify openshell is available if sandbox is enabled
+    await _check_sandbox_requirements(flow_ast, config.sandbox_name)
     harness = request.app.state.harness
     ws_hub = request.app.state.ws_hub
     harness_mgr = _get_harness_mgr(request)
@@ -368,6 +372,7 @@ async def start_run(
         worktree_cleanup=config.worktree_cleanup,
         harness_mgr=harness_mgr,
         server_base_url=f"http://{config.server_host}:{config.server_port}",
+        sandbox_name=config.sandbox_name,
     )
 
     # Register and start as background task with a single shared run_id
@@ -729,6 +734,7 @@ def _create_restart_executor(request: Request) -> FlowExecutor:
         worktree_cleanup=config.worktree_cleanup,
         harness_mgr=harness_mgr,
         server_base_url=f"http://{config.server_host}:{config.server_port}",
+        sandbox_name=config.sandbox_name,
     )
 
 
@@ -775,7 +781,8 @@ async def _restart_from_task(
         ) from e
 
     # Pre-flight: verify openshell is available if sandbox is enabled
-    await _check_sandbox_requirements(flow_ast)
+    config = request.app.state.config
+    await _check_sandbox_requirements(flow_ast, config.sandbox_name)
 
     executor = _create_restart_executor(request)
     run_manager = _get_run_manager(request)
@@ -1097,11 +1104,11 @@ async def trigger_schedule(request: Request, schedule_id: str) -> dict[str, str]
             status_code=400,
         ) from e
 
-    # Pre-flight: verify openshell is available if sandbox is enabled
-    await _check_sandbox_requirements(flow_ast)
-
     # Create executor and start run
     config = request.app.state.config
+
+    # Pre-flight: verify openshell is available if sandbox is enabled
+    await _check_sandbox_requirements(flow_ast, config.sandbox_name)
     harness = request.app.state.harness
     ws_hub = request.app.state.ws_hub
     harness_mgr = _get_harness_mgr(request)
@@ -1114,6 +1121,7 @@ async def trigger_schedule(request: Request, schedule_id: str) -> dict[str, str]
         worktree_cleanup=config.worktree_cleanup,
         harness_mgr=harness_mgr,
         server_base_url=f"http://{config.server_host}:{config.server_port}",
+        sandbox_name=config.sandbox_name,
     )
 
     run_manager = _get_run_manager(request)

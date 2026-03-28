@@ -138,6 +138,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None]:
         worktree_cleanup=config.worktree_cleanup,
         harness_mgr=harness_mgr,
         server_base_url=f"http://{config.server_host}:{config.server_port}",
+        sandbox_name=config.sandbox_name,
     )
     app.state.ws_hub = ws_hub
 

@@ -234,6 +234,7 @@ class FlowExecutor:
         worktree_cleanup: bool = True,
         harness_mgr: HarnessManager | None = None,
         server_base_url: str | None = None,
+        sandbox_name: str = "flowstate-claude",
     ) -> None:
         self._db = db
         self._raw_callback = event_callback
@@ -270,8 +271,8 @@ class FlowExecutor:
         self._interrupted_tasks: set[str] = set()
         # Map task_execution_id -> session_id for interrupt dispatch
         self._task_session: dict[str, str] = {}
-        # Sandbox lifecycle management (ENGINE-059)
-        self._sandbox_mgr = SandboxManager()
+        # Sandbox lifecycle management (ENGINE-059, ENGINE-065)
+        self._sandbox_mgr = SandboxManager(sandbox_name=sandbox_name)
 
     def _emit(self, event: FlowEvent) -> None:
         """Emit an event via the callback, catching any callback exceptions."""
@@ -1535,9 +1536,6 @@ class FlowExecutor:
             if atask:
                 atask.cancel()
 
-        # Destroy all active sandboxes (ENGINE-059)
-        await self._sandbox_mgr.destroy_all()
-
         # Wait for all tasks to finish cancellation
         if self._running_tasks:
             await asyncio.gather(*self._running_tasks.values(), return_exceptions=True)
@@ -2355,7 +2353,6 @@ class FlowExecutor:
         )
 
         session_id: str | None = None
-        use_sandbox = False  # set inside try; used by finally for sandbox cleanup
         # Create a per-task resume event for interrupt→wait→resume coordination
         resume_event = asyncio.Event()
         self._task_resume_events[task_execution_id] = resume_event
@@ -2373,7 +2370,6 @@ class FlowExecutor:
 
             # Resolve sandbox settings: node-level overrides flow-level (ENGINE-059)
             use_sandbox = node.sandbox if node.sandbox is not None else flow.sandbox
-            sandbox_policy = node.sandbox_policy or flow.sandbox_policy
 
             if use_sandbox:
                 from flowstate.engine.acp_client import AcpHarness
@@ -2382,14 +2378,19 @@ class FlowExecutor:
                 harness_command: list[str] = getattr(harness, "command", [])
                 harness_env: dict[str, str] | None = getattr(harness, "env", None)
 
-                await self._sandbox_mgr.register(task_execution_id)
-                wrapped_cmd = self._sandbox_mgr.wrap_command(
-                    harness_command,
-                    task_execution_id,
-                    sandbox_policy,
+                wrapped_cmd = self._sandbox_mgr.wrap_command(harness_command)
+                # Sandbox connect takes a few seconds; use a longer timeout.
+                # session_cwd="/sandbox" ensures the agent creates sessions
+                # inside the sandbox filesystem, not the host path.
+                harness = AcpHarness(
+                    command=wrapped_cmd,
+                    env=harness_env,
+                    init_timeout=120.0,
+                    session_cwd="/sandbox",
                 )
-                # Sandbox provisioning takes ~35s; use a longer init timeout
-                harness = AcpHarness(command=wrapped_cmd, env=harness_env, init_timeout=120.0)
+                # openshell runs on the host, so cwd must be a valid host path.
+                # The agent inside the sandbox works in /sandbox automatically.
+                task_exec.cwd = str(Path.cwd())
 
             # Determine if this is a session resume or fresh task
             if task_exec.context_mode == ContextMode.SESSION.value and task_exec.claude_session_id:
@@ -2620,9 +2621,6 @@ class FlowExecutor:
                     )
                 )
         finally:
-            # Destroy sandbox if one was created for this task (ENGINE-059)
-            if use_sandbox:
-                await self._sandbox_mgr.destroy(task_execution_id)
             # Clean up per-task coordination state
             self._task_resume_events.pop(task_execution_id, None)
             self._interrupted_tasks.discard(task_execution_id)

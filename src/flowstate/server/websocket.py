@@ -56,6 +56,7 @@ class WebSocketHub:
         self._worktree_cleanup: bool = True
         self._harness_mgr: HarnessManager | None = None
         self._server_base_url: str | None = None
+        self._sandbox_name: str = "flowstate-claude"
 
     def set_run_manager(self, run_manager: RunManager) -> None:
         """Set the RunManager reference for control action delegation."""
@@ -72,6 +73,7 @@ class WebSocketHub:
         worktree_cleanup: bool = True,
         harness_mgr: HarnessManager | None = None,
         server_base_url: str | None = None,
+        sandbox_name: str = "flowstate-claude",
     ) -> None:
         """Store config needed to construct FlowExecutor for restart_from_task."""
         self._harness = harness
@@ -79,6 +81,7 @@ class WebSocketHub:
         self._worktree_cleanup = worktree_cleanup
         self._harness_mgr = harness_mgr
         self._server_base_url = server_base_url
+        self._sandbox_name = sandbox_name
 
     @property
     def subscriptions(self) -> dict[str, set[WebSocket]]:
@@ -372,22 +375,26 @@ class WebSocketHub:
                             )
                         return False
 
-                    # Verify gateway is reachable
+                    # Verify named sandbox exists and is Ready
+                    sandbox_name = self._sandbox_name
                     try:
                         proc = await asyncio.create_subprocess_exec(
                             "openshell",
                             "sandbox",
-                            "list",
+                            "get",
+                            sandbox_name,
                             stdout=asyncio.subprocess.PIPE,
                             stderr=asyncio.subprocess.PIPE,
                         )
-                        _, stderr = await asyncio.wait_for(proc.communicate(), timeout=10)
-                        if proc.returncode != 0:
-                            stderr_text = stderr.decode() if stderr else ""
+                        stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=10)
+                        if proc.returncode != 0 or b"Ready" not in stdout:
                             msg = (
-                                "OpenShell gateway is not reachable. "
-                                "Run 'openshell gateway start' first. "
-                                f"Error: {stderr_text[:200]}"
+                                f"Sandbox '{sandbox_name}' not found or not ready. "
+                                f"Create it with: openshell sandbox create "
+                                f"--name {sandbox_name} --from <image> "
+                                "--auto-providers\n"
+                                f"Then login: openshell sandbox connect "
+                                f"{sandbox_name}  &&  claude login"
                             )
                             if websocket:
                                 await self._send_safe(
@@ -397,8 +404,8 @@ class WebSocketHub:
                             return False
                     except (TimeoutError, OSError) as exc:
                         msg = (
-                            "OpenShell gateway is not reachable. "
-                            f"Run 'openshell gateway start' first. Error: {exc}"
+                            f"Sandbox check for '{sandbox_name}' failed. "
+                            f"Is the OpenShell gateway running? Error: {exc}"
                         )
                         if websocket:
                             await self._send_safe(
@@ -415,6 +422,7 @@ class WebSocketHub:
                 worktree_cleanup=self._worktree_cleanup,
                 harness_mgr=self._harness_mgr,
                 server_base_url=self._server_base_url,
+                sandbox_name=self._sandbox_name,
             )
 
             restart_coro = executor.restart_from_task(flow_ast, flow_run_id, task_id, action)

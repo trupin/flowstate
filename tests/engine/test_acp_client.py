@@ -1838,3 +1838,60 @@ class TestAcpHarnessInitTimeout:
             pytest.raises(AcpSessionError, match="initialize timed out"),
         ):
             await harness.start_session("/workspace", "sess-timeout")
+
+
+# ---------------------------------------------------------------------------
+# session_cwd override
+# ---------------------------------------------------------------------------
+
+
+class TestSessionCwd:
+    """AcpHarness(session_cwd=...) overrides the workspace path for sessions."""
+
+    def test_session_cwd_stored(self) -> None:
+        """session_cwd is stored on the harness instance."""
+        harness = AcpHarness(command=["test-agent"], session_cwd="/sandbox")
+        assert harness._session_cwd == "/sandbox"
+
+    def test_session_cwd_default_none(self) -> None:
+        """session_cwd defaults to None when not provided."""
+        harness = AcpHarness(command=["test-agent"])
+        assert harness._session_cwd is None
+
+    @pytest.mark.asyncio
+    async def test_run_task_uses_session_cwd(self) -> None:
+        """run_task passes session_cwd instead of workspace to new_session."""
+        mock_ctx, conn, _process = _make_mock_spawn_context()
+
+        harness = AcpHarness(command=["test-agent"], session_cwd="/sandbox")
+
+        with patch("acp.spawn_agent_process", mock_ctx):
+            async for _ in harness.run_task("Test", "/workspace", "sess-cwd-1"):
+                pass
+
+        conn.new_session.assert_called_once_with(cwd="/sandbox")
+
+    @pytest.mark.asyncio
+    async def test_run_task_without_session_cwd_uses_workspace(self) -> None:
+        """run_task uses the workspace path when session_cwd is None."""
+        mock_ctx, conn, _process = _make_mock_spawn_context()
+
+        harness = AcpHarness(command=["test-agent"])
+
+        with patch("acp.spawn_agent_process", mock_ctx):
+            async for _ in harness.run_task("Test", "/workspace", "sess-cwd-2"):
+                pass
+
+        conn.new_session.assert_called_once_with(cwd="/workspace")
+
+    @pytest.mark.asyncio
+    async def test_start_session_uses_session_cwd(self) -> None:
+        """start_session passes session_cwd instead of workspace to new_session."""
+        mock_ctx, conn, _process, _bridge = _make_mock_spawn_for_session()
+
+        harness = AcpHarness(command=["test-agent"], session_cwd="/sandbox")
+
+        with patch("acp.spawn_agent_process", mock_ctx):
+            await harness.start_session("/workspace", "sess-cwd-3")
+
+        conn.new_session.assert_called_once_with(cwd="/sandbox")

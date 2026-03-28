@@ -467,10 +467,12 @@ class AcpHarness:
         command: list[str],
         env: dict[str, str] | None = None,
         init_timeout: float = _ACP_INIT_TIMEOUT,
+        session_cwd: str | None = None,
     ) -> None:
         self._command = command
         self._env = env
         self._init_timeout = init_timeout
+        self._session_cwd = session_cwd
         # Track active sessions for prompt/cancel/kill
         self._sessions: dict[str, _AcpSession] = {}
         # Track spawn context managers so they stay alive for long-lived sessions
@@ -549,7 +551,7 @@ class AcpHarness:
             # Create new session (with timeout)
             try:
                 new_resp = await asyncio.wait_for(
-                    conn.new_session(cwd=workspace),
+                    conn.new_session(cwd=self._session_cwd or workspace),
                     timeout=_ACP_SESSION_TIMEOUT,
                 )
             except TimeoutError:
@@ -907,7 +909,9 @@ class AcpHarness:
                         resume_acp_id = self._acp_id_map.get(session_id, session_id)
                         try:
                             resp = await asyncio.wait_for(
-                                conn.load_session(cwd=workspace, session_id=resume_acp_id),
+                                conn.load_session(
+                                    cwd=self._session_cwd or workspace, session_id=resume_acp_id
+                                ),
                                 timeout=_ACP_SESSION_TIMEOUT,
                             )
                             # load_session may return None on some agents
@@ -916,7 +920,7 @@ class AcpHarness:
                             else:
                                 # Agent returned None -- fall back to new session
                                 new_resp = await asyncio.wait_for(
-                                    conn.new_session(cwd=workspace),
+                                    conn.new_session(cwd=self._session_cwd or workspace),
                                     timeout=_ACP_SESSION_TIMEOUT,
                                 )
                                 acp_session_id = new_resp.session_id
@@ -928,7 +932,7 @@ class AcpHarness:
                                     "falling back to new session"
                                 )
                                 new_resp = await asyncio.wait_for(
-                                    conn.new_session(cwd=workspace),
+                                    conn.new_session(cwd=self._session_cwd or workspace),
                                     timeout=_ACP_SESSION_TIMEOUT,
                                 )
                                 acp_session_id = new_resp.session_id
@@ -941,7 +945,7 @@ class AcpHarness:
                     else:
                         try:
                             new_resp = await asyncio.wait_for(
-                                conn.new_session(cwd=workspace),
+                                conn.new_session(cwd=self._session_cwd or workspace),
                                 timeout=_ACP_SESSION_TIMEOUT,
                             )
                         except TimeoutError:
@@ -969,7 +973,7 @@ class AcpHarness:
         except Exception as e:
             # Agent crashed or connection failed -- emit error + exit event
             if not isinstance(e, GeneratorExit | StopAsyncIteration):
-                logger.error("ACP agent error: %s", e)
+                logger.error("ACP agent error: %s (type: %s)", e, type(e).__name__, exc_info=True)
                 yield StreamEvent(
                     type=StreamEventType.ERROR,
                     content={"type": "error", "error": {"message": str(e)}},
