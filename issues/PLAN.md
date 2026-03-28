@@ -384,7 +384,7 @@
 | ENGINE-060 | Use openshell claude image and auto-providers for sandbox    | engine | P0       | ENGINE-059  | done |
 | ENGINE-063 | Pre-create sandbox before ACP connection (fix stdout interference) | engine | P0       | ENGINE-060  | done |
 | ENGINE-064 | Use custom Dockerfile for sandbox (fix image pull timeout)        | engine | P0       | ENGINE-063  | done |
-| ENGINE-065 | Redesign sandbox to use named persistent sandbox                 | engine | P0       | ENGINE-064  | in_progress |
+| ENGINE-065 | Redesign sandbox to use named persistent sandbox                 | engine | P0       | ENGINE-064  | done |
 
 
 ### Phase 24a — Lumon DSL Support
