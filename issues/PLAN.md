@@ -357,6 +357,25 @@
 | UI-063 | Make tool calls verbose-only and show full tool details    | ui     | P1       | —          | done |
 
 
+### Phase 23a — OpenShell Sandbox Foundation
+
+
+| Issue      | Title                                                        | Domain | Priority | Depends On | Status |
+| ---------- | ------------------------------------------------------------ | ------ | -------- | ---------- | ------ |
+| DSL-008    | Add sandbox and sandbox_policy to grammar, parser, AST, type checker | dsl    | P0       | —          | done |
+| ENGINE-058 | Implement SandboxManager for OpenShell lifecycle             | engine | P0       | —          | done |
+
+
+### Phase 23b — OpenShell Sandbox Integration
+
+
+| Issue      | Title                                                        | Domain | Priority | Depends On         | Status |
+| ---------- | ------------------------------------------------------------ | ------ | -------- | ------------------ | ------ |
+| ENGINE-059 | Integrate sandbox into executor task lifecycle               | engine | P0       | DSL-008, ENGINE-058 | todo |
+| SERVER-020 | Validate openshell availability at run start                 | server | P1       | DSL-008            | todo |
+| UI-064     | Show sandbox indicator in flow detail panel                  | ui     | P2       | DSL-008            | todo |
+
+
 ---
 
 ## Cross-Domain Coordination
