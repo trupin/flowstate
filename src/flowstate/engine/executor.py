@@ -2382,11 +2382,11 @@ class FlowExecutor:
                 harness_command: list[str] = getattr(harness, "command", [])
                 harness_env: dict[str, str] | None = getattr(harness, "env", None)
 
-                await self._sandbox_mgr.register(task_execution_id)
+                # Pre-create sandbox (provisioning output captured, not on ACP stdout)
+                await self._sandbox_mgr.create(task_execution_id, sandbox_policy)
                 wrapped_cmd = self._sandbox_mgr.wrap_command(
                     harness_command,
                     task_execution_id,
-                    sandbox_policy,
                 )
                 harness = AcpHarness(command=wrapped_cmd, env=harness_env)
 

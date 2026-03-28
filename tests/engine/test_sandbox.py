@@ -45,99 +45,212 @@ class TestSandboxName:
 
 
 class TestWrapCommand:
-    def test_basic(self) -> None:
-        """Basic command wrapping with claude image and auto-providers."""
+    """wrap_command() uses 'openshell sandbox connect' for clean stdio (ENGINE-063)."""
+
+    def test_basic_connect_format(self) -> None:
+        """wrap_command uses 'connect' (not 'create') for clean ACP stdio."""
         mgr = SandboxManager()
-        result = mgr.wrap_command(["claude"], "abc123def456")
+        result = mgr.wrap_command(["claude-agent-acp"], "abc123def456")
         assert result == [
             "openshell",
             "sandbox",
-            "create",
-            "--name",
+            "connect",
             "fs-abc123def456",
-            "--from",
-            "claude",
-            "--auto-providers",
-            "--no-tty",
-            "--no-keep",
             "--",
-            "claude",
+            "claude-agent-acp",
         ]
 
-    def test_with_policy(self) -> None:
-        """--policy flag included when sandbox_policy provided."""
-        mgr = SandboxManager()
-        result = mgr.wrap_command(["claude"], "abc123def456", sandbox_policy="strict.yaml")
-        assert result == [
-            "openshell",
-            "sandbox",
-            "create",
-            "--name",
-            "fs-abc123def456",
-            "--from",
-            "claude",
-            "--auto-providers",
-            "--no-tty",
-            "--no-keep",
-            "--policy",
-            "strict.yaml",
-            "--",
-            "claude",
-        ]
-
-    def test_preserves_args(self) -> None:
+    def test_preserves_multi_args(self) -> None:
         """Multi-argument commands are preserved after --."""
         mgr = SandboxManager()
         result = mgr.wrap_command(
             ["claude", "--model", "opus", "--verbose"],
             "abc123def456",
         )
-        assert result[-5:] == ["--", "claude", "--model", "opus", "--verbose"]
+        assert result == [
+            "openshell",
+            "sandbox",
+            "connect",
+            "fs-abc123def456",
+            "--",
+            "claude",
+            "--model",
+            "opus",
+            "--verbose",
+        ]
 
-    def test_no_policy_when_none(self) -> None:
-        """No --policy flag when sandbox_policy is None."""
+    def test_no_provisioning_flags(self) -> None:
+        """connect command does not include provisioning flags (moved to create)."""
         mgr = SandboxManager()
-        result = mgr.wrap_command(["claude"], "abc123def456", sandbox_policy=None)
+        result = mgr.wrap_command(["claude"], "abc123def456")
+        # These flags belong in create(), not in the connect command
+        assert "--from" not in result
+        assert "--auto-providers" not in result
+        assert "--no-tty" not in result
+        assert "--no-keep" not in result
+
+    def test_sandbox_policy_ignored(self) -> None:
+        """sandbox_policy parameter is accepted but ignored (policy applied in create)."""
+        mgr = SandboxManager()
+        result = mgr.wrap_command(["claude"], "abc123def456", sandbox_policy="strict.yaml")
         assert "--policy" not in result
+        # Same result regardless of policy
+        result_no_policy = mgr.wrap_command(["claude"], "abc123def456")
+        assert result == result_no_policy
 
-    def test_no_policy_when_empty_string(self) -> None:
-        """No --policy flag when sandbox_policy is empty string."""
+    def test_uses_sandbox_name(self) -> None:
+        """connect command references the sandbox by its deterministic name."""
         mgr = SandboxManager()
-        result = mgr.wrap_command(["claude"], "abc123def456", sandbox_policy="")
-        assert "--policy" not in result
+        result = mgr.wrap_command(["claude"], "abcdef123456789")
+        # The sandbox name is at index 3 (after openshell sandbox connect)
+        assert result[3] == "fs-abcdef123456"
 
-    def test_from_claude_flag(self) -> None:
-        """wrap_command includes --from claude for the Claude community image."""
-        mgr = SandboxManager()
-        result = mgr.wrap_command(["claude-agent-acp"], "abc123def456")
-        idx = result.index("--from")
-        assert result[idx + 1] == "claude"
 
-    def test_auto_providers_flag(self) -> None:
-        """wrap_command includes --auto-providers to inject credentials."""
-        mgr = SandboxManager()
-        result = mgr.wrap_command(["claude-agent-acp"], "abc123def456")
-        assert "--auto-providers" in result
+# ---------------------------------------------------------------------------
+# create (ENGINE-063)
+# ---------------------------------------------------------------------------
 
-    def test_no_tty_flag(self) -> None:
-        """wrap_command includes --no-tty for raw stdio ACP protocol."""
-        mgr = SandboxManager()
-        result = mgr.wrap_command(["claude-agent-acp"], "abc123def456")
-        assert "--no-tty" in result
 
-    def test_no_keep_flag(self) -> None:
-        """wrap_command includes --no-keep to auto-delete sandbox on exit."""
-        mgr = SandboxManager()
-        result = mgr.wrap_command(["claude-agent-acp"], "abc123def456")
-        assert "--no-keep" in result
+class TestCreate:
+    """create() pre-provisions a sandbox before ACP connection."""
 
-    def test_flags_before_separator(self) -> None:
-        """All openshell flags appear before the -- separator."""
+    async def test_calls_openshell_create(self) -> None:
+        """create() invokes 'openshell sandbox create' with provisioning flags."""
         mgr = SandboxManager()
-        result = mgr.wrap_command(["claude-agent-acp"], "abc123def456")
-        separator_idx = result.index("--")
-        for flag in ("--from", "--auto-providers", "--no-tty", "--no-keep"):
-            assert flag in result[:separator_idx], f"{flag} should be before --"
+        with patch("asyncio.create_subprocess_exec", new_callable=AsyncMock) as mock_exec:
+            mock_proc = MagicMock()
+            mock_proc.communicate = AsyncMock(return_value=(b"Created sandbox\n", b""))
+            mock_proc.returncode = 0
+            mock_exec.return_value = mock_proc
+            await mgr.create("abc123def456")
+        mock_exec.assert_called_once_with(
+            "openshell",
+            "sandbox",
+            "create",
+            "--name",
+            "fs-abc123def456",
+            "--from",
+            "claude",
+            "--auto-providers",
+            "--no-tty",
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+
+    async def test_with_policy(self) -> None:
+        """create() includes --policy when sandbox_policy is provided."""
+        mgr = SandboxManager()
+        with patch("asyncio.create_subprocess_exec", new_callable=AsyncMock) as mock_exec:
+            mock_proc = MagicMock()
+            mock_proc.communicate = AsyncMock(return_value=(b"", b""))
+            mock_proc.returncode = 0
+            mock_exec.return_value = mock_proc
+            await mgr.create("abc123def456", sandbox_policy="strict.yaml")
+        mock_exec.assert_called_once_with(
+            "openshell",
+            "sandbox",
+            "create",
+            "--name",
+            "fs-abc123def456",
+            "--from",
+            "claude",
+            "--auto-providers",
+            "--no-tty",
+            "--policy",
+            "strict.yaml",
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+
+    async def test_no_policy_when_none(self) -> None:
+        """create() omits --policy when sandbox_policy is None."""
+        mgr = SandboxManager()
+        with patch("asyncio.create_subprocess_exec", new_callable=AsyncMock) as mock_exec:
+            mock_proc = MagicMock()
+            mock_proc.communicate = AsyncMock(return_value=(b"", b""))
+            mock_proc.returncode = 0
+            mock_exec.return_value = mock_proc
+            await mgr.create("abc123def456", sandbox_policy=None)
+        args = mock_exec.call_args[0]
+        assert "--policy" not in args
+
+    async def test_tracks_sandbox_in_active_set(self) -> None:
+        """create() adds the sandbox name to the active set on success."""
+        mgr = SandboxManager()
+        with patch("asyncio.create_subprocess_exec", new_callable=AsyncMock) as mock_exec:
+            mock_proc = MagicMock()
+            mock_proc.communicate = AsyncMock(return_value=(b"", b""))
+            mock_proc.returncode = 0
+            mock_exec.return_value = mock_proc
+            await mgr.create("abc123def456")
+        assert "fs-abc123def456" in mgr._active_sandboxes
+
+    async def test_nonzero_exit_raises_sandbox_error(self) -> None:
+        """create() raises SandboxError when openshell returns non-zero."""
+        mgr = SandboxManager()
+        with patch("asyncio.create_subprocess_exec", new_callable=AsyncMock) as mock_exec:
+            mock_proc = MagicMock()
+            mock_proc.communicate = AsyncMock(return_value=(b"", b"Error: gateway unreachable"))
+            mock_proc.returncode = 1
+            mock_exec.return_value = mock_proc
+            with pytest.raises(SandboxError, match="gateway unreachable"):
+                await mgr.create("abc123def456")
+        # Should NOT be added to active set on failure
+        assert "fs-abc123def456" not in mgr._active_sandboxes
+
+    async def test_os_error_raises_sandbox_error(self) -> None:
+        """create() raises SandboxError when openshell binary not found."""
+        mgr = SandboxManager()
+        with (
+            patch(
+                "asyncio.create_subprocess_exec",
+                new_callable=AsyncMock,
+                side_effect=OSError("openshell not found"),
+            ),
+            pytest.raises(SandboxError, match="openshell not found"),
+        ):
+            await mgr.create("abc123def456")
+        assert "fs-abc123def456" not in mgr._active_sandboxes
+
+    async def test_no_trailing_command(self) -> None:
+        """create() does NOT pass a trailing command (no -- separator)."""
+        mgr = SandboxManager()
+        with patch("asyncio.create_subprocess_exec", new_callable=AsyncMock) as mock_exec:
+            mock_proc = MagicMock()
+            mock_proc.communicate = AsyncMock(return_value=(b"", b""))
+            mock_proc.returncode = 0
+            mock_exec.return_value = mock_proc
+            await mgr.create("abc123def456")
+        args = mock_exec.call_args[0]
+        assert "--" not in args
+
+    async def test_no_no_keep_flag(self) -> None:
+        """create() does not use --no-keep (sandbox persists for connect)."""
+        mgr = SandboxManager()
+        with patch("asyncio.create_subprocess_exec", new_callable=AsyncMock) as mock_exec:
+            mock_proc = MagicMock()
+            mock_proc.communicate = AsyncMock(return_value=(b"", b""))
+            mock_proc.returncode = 0
+            mock_exec.return_value = mock_proc
+            await mgr.create("abc123def456")
+        args = mock_exec.call_args[0]
+        assert "--no-keep" not in args
+
+    async def test_captures_stdout(self) -> None:
+        """create() captures stdout so provisioning output does not leak."""
+        mgr = SandboxManager()
+        with patch("asyncio.create_subprocess_exec", new_callable=AsyncMock) as mock_exec:
+            mock_proc = MagicMock()
+            mock_proc.communicate = AsyncMock(
+                return_value=(b"Requesting compute...\nPulling image...\n", b"")
+            )
+            mock_proc.returncode = 0
+            mock_exec.return_value = mock_proc
+            await mgr.create("abc123def456")
+        # Verify stdout=PIPE was used (provisioning output captured)
+        kwargs = mock_exec.call_args[1]
+        assert kwargs["stdout"] == asyncio.subprocess.PIPE
+        assert kwargs["stderr"] == asyncio.subprocess.PIPE
 
 
 # ---------------------------------------------------------------------------

@@ -7267,10 +7267,10 @@ def _make_sandboxed_mock() -> MockSubprocessManager:
 
 
 class TestSandboxEnabled:
-    """ENGINE-059: When sandbox is enabled, the harness command is wrapped."""
+    """ENGINE-059/063: When sandbox is enabled, the harness command is wrapped."""
 
     async def test_sandbox_enabled_wraps_command(self) -> None:
-        """Sandbox=true at flow level calls register, wrap_command, and destroy."""
+        """Sandbox=true at flow level calls create, wrap_command, and destroy."""
         db = _make_db()
         _events, callback = _collect_events()
         mock_mgr = _make_sandboxed_mock()
@@ -7285,9 +7285,7 @@ class TestSandboxEnabled:
                 "flowstate.engine.acp_client.AcpHarness",
                 side_effect=lambda command, env=None: mock_mgr,
             ),
-            patch.object(
-                executor._sandbox_mgr, "register", new_callable=AsyncMock
-            ) as mock_register,
+            patch.object(executor._sandbox_mgr, "create", new_callable=AsyncMock) as mock_create,
             patch.object(
                 executor._sandbox_mgr, "wrap_command", wraps=executor._sandbox_mgr.wrap_command
             ) as mock_wrap,
@@ -7295,9 +7293,9 @@ class TestSandboxEnabled:
         ):
             await executor.execute(flow, {}, "/workspace")
 
-        # register and wrap_command should have been called for the 3 task nodes
+        # create and wrap_command should have been called for the 3 task nodes
         # (entry, task, exit all run as tasks)
-        assert mock_register.call_count == 3
+        assert mock_create.call_count == 3
         assert mock_wrap.call_count == 3
         # destroy should be called in finally for each task
         assert mock_destroy.call_count == 3
@@ -7316,14 +7314,12 @@ class TestSandboxDisabled:
         flow = _make_sandbox_flow(sandbox=False)
 
         with (
-            patch.object(
-                executor._sandbox_mgr, "register", new_callable=AsyncMock
-            ) as mock_register,
+            patch.object(executor._sandbox_mgr, "create", new_callable=AsyncMock) as mock_create,
             patch.object(executor._sandbox_mgr, "destroy", new_callable=AsyncMock) as mock_destroy,
         ):
             await executor.execute(flow, {}, "/workspace")
 
-        mock_register.assert_not_called()
+        mock_create.assert_not_called()
         mock_destroy.assert_not_called()
 
         # Flow should still complete successfully
@@ -7352,17 +7348,15 @@ class TestSandboxNodeOverride:
                 "flowstate.engine.acp_client.AcpHarness",
                 side_effect=lambda command, env=None: mock_mgr,
             ),
-            patch.object(
-                executor._sandbox_mgr, "register", new_callable=AsyncMock
-            ) as mock_register,
+            patch.object(executor._sandbox_mgr, "create", new_callable=AsyncMock) as mock_create,
             patch.object(executor._sandbox_mgr, "destroy", new_callable=AsyncMock) as mock_destroy,
         ):
             await executor.execute(flow, {}, "/workspace")
 
         # Entry and exit nodes inherit sandbox=true from flow (node.sandbox is None),
         # but 'work' node has sandbox=false, so it should NOT be sandboxed.
-        # That means register is called for entry + exit = 2 times
-        assert mock_register.call_count == 2
+        # That means create is called for entry + exit = 2 times
+        assert mock_create.call_count == 2
         assert mock_destroy.call_count == 2
 
     async def test_sandbox_node_override_true(self) -> None:
@@ -7380,15 +7374,13 @@ class TestSandboxNodeOverride:
                 "flowstate.engine.acp_client.AcpHarness",
                 side_effect=lambda command, env=None: mock_mgr,
             ),
-            patch.object(
-                executor._sandbox_mgr, "register", new_callable=AsyncMock
-            ) as mock_register,
+            patch.object(executor._sandbox_mgr, "create", new_callable=AsyncMock) as mock_create,
             patch.object(executor._sandbox_mgr, "destroy", new_callable=AsyncMock) as mock_destroy,
         ):
             await executor.execute(flow, {}, "/workspace")
 
         # Only the 'work' node should be sandboxed (entry and exit inherit false)
-        assert mock_register.call_count == 1
+        assert mock_create.call_count == 1
         assert mock_destroy.call_count == 1
 
 
@@ -7408,31 +7400,27 @@ class TestSandboxPolicyResolution:
             node_sandbox_policy="node-policy.yaml",
         )
 
-        wrap_calls: list[tuple[list[str], str, str | None]] = []
-        original_wrap = executor._sandbox_mgr.wrap_command
+        create_calls: list[tuple[str, str | None]] = []
 
-        def tracking_wrap(
-            command: list[str],
+        async def tracking_create(
             task_execution_id: str,
             sandbox_policy: str | None = None,
-        ) -> list[str]:
-            wrap_calls.append((command, task_execution_id, sandbox_policy))
-            return original_wrap(command, task_execution_id, sandbox_policy)
+        ) -> None:
+            create_calls.append((task_execution_id, sandbox_policy))
 
         with (
             patch(
                 "flowstate.engine.acp_client.AcpHarness",
                 side_effect=lambda command, env=None: mock_mgr,
             ),
-            patch.object(executor._sandbox_mgr, "register", new_callable=AsyncMock),
-            patch.object(executor._sandbox_mgr, "wrap_command", side_effect=tracking_wrap),
+            patch.object(executor._sandbox_mgr, "create", side_effect=tracking_create),
             patch.object(executor._sandbox_mgr, "destroy", new_callable=AsyncMock),
         ):
             await executor.execute(flow, {}, "/workspace")
 
-        # Find the wrap call for the 'work' node (it has node_sandbox_policy)
+        # Find the create call for the 'work' node (it has node_sandbox_policy)
         # Entry and exit use flow policy, work uses node policy
-        policies_used = [call[2] for call in wrap_calls]
+        policies_used = [c[1] for c in create_calls]
         assert "node-policy.yaml" in policies_used
         assert "flow-policy.yaml" in policies_used
 
@@ -7445,31 +7433,27 @@ class TestSandboxPolicyResolution:
 
         flow = _make_sandbox_flow(sandbox=True, sandbox_policy="flow-policy.yaml")
 
-        wrap_calls: list[tuple[list[str], str, str | None]] = []
-        original_wrap = executor._sandbox_mgr.wrap_command
+        create_calls: list[tuple[str, str | None]] = []
 
-        def tracking_wrap(
-            command: list[str],
+        async def tracking_create(
             task_execution_id: str,
             sandbox_policy: str | None = None,
-        ) -> list[str]:
-            wrap_calls.append((command, task_execution_id, sandbox_policy))
-            return original_wrap(command, task_execution_id, sandbox_policy)
+        ) -> None:
+            create_calls.append((task_execution_id, sandbox_policy))
 
         with (
             patch(
                 "flowstate.engine.acp_client.AcpHarness",
                 side_effect=lambda command, env=None: mock_mgr,
             ),
-            patch.object(executor._sandbox_mgr, "register", new_callable=AsyncMock),
-            patch.object(executor._sandbox_mgr, "wrap_command", side_effect=tracking_wrap),
+            patch.object(executor._sandbox_mgr, "create", side_effect=tracking_create),
             patch.object(executor._sandbox_mgr, "destroy", new_callable=AsyncMock),
         ):
             await executor.execute(flow, {}, "/workspace")
 
         # All nodes should use the flow-level policy
-        for call in wrap_calls:
-            assert call[2] == "flow-policy.yaml"
+        for c in create_calls:
+            assert c[1] == "flow-policy.yaml"
 
 
 class TestSandboxCleanup:
@@ -7494,7 +7478,7 @@ class TestSandboxCleanup:
                 "flowstate.engine.acp_client.AcpHarness",
                 side_effect=lambda command, env=None: mock_mgr,
             ),
-            patch.object(executor._sandbox_mgr, "register", new_callable=AsyncMock),
+            patch.object(executor._sandbox_mgr, "create", new_callable=AsyncMock),
             patch.object(executor._sandbox_mgr, "destroy", side_effect=tracking_destroy),
         ):
             flow_run_id = await executor.execute(flow, {}, "/workspace")
@@ -7547,7 +7531,7 @@ class TestSandboxCleanup:
                 "flowstate.engine.acp_client.AcpHarness",
                 side_effect=lambda command, env=None: mock_mgr,
             ),
-            patch.object(executor._sandbox_mgr, "register", new_callable=AsyncMock),
+            patch.object(executor._sandbox_mgr, "create", new_callable=AsyncMock),
             patch.object(executor._sandbox_mgr, "destroy", side_effect=tracking_destroy),
         ):
             await executor.execute(flow, {}, "/workspace")
@@ -7576,7 +7560,7 @@ class TestSandboxCancel:
                 "flowstate.engine.acp_client.AcpHarness",
                 side_effect=lambda command, env=None: mock_mgr,
             ),
-            patch.object(executor._sandbox_mgr, "register", new_callable=AsyncMock),
+            patch.object(executor._sandbox_mgr, "create", new_callable=AsyncMock),
             patch.object(executor._sandbox_mgr, "destroy", new_callable=AsyncMock),
             patch.object(
                 executor._sandbox_mgr, "destroy_all", new_callable=AsyncMock
@@ -7600,10 +7584,10 @@ class TestSandboxCancel:
 
 
 class TestSandboxNewHarnessInstance:
-    """ENGINE-059: A new AcpHarness is created with the wrapped command."""
+    """ENGINE-059/063: A new AcpHarness is created with the wrapped command."""
 
     async def test_sandbox_creates_new_harness(self) -> None:
-        """When sandbox is enabled, a new AcpHarness is created (not mutating shared one)."""
+        """When sandbox is enabled, a new AcpHarness is created with 'connect' command."""
         db = _make_db()
         _events, callback = _collect_events()
         mock_mgr = _make_sandboxed_mock()
@@ -7623,7 +7607,7 @@ class TestSandboxNewHarnessInstance:
                 "flowstate.engine.acp_client.AcpHarness",
                 side_effect=mock_acp_harness,
             ),
-            patch.object(executor._sandbox_mgr, "register", new_callable=AsyncMock),
+            patch.object(executor._sandbox_mgr, "create", new_callable=AsyncMock),
             patch.object(executor._sandbox_mgr, "destroy", new_callable=AsyncMock),
         ):
             await executor.execute(flow, {}, "/workspace")
@@ -7634,4 +7618,5 @@ class TestSandboxNewHarnessInstance:
             # The command should start with "openshell" (sandbox wrapper)
             assert call["command"][0] == "openshell"
             assert "sandbox" in call["command"]
-            assert "create" in call["command"]
+            # ENGINE-063: uses 'connect' (not 'create') for clean ACP stdio
+            assert "connect" in call["command"]
