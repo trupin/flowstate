@@ -39,15 +39,27 @@ class SandboxManager:
     ) -> list[str]:
         """Wrap a harness command to run inside an OpenShell sandbox.
 
-        Transforms e.g. ``["claude"]`` into::
-
-            ["openshell", "sandbox", "create", "--name", "fs-<id>", "--", "claude"]
+        Uses the ``--from claude`` community image (Claude Code pre-installed),
+        ``--auto-providers`` to inject credentials from the host environment,
+        ``--no-tty`` for raw stdio (ACP protocol), and ``--no-keep`` to
+        auto-delete the sandbox when the command exits.
 
         When *sandbox_policy* is provided, ``--policy <path>`` is inserted
         before the ``--`` separator.
         """
         name = self.sandbox_name(task_execution_id)
-        wrapped = ["openshell", "sandbox", "create", "--name", name]
+        wrapped = [
+            "openshell",
+            "sandbox",
+            "create",
+            "--name",
+            name,
+            "--from",
+            "claude",
+            "--auto-providers",
+            "--no-tty",
+            "--no-keep",
+        ]
         if sandbox_policy:
             wrapped.extend(["--policy", sandbox_policy])
         wrapped.append("--")

@@ -46,7 +46,7 @@ class TestSandboxName:
 
 class TestWrapCommand:
     def test_basic(self) -> None:
-        """Basic command wrapping (TEST-24)."""
+        """Basic command wrapping with claude image and auto-providers."""
         mgr = SandboxManager()
         result = mgr.wrap_command(["claude"], "abc123def456")
         assert result == [
@@ -55,12 +55,17 @@ class TestWrapCommand:
             "create",
             "--name",
             "fs-abc123def456",
+            "--from",
+            "claude",
+            "--auto-providers",
+            "--no-tty",
+            "--no-keep",
             "--",
             "claude",
         ]
 
     def test_with_policy(self) -> None:
-        """--policy flag included when sandbox_policy provided (TEST-25)."""
+        """--policy flag included when sandbox_policy provided."""
         mgr = SandboxManager()
         result = mgr.wrap_command(["claude"], "abc123def456", sandbox_policy="strict.yaml")
         assert result == [
@@ -69,6 +74,11 @@ class TestWrapCommand:
             "create",
             "--name",
             "fs-abc123def456",
+            "--from",
+            "claude",
+            "--auto-providers",
+            "--no-tty",
+            "--no-keep",
             "--policy",
             "strict.yaml",
             "--",
@@ -76,7 +86,7 @@ class TestWrapCommand:
         ]
 
     def test_preserves_args(self) -> None:
-        """Multi-argument commands are preserved after -- (TEST-26)."""
+        """Multi-argument commands are preserved after --."""
         mgr = SandboxManager()
         result = mgr.wrap_command(
             ["claude", "--model", "opus", "--verbose"],
@@ -95,6 +105,39 @@ class TestWrapCommand:
         mgr = SandboxManager()
         result = mgr.wrap_command(["claude"], "abc123def456", sandbox_policy="")
         assert "--policy" not in result
+
+    def test_from_claude_flag(self) -> None:
+        """wrap_command includes --from claude for the Claude community image."""
+        mgr = SandboxManager()
+        result = mgr.wrap_command(["claude-agent-acp"], "abc123def456")
+        idx = result.index("--from")
+        assert result[idx + 1] == "claude"
+
+    def test_auto_providers_flag(self) -> None:
+        """wrap_command includes --auto-providers to inject credentials."""
+        mgr = SandboxManager()
+        result = mgr.wrap_command(["claude-agent-acp"], "abc123def456")
+        assert "--auto-providers" in result
+
+    def test_no_tty_flag(self) -> None:
+        """wrap_command includes --no-tty for raw stdio ACP protocol."""
+        mgr = SandboxManager()
+        result = mgr.wrap_command(["claude-agent-acp"], "abc123def456")
+        assert "--no-tty" in result
+
+    def test_no_keep_flag(self) -> None:
+        """wrap_command includes --no-keep to auto-delete sandbox on exit."""
+        mgr = SandboxManager()
+        result = mgr.wrap_command(["claude-agent-acp"], "abc123def456")
+        assert "--no-keep" in result
+
+    def test_flags_before_separator(self) -> None:
+        """All openshell flags appear before the -- separator."""
+        mgr = SandboxManager()
+        result = mgr.wrap_command(["claude-agent-acp"], "abc123def456")
+        separator_idx = result.index("--")
+        for flag in ("--from", "--auto-providers", "--no-tty", "--no-keep"):
+            assert flag in result[:separator_idx], f"{flag} should be before --"
 
 
 # ---------------------------------------------------------------------------

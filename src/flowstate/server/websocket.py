@@ -357,18 +357,55 @@ class WebSocketHub:
                 needs_sandbox = flow_ast.sandbox or any(
                     n.sandbox is True for n in flow_ast.nodes.values()
                 )
-                if needs_sandbox and not shutil.which("openshell"):
-                    msg = (
-                        "Flow requires sandbox but 'openshell' is not installed or not on PATH. "
-                        "Install it: curl -LsSf "
-                        "https://raw.githubusercontent.com/NVIDIA/OpenShell/main/install.sh | sh"
-                    )
-                    if websocket:
-                        await self._send_safe(
-                            websocket,
-                            {"type": "error", "payload": {"message": msg}},
+                if needs_sandbox:
+                    if not shutil.which("openshell"):
+                        msg = (
+                            "Flow requires sandbox but 'openshell' is not installed "
+                            "or not on PATH. Install it: curl -LsSf "
+                            "https://raw.githubusercontent.com/NVIDIA/"
+                            "OpenShell/main/install.sh | sh"
                         )
-                    return False
+                        if websocket:
+                            await self._send_safe(
+                                websocket,
+                                {"type": "error", "payload": {"message": msg}},
+                            )
+                        return False
+
+                    # Verify gateway is reachable
+                    try:
+                        proc = await asyncio.create_subprocess_exec(
+                            "openshell",
+                            "sandbox",
+                            "list",
+                            stdout=asyncio.subprocess.PIPE,
+                            stderr=asyncio.subprocess.PIPE,
+                        )
+                        _, stderr = await asyncio.wait_for(proc.communicate(), timeout=10)
+                        if proc.returncode != 0:
+                            stderr_text = stderr.decode() if stderr else ""
+                            msg = (
+                                "OpenShell gateway is not reachable. "
+                                "Run 'openshell gateway start' first. "
+                                f"Error: {stderr_text[:200]}"
+                            )
+                            if websocket:
+                                await self._send_safe(
+                                    websocket,
+                                    {"type": "error", "payload": {"message": msg}},
+                                )
+                            return False
+                    except (TimeoutError, OSError) as exc:
+                        msg = (
+                            "OpenShell gateway is not reachable. "
+                            f"Run 'openshell gateway start' first. Error: {exc}"
+                        )
+                        if websocket:
+                            await self._send_safe(
+                                websocket,
+                                {"type": "error", "payload": {"message": msg}},
+                            )
+                        return False
 
             executor = FlowExecutor(
                 db=self._db,

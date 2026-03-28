@@ -285,6 +285,22 @@ class TestSandboxedFlowWithoutOpenshellReturns400:
 # ---------------------------------------------------------------------------
 
 
+def _mock_gateway_ok() -> AsyncMock:
+    """Return a mock for asyncio.create_subprocess_exec that simulates a reachable gateway."""
+    mock_proc = MagicMock()
+    mock_proc.communicate = AsyncMock(return_value=(b"", b""))
+    mock_proc.returncode = 0
+    return AsyncMock(return_value=mock_proc)
+
+
+def _mock_gateway_unreachable(stderr: str = "connection refused") -> AsyncMock:
+    """Return a mock for asyncio.create_subprocess_exec that simulates an unreachable gateway."""
+    mock_proc = MagicMock()
+    mock_proc.communicate = AsyncMock(return_value=(b"", stderr.encode()))
+    mock_proc.returncode = 1
+    return AsyncMock(return_value=mock_proc)
+
+
 class TestSandboxedFlowWithOpenshellProceeds:
     def test_start_run_sandboxed_with_openshell(self) -> None:
         """POST /api/flows/:id/runs with sandbox=true and openshell installed returns 202."""
@@ -299,6 +315,7 @@ class TestSandboxedFlowWithOpenshellProceeds:
         with (
             patch("flowstate.server.routes.parse_flow", return_value=_SANDBOXED_FLOW_AST),
             patch("flowstate.server.routes.shutil") as mock_shutil,
+            patch("flowstate.server.routes.asyncio.create_subprocess_exec", _mock_gateway_ok()),
             patch("flowstate.server.routes.FlowExecutor") as mock_executor_cls,
         ):
             mock_shutil.which.return_value = "/usr/local/bin/openshell"
@@ -520,3 +537,155 @@ class TestTriggerScheduleSandboxCheck:
         assert response.status_code == 400
         body = response.json()
         assert "openshell" in body["error"].lower()
+
+
+# ---------------------------------------------------------------------------
+# Gateway reachability tests
+# ---------------------------------------------------------------------------
+
+
+class TestGatewayReachabilityCheck:
+    def test_gateway_unreachable_returns_400(self) -> None:
+        """Sandboxed flow with openshell installed but gateway unreachable returns 400."""
+        client = _make_test_client(flows={"sandboxed": SANDBOXED_DISCOVERED})
+
+        with (
+            patch("flowstate.server.routes.parse_flow", return_value=_SANDBOXED_FLOW_AST),
+            patch("flowstate.server.routes.shutil") as mock_shutil,
+            patch(
+                "flowstate.server.routes.asyncio.create_subprocess_exec",
+                _mock_gateway_unreachable("connection refused"),
+            ),
+        ):
+            mock_shutil.which.return_value = "/usr/local/bin/openshell"
+
+            response = client.post("/api/flows/sandboxed/runs", json={"params": {}})
+
+        assert response.status_code == 400
+        body = response.json()
+        assert "gateway" in body["error"].lower()
+        assert "openshell gateway start" in body["error"]
+
+    def test_gateway_unreachable_includes_stderr(self) -> None:
+        """Error message includes stderr from the openshell command."""
+        client = _make_test_client(flows={"sandboxed": SANDBOXED_DISCOVERED})
+
+        with (
+            patch("flowstate.server.routes.parse_flow", return_value=_SANDBOXED_FLOW_AST),
+            patch("flowstate.server.routes.shutil") as mock_shutil,
+            patch(
+                "flowstate.server.routes.asyncio.create_subprocess_exec",
+                _mock_gateway_unreachable("dial tcp 127.0.0.1:7800: connection refused"),
+            ),
+        ):
+            mock_shutil.which.return_value = "/usr/local/bin/openshell"
+
+            response = client.post("/api/flows/sandboxed/runs", json={"params": {}})
+
+        assert response.status_code == 400
+        body = response.json()
+        assert "connection refused" in body["error"]
+
+    def test_gateway_timeout_returns_400(self) -> None:
+        """Sandboxed flow where gateway check times out returns 400."""
+        client = _make_test_client(flows={"sandboxed": SANDBOXED_DISCOVERED})
+
+        mock_proc = MagicMock()
+        mock_proc.communicate = AsyncMock(side_effect=TimeoutError("timed out"))
+        mock_subprocess = AsyncMock(return_value=mock_proc)
+
+        with (
+            patch("flowstate.server.routes.parse_flow", return_value=_SANDBOXED_FLOW_AST),
+            patch("flowstate.server.routes.shutil") as mock_shutil,
+            patch(
+                "flowstate.server.routes.asyncio.create_subprocess_exec",
+                mock_subprocess,
+            ),
+            patch("flowstate.server.routes.asyncio.wait_for", side_effect=TimeoutError),
+        ):
+            mock_shutil.which.return_value = "/usr/local/bin/openshell"
+
+            response = client.post("/api/flows/sandboxed/runs", json={"params": {}})
+
+        assert response.status_code == 400
+        body = response.json()
+        assert "timed out" in body["error"].lower()
+
+    def test_gateway_os_error_returns_400(self) -> None:
+        """Sandboxed flow where openshell subprocess raises OSError returns 400."""
+        client = _make_test_client(flows={"sandboxed": SANDBOXED_DISCOVERED})
+
+        mock_subprocess = AsyncMock(side_effect=OSError("No such file"))
+
+        with (
+            patch("flowstate.server.routes.parse_flow", return_value=_SANDBOXED_FLOW_AST),
+            patch("flowstate.server.routes.shutil") as mock_shutil,
+            patch(
+                "flowstate.server.routes.asyncio.create_subprocess_exec",
+                mock_subprocess,
+            ),
+        ):
+            mock_shutil.which.return_value = "/usr/local/bin/openshell"
+
+            response = client.post("/api/flows/sandboxed/runs", json={"params": {}})
+
+        assert response.status_code == 400
+        body = response.json()
+        assert "openshell" in body["error"].lower()
+
+    def test_non_sandboxed_flow_skips_gateway_check(self) -> None:
+        """Non-sandboxed flow does not check gateway reachability."""
+        mock_db = MagicMock()
+        run_manager = RunManager()
+        client = _make_test_client(
+            flows={"plain": PLAIN_DISCOVERED},
+            db_mock=mock_db,
+            run_manager=run_manager,
+        )
+
+        with (
+            patch("flowstate.server.routes.parse_flow", return_value=_PLAIN_FLOW_AST),
+            patch("flowstate.server.routes.shutil") as mock_shutil,
+            patch(
+                "flowstate.server.routes.asyncio.create_subprocess_exec",
+            ) as mock_subprocess,
+            patch("flowstate.server.routes.FlowExecutor") as mock_executor_cls,
+        ):
+            mock_shutil.which.return_value = None
+
+            mock_executor = MagicMock()
+            mock_executor.execute = AsyncMock(return_value="run-123")
+            mock_executor_cls.return_value = mock_executor
+
+            response = client.post("/api/flows/plain/runs", json={"params": {}})
+
+        assert response.status_code == 202
+        mock_subprocess.assert_not_called()
+
+    def test_restart_gateway_unreachable_returns_400(self) -> None:
+        """Retry on sandboxed flow with unreachable gateway returns 400."""
+        mock_db = MagicMock()
+        mock_db.get_flow_run.return_value = _make_flow_run_row(status="cancelled")
+        mock_db.get_flow_definition.return_value = SANDBOXED_FLOW_DEF
+
+        run_manager = RunManager()
+        client = _make_test_client(db_mock=mock_db, run_manager=run_manager)
+
+        with (
+            patch(
+                "flowstate.server.routes.parse_flow",
+                return_value=_SANDBOXED_FLOW_AST,
+            ),
+            patch("flowstate.server.routes.shutil") as mock_shutil,
+            patch(
+                "flowstate.server.routes.asyncio.create_subprocess_exec",
+                _mock_gateway_unreachable("gateway not running"),
+            ),
+        ):
+            mock_shutil.which.return_value = "/usr/local/bin/openshell"
+
+            response = client.post("/api/runs/run-1/tasks/task-1/retry")
+
+        assert response.status_code == 400
+        body = response.json()
+        assert "gateway" in body["error"].lower()
