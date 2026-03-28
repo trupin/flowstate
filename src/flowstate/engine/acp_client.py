@@ -472,6 +472,16 @@ class AcpHarness:
         # Map Flowstate session IDs → ACP session IDs for resume across subprocesses
         self._acp_id_map: dict[str, str] = {}
 
+    @property
+    def command(self) -> list[str]:
+        """Return a copy of the command used to spawn the agent subprocess."""
+        return list(self._command)
+
+    @property
+    def env(self) -> dict[str, str] | None:
+        """Return a copy of the extra environment variables, or None."""
+        return dict(self._env) if self._env else None
+
     # ------------------------------------------------------------------ #
     # Long-lived session API
     # ------------------------------------------------------------------ #

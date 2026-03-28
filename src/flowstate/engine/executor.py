@@ -48,6 +48,7 @@ from flowstate.engine.context import (
 from flowstate.engine.events import EventType, FlowEvent
 from flowstate.engine.harness import DEFAULT_HARNESS, HarnessManager
 from flowstate.engine.judge import JudgeContext, JudgeDecision, JudgePauseError, JudgeProtocol
+from flowstate.engine.sandbox import SandboxManager
 from flowstate.engine.subprocess_mgr import StreamEvent, StreamEventType
 from flowstate.engine.worktree import (
     WorktreeInfo,
@@ -269,6 +270,8 @@ class FlowExecutor:
         self._interrupted_tasks: set[str] = set()
         # Map task_execution_id -> session_id for interrupt dispatch
         self._task_session: dict[str, str] = {}
+        # Sandbox lifecycle management (ENGINE-059)
+        self._sandbox_mgr = SandboxManager()
 
     def _emit(self, event: FlowEvent) -> None:
         """Emit an event via the callback, catching any callback exceptions."""
@@ -1532,6 +1535,9 @@ class FlowExecutor:
             if atask:
                 atask.cancel()
 
+        # Destroy all active sandboxes (ENGINE-059)
+        await self._sandbox_mgr.destroy_all()
+
         # Wait for all tasks to finish cancellation
         if self._running_tasks:
             await asyncio.gather(*self._running_tasks.values(), return_exceptions=True)
@@ -2349,6 +2355,7 @@ class FlowExecutor:
         )
 
         session_id: str | None = None
+        use_sandbox = False  # set inside try; used by finally for sandbox cleanup
         # Create a per-task resume event for interrupt→wait→resume coordination
         resume_event = asyncio.Event()
         self._task_resume_events[task_execution_id] = resume_event
@@ -2363,6 +2370,25 @@ class FlowExecutor:
             self._session_harness[session_id] = harness_name
             # Track task -> session for interrupt dispatch
             self._task_session[task_execution_id] = session_id
+
+            # Resolve sandbox settings: node-level overrides flow-level (ENGINE-059)
+            use_sandbox = node.sandbox if node.sandbox is not None else flow.sandbox
+            sandbox_policy = node.sandbox_policy or flow.sandbox_policy
+
+            if use_sandbox:
+                from flowstate.engine.acp_client import AcpHarness
+
+                # Read command/env from the harness (available on AcpHarness)
+                harness_command: list[str] = getattr(harness, "command", [])
+                harness_env: dict[str, str] | None = getattr(harness, "env", None)
+
+                await self._sandbox_mgr.register(task_execution_id)
+                wrapped_cmd = self._sandbox_mgr.wrap_command(
+                    harness_command,
+                    task_execution_id,
+                    sandbox_policy,
+                )
+                harness = AcpHarness(command=wrapped_cmd, env=harness_env)
 
             # Determine if this is a session resume or fresh task
             if task_exec.context_mode == ContextMode.SESSION.value and task_exec.claude_session_id:
@@ -2593,6 +2619,9 @@ class FlowExecutor:
                     )
                 )
         finally:
+            # Destroy sandbox if one was created for this task (ENGINE-059)
+            if use_sandbox:
+                await self._sandbox_mgr.destroy(task_execution_id)
             # Clean up per-task coordination state
             self._task_resume_events.pop(task_execution_id, None)
             self._interrupted_tasks.discard(task_execution_id)

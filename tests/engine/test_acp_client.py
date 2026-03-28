@@ -1744,3 +1744,47 @@ class TestAcpHarnessRealTimeStreaming:
         assert any(
             e.type == StreamEventType.SYSTEM and e.content.get("exit_code") == 1 for e in events
         )
+
+
+# ---------------------------------------------------------------------------
+# AcpHarness command/env properties (ENGINE-059)
+# ---------------------------------------------------------------------------
+
+
+class TestAcpHarnessProperties:
+    """AcpHarness.command and .env expose readable copies of constructor args."""
+
+    def test_command_property_returns_copy(self) -> None:
+        """command property returns a copy of the command list."""
+        harness = AcpHarness(command=["claude", "--agent"], env=None)
+        cmd = harness.command
+        assert cmd == ["claude", "--agent"]
+        # Mutating the returned list should not affect the internal state
+        cmd.append("extra")
+        assert harness.command == ["claude", "--agent"]
+
+    def test_env_property_returns_copy(self) -> None:
+        """env property returns a copy of the env dict."""
+        harness = AcpHarness(command=["claude"], env={"KEY": "value"})
+        env = harness.env
+        assert env == {"KEY": "value"}
+        # Mutating the returned dict should not affect the internal state
+        assert env is not None
+        env["NEW"] = "added"
+        assert harness.env == {"KEY": "value"}
+
+    def test_env_property_returns_none_when_empty(self) -> None:
+        """env property returns None when no env was provided."""
+        harness = AcpHarness(command=["claude"], env=None)
+        assert harness.env is None
+
+    def test_env_property_returns_none_for_empty_dict(self) -> None:
+        """env property returns None when env is an empty dict."""
+        harness = AcpHarness(command=["claude"], env={})
+        assert harness.env is None
+
+    def test_command_property_with_sandbox_wrapped_command(self) -> None:
+        """command property works with openshell-wrapped commands."""
+        wrapped = ["openshell", "sandbox", "create", "--name", "fs-abc123", "--", "claude"]
+        harness = AcpHarness(command=wrapped)
+        assert harness.command == wrapped
