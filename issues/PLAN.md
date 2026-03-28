@@ -382,6 +382,7 @@
 | Issue      | Title                                                        | Domain | Priority | Depends On  | Status |
 | ---------- | ------------------------------------------------------------ | ------ | -------- | ----------- | ------ |
 | ENGINE-060 | Use openshell claude image and auto-providers for sandbox    | engine | P0       | ENGINE-059  | done |
+| ENGINE-063 | Pre-create sandbox before ACP connection (fix stdout interference) | engine | P0       | ENGINE-060  | done |
 
 
 ### Phase 24a — Lumon DSL Support
