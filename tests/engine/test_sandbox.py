@@ -1,6 +1,7 @@
 """Tests for the SandboxManager (OpenShell lifecycle)."""
 
 import asyncio
+from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -45,17 +46,49 @@ class TestSandboxName:
 
 
 class TestWrapCommand:
-    """wrap_command() uses 'openshell sandbox connect' for clean stdio (ENGINE-063)."""
+    """wrap_command() uses 'openshell sandbox create' with --no-keep (ENGINE-064)."""
 
-    def test_basic_connect_format(self) -> None:
-        """wrap_command uses 'connect' (not 'create') for clean ACP stdio."""
+    def test_basic_create_format_no_credentials(self) -> None:
+        """wrap_command uses 'create' with provisioning flags and -- command (no credentials)."""
         mgr = SandboxManager()
-        result = mgr.wrap_command(["claude-agent-acp"], "abc123def456")
+        dockerfile_path = mgr._dockerfile_path()
+        with patch.object(mgr, "_claude_credentials_path", return_value=None):
+            result = mgr.wrap_command(["claude-agent-acp"], "abc123def456")
         assert result == [
             "openshell",
             "sandbox",
-            "connect",
+            "create",
+            "--name",
             "fs-abc123def456",
+            "--from",
+            dockerfile_path,
+            "--auto-providers",
+            "--no-tty",
+            "--no-keep",
+            "--",
+            "claude-agent-acp",
+        ]
+
+    def test_basic_create_format_with_credentials(self) -> None:
+        """wrap_command includes --upload when credentials exist."""
+        mgr = SandboxManager()
+        dockerfile_path = mgr._dockerfile_path()
+        creds_path = "/home/user/.claude.json"
+        with patch.object(mgr, "_claude_credentials_path", return_value=creds_path):
+            result = mgr.wrap_command(["claude-agent-acp"], "abc123def456")
+        assert result == [
+            "openshell",
+            "sandbox",
+            "create",
+            "--name",
+            "fs-abc123def456",
+            "--from",
+            dockerfile_path,
+            "--auto-providers",
+            "--no-tty",
+            "--no-keep",
+            "--upload",
+            f"{creds_path}:/sandbox/.claude.json",
             "--",
             "claude-agent-acp",
         ]
@@ -67,190 +100,108 @@ class TestWrapCommand:
             ["claude", "--model", "opus", "--verbose"],
             "abc123def456",
         )
-        assert result == [
-            "openshell",
-            "sandbox",
-            "connect",
-            "fs-abc123def456",
-            "--",
-            "claude",
-            "--model",
-            "opus",
-            "--verbose",
-        ]
+        # Everything after -- should be the original command
+        separator_idx = result.index("--")
+        assert result[separator_idx + 1 :] == ["claude", "--model", "opus", "--verbose"]
 
-    def test_no_provisioning_flags(self) -> None:
-        """connect command does not include provisioning flags (moved to create)."""
+    def test_includes_provisioning_flags(self) -> None:
+        """create command includes --from, --auto-providers, --no-tty, --no-keep."""
         mgr = SandboxManager()
         result = mgr.wrap_command(["claude"], "abc123def456")
-        # These flags belong in create(), not in the connect command
-        assert "--from" not in result
-        assert "--auto-providers" not in result
-        assert "--no-tty" not in result
-        assert "--no-keep" not in result
+        assert "--from" in result
+        assert "--auto-providers" in result
+        assert "--no-tty" in result
+        assert "--no-keep" in result
 
-    def test_sandbox_policy_ignored(self) -> None:
-        """sandbox_policy parameter is accepted but ignored (policy applied in create)."""
+    def test_from_uses_dockerfile_path(self) -> None:
+        """--from argument points to the sandbox Dockerfile directory."""
+        mgr = SandboxManager()
+        result = mgr.wrap_command(["claude"], "abc123def456")
+        from_idx = result.index("--from")
+        assert result[from_idx + 1] == mgr._dockerfile_path()
+
+    def test_sandbox_policy_included_when_provided(self) -> None:
+        """sandbox_policy adds --policy flag before the -- separator."""
         mgr = SandboxManager()
         result = mgr.wrap_command(["claude"], "abc123def456", sandbox_policy="strict.yaml")
+        assert "--policy" in result
+        policy_idx = result.index("--policy")
+        assert result[policy_idx + 1] == "strict.yaml"
+        # --policy should be before the -- separator
+        separator_idx = result.index("--")
+        assert policy_idx < separator_idx
+
+    def test_no_policy_when_none(self) -> None:
+        """sandbox_policy=None omits --policy flag."""
+        mgr = SandboxManager()
+        result = mgr.wrap_command(["claude"], "abc123def456", sandbox_policy=None)
         assert "--policy" not in result
-        # Same result regardless of policy
-        result_no_policy = mgr.wrap_command(["claude"], "abc123def456")
-        assert result == result_no_policy
 
     def test_uses_sandbox_name(self) -> None:
-        """connect command references the sandbox by its deterministic name."""
+        """--name uses the deterministic sandbox name."""
         mgr = SandboxManager()
         result = mgr.wrap_command(["claude"], "abcdef123456789")
-        # The sandbox name is at index 3 (after openshell sandbox connect)
-        assert result[3] == "fs-abcdef123456"
+        name_idx = result.index("--name")
+        assert result[name_idx + 1] == "fs-abcdef123456"
 
 
 # ---------------------------------------------------------------------------
-# create (ENGINE-063)
+# _dockerfile_path and _claude_credentials_path (ENGINE-064)
 # ---------------------------------------------------------------------------
 
 
-class TestCreate:
-    """create() pre-provisions a sandbox before ACP connection."""
+class TestDockerfilePath:
+    """_dockerfile_path() returns the path to the sandbox Dockerfile directory."""
 
-    async def test_calls_openshell_create(self) -> None:
-        """create() invokes 'openshell sandbox create' with provisioning flags."""
+    def test_points_to_sandbox_dir(self) -> None:
+        """_dockerfile_path() returns a path ending in 'sandbox' containing a Dockerfile."""
         mgr = SandboxManager()
-        with patch("asyncio.create_subprocess_exec", new_callable=AsyncMock) as mock_exec:
-            mock_proc = MagicMock()
-            mock_proc.communicate = AsyncMock(return_value=(b"Created sandbox\n", b""))
-            mock_proc.returncode = 0
-            mock_exec.return_value = mock_proc
-            await mgr.create("abc123def456")
-        mock_exec.assert_called_once_with(
-            "openshell",
-            "sandbox",
-            "create",
-            "--name",
-            "fs-abc123def456",
-            "--from",
-            "claude",
-            "--auto-providers",
-            "--no-tty",
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-        )
+        path = mgr._dockerfile_path()
+        assert path.endswith("sandbox")
+        assert (Path(path) / "Dockerfile").is_file()
 
-    async def test_with_policy(self) -> None:
-        """create() includes --policy when sandbox_policy is provided."""
+    def test_path_is_absolute(self) -> None:
+        """_dockerfile_path() returns an absolute path."""
         mgr = SandboxManager()
-        with patch("asyncio.create_subprocess_exec", new_callable=AsyncMock) as mock_exec:
-            mock_proc = MagicMock()
-            mock_proc.communicate = AsyncMock(return_value=(b"", b""))
-            mock_proc.returncode = 0
-            mock_exec.return_value = mock_proc
-            await mgr.create("abc123def456", sandbox_policy="strict.yaml")
-        mock_exec.assert_called_once_with(
-            "openshell",
-            "sandbox",
-            "create",
-            "--name",
-            "fs-abc123def456",
-            "--from",
-            "claude",
-            "--auto-providers",
-            "--no-tty",
-            "--policy",
-            "strict.yaml",
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-        )
+        path = mgr._dockerfile_path()
+        assert Path(path).is_absolute()
 
-    async def test_no_policy_when_none(self) -> None:
-        """create() omits --policy when sandbox_policy is None."""
+    def test_path_relative_to_sandbox_module(self) -> None:
+        """_dockerfile_path() is relative to the sandbox.py module."""
         mgr = SandboxManager()
-        with patch("asyncio.create_subprocess_exec", new_callable=AsyncMock) as mock_exec:
-            mock_proc = MagicMock()
-            mock_proc.communicate = AsyncMock(return_value=(b"", b""))
-            mock_proc.returncode = 0
-            mock_exec.return_value = mock_proc
-            await mgr.create("abc123def456", sandbox_policy=None)
-        args = mock_exec.call_args[0]
-        assert "--policy" not in args
+        path = mgr._dockerfile_path()
+        # Should be a sibling directory of sandbox.py
+        import flowstate.engine.sandbox as sandbox_mod
 
-    async def test_tracks_sandbox_in_active_set(self) -> None:
-        """create() adds the sandbox name to the active set on success."""
-        mgr = SandboxManager()
-        with patch("asyncio.create_subprocess_exec", new_callable=AsyncMock) as mock_exec:
-            mock_proc = MagicMock()
-            mock_proc.communicate = AsyncMock(return_value=(b"", b""))
-            mock_proc.returncode = 0
-            mock_exec.return_value = mock_proc
-            await mgr.create("abc123def456")
-        assert "fs-abc123def456" in mgr._active_sandboxes
+        expected = str(Path(sandbox_mod.__file__).parent / "sandbox")
+        assert path == expected
 
-    async def test_nonzero_exit_raises_sandbox_error(self) -> None:
-        """create() raises SandboxError when openshell returns non-zero."""
-        mgr = SandboxManager()
-        with patch("asyncio.create_subprocess_exec", new_callable=AsyncMock) as mock_exec:
-            mock_proc = MagicMock()
-            mock_proc.communicate = AsyncMock(return_value=(b"", b"Error: gateway unreachable"))
-            mock_proc.returncode = 1
-            mock_exec.return_value = mock_proc
-            with pytest.raises(SandboxError, match="gateway unreachable"):
-                await mgr.create("abc123def456")
-        # Should NOT be added to active set on failure
-        assert "fs-abc123def456" not in mgr._active_sandboxes
 
-    async def test_os_error_raises_sandbox_error(self) -> None:
-        """create() raises SandboxError when openshell binary not found."""
-        mgr = SandboxManager()
-        with (
-            patch(
-                "asyncio.create_subprocess_exec",
-                new_callable=AsyncMock,
-                side_effect=OSError("openshell not found"),
-            ),
-            pytest.raises(SandboxError, match="openshell not found"),
-        ):
-            await mgr.create("abc123def456")
-        assert "fs-abc123def456" not in mgr._active_sandboxes
+class TestClaudeCredentialsPath:
+    """_claude_credentials_path() returns the path to ~/.claude.json if it exists."""
 
-    async def test_no_trailing_command(self) -> None:
-        """create() does NOT pass a trailing command (no -- separator)."""
+    def test_returns_path_when_exists(self) -> None:
+        """Returns the string path when ~/.claude.json exists."""
         mgr = SandboxManager()
-        with patch("asyncio.create_subprocess_exec", new_callable=AsyncMock) as mock_exec:
-            mock_proc = MagicMock()
-            mock_proc.communicate = AsyncMock(return_value=(b"", b""))
-            mock_proc.returncode = 0
-            mock_exec.return_value = mock_proc
-            await mgr.create("abc123def456")
-        args = mock_exec.call_args[0]
-        assert "--" not in args
+        with patch.object(Path, "exists", return_value=True):
+            result = mgr._claude_credentials_path()
+        assert result is not None
+        assert result.endswith(".claude.json")
 
-    async def test_no_no_keep_flag(self) -> None:
-        """create() does not use --no-keep (sandbox persists for connect)."""
+    def test_returns_none_when_missing(self) -> None:
+        """Returns None when ~/.claude.json does not exist."""
         mgr = SandboxManager()
-        with patch("asyncio.create_subprocess_exec", new_callable=AsyncMock) as mock_exec:
-            mock_proc = MagicMock()
-            mock_proc.communicate = AsyncMock(return_value=(b"", b""))
-            mock_proc.returncode = 0
-            mock_exec.return_value = mock_proc
-            await mgr.create("abc123def456")
-        args = mock_exec.call_args[0]
-        assert "--no-keep" not in args
+        with patch.object(Path, "exists", return_value=False):
+            result = mgr._claude_credentials_path()
+        assert result is None
 
-    async def test_captures_stdout(self) -> None:
-        """create() captures stdout so provisioning output does not leak."""
+    def test_path_is_in_home_directory(self) -> None:
+        """The credentials path is in the user's home directory."""
         mgr = SandboxManager()
-        with patch("asyncio.create_subprocess_exec", new_callable=AsyncMock) as mock_exec:
-            mock_proc = MagicMock()
-            mock_proc.communicate = AsyncMock(
-                return_value=(b"Requesting compute...\nPulling image...\n", b"")
-            )
-            mock_proc.returncode = 0
-            mock_exec.return_value = mock_proc
-            await mgr.create("abc123def456")
-        # Verify stdout=PIPE was used (provisioning output captured)
-        kwargs = mock_exec.call_args[1]
-        assert kwargs["stdout"] == asyncio.subprocess.PIPE
-        assert kwargs["stderr"] == asyncio.subprocess.PIPE
+        with patch.object(Path, "exists", return_value=True):
+            result = mgr._claude_credentials_path()
+        assert result is not None
+        assert result == str(Path.home() / ".claude.json")
 
 
 # ---------------------------------------------------------------------------

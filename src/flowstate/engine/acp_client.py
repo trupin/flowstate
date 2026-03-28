@@ -462,9 +462,15 @@ class AcpHarness:
        combine ``start_session()`` + ``prompt()`` for backward compatibility.
     """
 
-    def __init__(self, command: list[str], env: dict[str, str] | None = None) -> None:
+    def __init__(
+        self,
+        command: list[str],
+        env: dict[str, str] | None = None,
+        init_timeout: float = _ACP_INIT_TIMEOUT,
+    ) -> None:
         self._command = command
         self._env = env
+        self._init_timeout = init_timeout
         # Track active sessions for prompt/cancel/kill
         self._sessions: dict[str, _AcpSession] = {}
         # Track spawn context managers so they stay alive for long-lived sessions
@@ -532,11 +538,11 @@ class AcpHarness:
             try:
                 await asyncio.wait_for(
                     conn.initialize(protocol_version=PROTOCOL_VERSION),
-                    timeout=_ACP_INIT_TIMEOUT,
+                    timeout=self._init_timeout,
                 )
             except TimeoutError:
                 raise AcpSessionError(
-                    f"ACP initialize timed out after {_ACP_INIT_TIMEOUT}s — "
+                    f"ACP initialize timed out after {self._init_timeout}s — "
                     f"subprocess may not support ACP protocol"
                 ) from None
 
@@ -883,11 +889,11 @@ class AcpHarness:
                     try:
                         await asyncio.wait_for(
                             conn.initialize(protocol_version=PROTOCOL_VERSION),
-                            timeout=_ACP_INIT_TIMEOUT,
+                            timeout=self._init_timeout,
                         )
                     except TimeoutError:
                         raise AcpSessionError(
-                            f"ACP initialize timed out after {_ACP_INIT_TIMEOUT}s — "
+                            f"ACP initialize timed out after {self._init_timeout}s — "
                             f"subprocess may not support ACP protocol"
                         ) from None
 

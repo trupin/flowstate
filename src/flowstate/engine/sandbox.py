@@ -3,6 +3,7 @@
 import asyncio
 import logging
 from dataclasses import dataclass, field
+from pathlib import Path
 
 logger = logging.getLogger(__name__)
 
@@ -31,48 +32,14 @@ class SandboxManager:
         """
         return f"fs-{task_execution_id[:12]}"
 
-    async def create(
-        self,
-        task_execution_id: str,
-        sandbox_policy: str | None = None,
-    ) -> None:
-        """Pre-create an openshell sandbox and wait for it to be ready.
+    def _dockerfile_path(self) -> str:
+        """Return the path to the sandbox Dockerfile directory."""
+        return str(Path(__file__).parent / "sandbox")
 
-        Runs ``openshell sandbox create`` with provisioning flags but no
-        trailing command, so the sandbox starts in an idle state. All
-        provisioning output (image pull progress, etc.) is captured here
-        and never reaches the ACP stdio channel.
-
-        Raises :class:`SandboxError` if provisioning fails.
-        """
-        name = self.sandbox_name(task_execution_id)
-        cmd = [
-            "openshell",
-            "sandbox",
-            "create",
-            "--name",
-            name,
-            "--from",
-            "claude",
-            "--auto-providers",
-            "--no-tty",
-        ]
-        if sandbox_policy:
-            cmd.extend(["--policy", sandbox_policy])
-        try:
-            proc = await asyncio.create_subprocess_exec(
-                *cmd,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE,
-            )
-            _stdout, stderr = await proc.communicate()
-            if proc.returncode != 0:
-                raise SandboxError(f"Failed to create sandbox {name}: {stderr.decode()[:500]}")
-        except OSError as exc:
-            raise SandboxError(f"Failed to create sandbox {name}: {exc}") from exc
-        async with self._lock:
-            self._active_sandboxes.add(name)
-        logger.info("Pre-created sandbox %s for task %s", name, task_execution_id)
+    def _claude_credentials_path(self) -> str | None:
+        """Return the path to ~/.claude.json if it exists."""
+        creds = Path.home() / ".claude.json"
+        return str(creds) if creds.exists() else None
 
     def wrap_command(
         self,
@@ -80,17 +47,36 @@ class SandboxManager:
         task_execution_id: str,
         sandbox_policy: str | None = None,
     ) -> list[str]:
-        """Wrap a harness command to connect to a pre-created sandbox.
+        """Wrap a harness command to run inside an OpenShell sandbox.
 
-        Uses ``openshell sandbox connect`` to attach to an already-provisioned
-        sandbox. This produces clean stdio — no provisioning output — so the
-        ACP JSON-RPC parser is not disrupted.
+        Uses ``openshell sandbox create`` with the custom Dockerfile and
+        ``--no-keep`` to create a sandbox, run the command, and auto-delete
+        on exit. Uploads ``~/.claude.json`` so the agent can authenticate.
 
-        The *sandbox_policy* parameter is accepted for backward compatibility
-        but ignored; policy is applied during :meth:`create`.
+        The sandbox provisioning (image build + push + pull) takes ~35s on
+        first run. The ACP init timeout should be set to at least 120s for
+        sandboxed tasks.
         """
         name = self.sandbox_name(task_execution_id)
-        return ["openshell", "sandbox", "connect", name, "--", *command]
+        wrapped = [
+            "openshell",
+            "sandbox",
+            "create",
+            "--name",
+            name,
+            "--from",
+            self._dockerfile_path(),
+            "--auto-providers",
+            "--no-tty",
+            "--no-keep",
+        ]
+        creds = self._claude_credentials_path()
+        if creds:
+            wrapped.extend(["--upload", f"{creds}:/sandbox/.claude.json"])
+        if sandbox_policy:
+            wrapped.extend(["--policy", sandbox_policy])
+        wrapped.extend(["--", *command])
+        return wrapped
 
     async def register(self, task_execution_id: str) -> None:
         """Track a sandbox as active."""
@@ -98,13 +84,7 @@ class SandboxManager:
             self._active_sandboxes.add(self.sandbox_name(task_execution_id))
 
     async def destroy(self, task_execution_id: str) -> None:
-        """Destroy a single sandbox (best-effort).
-
-        Removes the sandbox from the active set and invokes
-        ``openshell sandbox delete <name>``. If the subprocess fails
-        (e.g. the sandbox was already gone), a warning is logged but
-        no exception is raised.
-        """
+        """Destroy a single sandbox (best-effort)."""
         name = self.sandbox_name(task_execution_id)
         async with self._lock:
             self._active_sandboxes.discard(name)
@@ -126,11 +106,7 @@ class SandboxManager:
             logger.warning("Failed to run openshell sandbox delete %s", name, exc_info=True)
 
     async def destroy_all(self) -> None:
-        """Destroy all tracked sandboxes (best-effort).
-
-        Clears the active set and attempts to delete each sandbox.
-        Failures are logged individually but never raised.
-        """
+        """Destroy all tracked sandboxes (best-effort)."""
         async with self._lock:
             names = list(self._active_sandboxes)
             self._active_sandboxes.clear()

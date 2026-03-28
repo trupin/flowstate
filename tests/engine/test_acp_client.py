@@ -1788,3 +1788,53 @@ class TestAcpHarnessProperties:
         wrapped = ["openshell", "sandbox", "create", "--name", "fs-abc123", "--", "claude"]
         harness = AcpHarness(command=wrapped)
         assert harness.command == wrapped
+
+
+# ---------------------------------------------------------------------------
+# init_timeout parameter (ENGINE-064)
+# ---------------------------------------------------------------------------
+
+
+class TestAcpHarnessInitTimeout:
+    """AcpHarness accepts an init_timeout parameter for sandbox provisioning."""
+
+    def test_default_init_timeout(self) -> None:
+        """Default init_timeout matches _ACP_INIT_TIMEOUT (30s)."""
+        from flowstate.engine.acp_client import _ACP_INIT_TIMEOUT
+
+        harness = AcpHarness(command=["claude"])
+        assert harness._init_timeout == _ACP_INIT_TIMEOUT
+
+    def test_custom_init_timeout(self) -> None:
+        """Custom init_timeout is stored on the harness."""
+        harness = AcpHarness(command=["claude"], init_timeout=120.0)
+        assert harness._init_timeout == 120.0
+
+    def test_sandbox_init_timeout(self) -> None:
+        """Sandboxed tasks use 120s init_timeout for provisioning overhead."""
+        wrapped = ["openshell", "sandbox", "create", "--name", "fs-abc", "--", "claude"]
+        harness = AcpHarness(command=wrapped, init_timeout=120.0)
+        assert harness._init_timeout == 120.0
+        assert harness.command == wrapped
+
+    @pytest.mark.asyncio
+    async def test_init_timeout_used_in_start_session(self) -> None:
+        """start_session uses the configured init_timeout for the initialize call."""
+        from flowstate.engine.acp_client import AcpSessionError
+
+        mock_ctx, conn, _process, _bridge = _make_mock_spawn_for_session()
+
+        # Make initialize() hang forever
+        async def hang_forever(**kw: Any) -> None:
+            await asyncio.Event().wait()
+
+        conn.initialize = AsyncMock(side_effect=hang_forever)
+
+        # Use a short custom timeout so the test finishes quickly
+        harness = AcpHarness(command=["slow-agent"], init_timeout=0.1)
+
+        with (
+            patch("acp.spawn_agent_process", mock_ctx),
+            pytest.raises(AcpSessionError, match="initialize timed out"),
+        ):
+            await harness.start_session("/workspace", "sess-timeout")
