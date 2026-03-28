@@ -4,7 +4,7 @@
 server
 
 ## Status
-in_progress
+done
 
 ## Priority
 P1 (important)

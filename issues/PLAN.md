@@ -371,9 +371,9 @@
 
 | Issue      | Title                                                        | Domain | Priority | Depends On         | Status |
 | ---------- | ------------------------------------------------------------ | ------ | -------- | ------------------ | ------ |
-| ENGINE-059 | Integrate sandbox into executor task lifecycle               | engine | P0       | DSL-008, ENGINE-058 | todo |
-| SERVER-020 | Validate openshell availability at run start                 | server | P1       | DSL-008            | todo |
-| UI-064     | Show sandbox indicator in flow detail panel                  | ui     | P2       | DSL-008            | todo |
+| ENGINE-059 | Integrate sandbox into executor task lifecycle               | engine | P0       | DSL-008, ENGINE-058 | done |
+| SERVER-020 | Validate openshell availability at run start                 | server | P1       | DSL-008            | done |
+| UI-064     | Show sandbox indicator in flow detail panel                  | ui     | P2       | DSL-008            | done |
 
 
 ---

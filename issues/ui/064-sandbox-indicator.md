@@ -4,7 +4,7 @@
 ui
 
 ## Status
-in_progress
+done
 
 ## Priority
 P2 (nice-to-have)
