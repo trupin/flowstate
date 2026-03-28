@@ -249,6 +249,30 @@ export function FlowDetailPanel({ flow, isEnabled }: FlowDetailPanelProps) {
               {ast.worktree ? 'enabled' : 'disabled'}
             </span>
 
+            {ast.sandbox && (
+              <>
+                <span className="flow-settings-key">Sandbox</span>
+                <span className="flow-settings-value">
+                  <span
+                    className="flow-sandbox-badge"
+                    title={
+                      ast.sandbox_policy
+                        ? `Sandboxed (policy: ${ast.sandbox_policy})`
+                        : 'Sandboxed \u2014 runs in OpenShell isolation'
+                    }
+                  >
+                    Sandboxed
+                  </span>
+                  {ast.sandbox_policy && (
+                    <span className="flow-sandbox-policy">
+                      {' '}
+                      ({ast.sandbox_policy})
+                    </span>
+                  )}
+                </span>
+              </>
+            )}
+
             {ast.max_parallel > 1 && (
               <>
                 <span className="flow-settings-key">Max Parallel</span>

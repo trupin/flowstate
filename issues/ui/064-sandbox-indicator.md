@@ -4,7 +4,7 @@
 ui
 
 ## Status
-todo
+in_progress
 
 ## Priority
 P2 (nice-to-have)
@@ -72,7 +72,32 @@ Check the existing harness badge implementation for exact styling patterns and t
 ## E2E Verification Log
 
 ### Post-Implementation Verification
-_[Agent fills this in]_
+
+**Date**: 2026-03-27
+**Environment**: macOS, Chromium via Playwright (1470x956 viewport), backend on port 8080, Vite dev on port 5174
+
+**Steps performed**:
+
+1. Started backend: `uv run flowstate server --port 8080`
+2. Created `flows/sandbox_test.flow` with `sandbox = true` and `sandbox_policy = "policies/strict.yaml"`
+3. Verified backend returns `sandbox: true` and `sandbox_policy: "policies/strict.yaml"` in `ast_json` via `curl -s http://localhost:8080/api/flows/sandbox_test`
+4. Started UI: `cd ui && npm run dev -- --port 5174`
+5. Opened browser via Playwright, clicked `sandbox_test` in sidebar
+6. Verified sandbox badge:
+   - `.flow-sandbox-badge` element found (count: 1)
+   - Badge text: "SANDBOXED" (uppercase via CSS text-transform)
+   - Badge title/tooltip: "Sandboxed (policy: policies/strict.yaml)"
+   - Policy path shown inline: "(policies/strict.yaml)"
+7. Navigated to `agent_delegation` flow (no sandbox attribute)
+   - `.flow-sandbox-badge` element NOT found (count: 0) -- correct, no badge for non-sandboxed flows
+8. Screenshot evidence saved at `/tmp/sandbox_detail.png` (badge visible) and `/tmp/sandbox_no_badge.png` (no badge)
+
+**Build/Lint**:
+- `npm run build`: PASS (tsc + vite build, 828 modules)
+- `npm run lint`: PASS (eslint clean)
+- `npx prettier --check "src/**/*.{ts,tsx}"`: PASS
+
+**Conclusion**: All acceptance criteria verified. Badge appears only when `sandbox === true`, tooltip includes policy path when set, no badge when sandbox is false/absent, styling consistent with existing settings grid layout.
 
 ## Completion Checklist
 - [ ] Unit tests written and passing

@@ -68,6 +68,8 @@ export interface FlowAstJson {
   worktree: boolean;
   subtasks: boolean;
   harness: string;
+  sandbox?: boolean;
+  sandbox_policy?: string | null;
   max_parallel: number;
   params: Array<{ name: string; type: string; default: unknown }>;
   nodes: Record<

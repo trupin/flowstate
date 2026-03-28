@@ -97,6 +97,25 @@
   color: var(--text-secondary);
 }
 
+/* Sandbox badge */
+.flow-sandbox-badge {
+  display: inline-block;
+  background: var(--warning);
+  color: var(--bg-primary);
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.3px;
+  padding: 1px 6px;
+  border-radius: 3px;
+  cursor: default;
+  text-transform: uppercase;
+}
+
+.flow-sandbox-policy {
+  font-size: 11px;
+  color: var(--text-secondary);
+}
+
 /* Node summary */
 .flow-node-summary {
   display: flex;
