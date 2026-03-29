@@ -7,11 +7,15 @@ from flowstate.engine.worktree import (
     WorktreeError,
     WorktreeInfo,
     cleanup_worktree,
+    create_node_worktree,
     create_worktree,
     init_git_repo,
     is_existing_worktree,
     is_git_repo,
     map_cwd_to_worktree,
+    merge_worktrees,
+    worktree_from_dict,
+    worktree_to_dict,
 )
 
 
@@ -231,3 +235,213 @@ class TestMapCwdToWorktree:
         cwd = str(tmp_path / "repo-extra")
         result = map_cwd_to_worktree(cwd, workspace, worktree)
         assert result == cwd
+
+
+# --- create_node_worktree ---
+
+
+class TestCreateNodeWorktree:
+    @pytest.mark.asyncio
+    async def test_creates_worktree_with_correct_branch(self, git_repo: Path) -> None:
+        """create_node_worktree should create a worktree with the expected branch name."""
+        run_id = "abcd1234-ef56-7890"
+        info = await create_node_worktree(str(git_repo), run_id, "analyze", 1)
+        assert Path(info.worktree_path).exists()
+        assert info.branch_name == "flowstate/abcd1234/analyze-1"
+        assert info.original_workspace == str(git_repo.resolve())
+        # Verify it's a real git worktree
+        assert (Path(info.worktree_path) / ".git").is_file()
+        await cleanup_worktree(info)
+
+    @pytest.mark.asyncio
+    async def test_creates_from_source_branch(self, git_repo: Path) -> None:
+        """create_node_worktree should branch from source_branch when specified."""
+        run_id = "abcd1234-ef56-7890"
+        # Create a source worktree first
+        source = await create_node_worktree(str(git_repo), run_id, "source", 1)
+        # Write a file in the source worktree
+        (Path(source.worktree_path) / "source_file.txt").write_text("from source")
+        subprocess.run(
+            ["git", "add", "."], cwd=source.worktree_path, check=True, capture_output=True
+        )
+        subprocess.run(
+            ["git", "commit", "-m", "source change"],
+            cwd=source.worktree_path,
+            check=True,
+            capture_output=True,
+        )
+
+        # Create a branched worktree
+        branched = await create_node_worktree(
+            str(git_repo), run_id, "branch", 1, source_branch=source.branch_name
+        )
+        # The branched worktree should contain the source file
+        assert (Path(branched.worktree_path) / "source_file.txt").exists()
+        assert (Path(branched.worktree_path) / "source_file.txt").read_text() == "from source"
+
+        await cleanup_worktree(branched)
+        await cleanup_worktree(source)
+
+    @pytest.mark.asyncio
+    async def test_non_git_repo_raises(self, tmp_path: Path) -> None:
+        """Should raise WorktreeError for non-git directories."""
+        with pytest.raises(WorktreeError):
+            await create_node_worktree(str(tmp_path), "run-id", "node", 1)
+
+    @pytest.mark.asyncio
+    async def test_branch_collision_uses_longer_id(self, git_repo: Path) -> None:
+        """When branch name collides, should use longer run_id prefix."""
+        run_id = "abcd1234-ef56-7890"
+        info1 = await create_node_worktree(str(git_repo), run_id, "node", 1)
+        # Same run_id and node/gen -> branch collision
+        info2 = await create_node_worktree(str(git_repo), run_id, "node", 1)
+        # Should use longer prefix: flowstate/abcd1234-ef5/node-1
+        assert info2.branch_name == f"flowstate/{run_id[:12]}/node-1"
+        await cleanup_worktree(info2)
+        await cleanup_worktree(info1)
+
+
+# --- merge_worktrees ---
+
+
+class TestMergeWorktrees:
+    @pytest.mark.asyncio
+    async def test_clean_merge(self, git_repo: Path) -> None:
+        """Merging branches with non-conflicting changes should succeed cleanly."""
+        run_id = "merge-test-clean"
+        # Create source worktree
+        source = await create_node_worktree(str(git_repo), run_id, "source", 1)
+
+        # Create two branches from source
+        branch_a = await create_node_worktree(
+            str(git_repo), run_id, "branch-a", 1, source_branch=source.branch_name
+        )
+        branch_b = await create_node_worktree(
+            str(git_repo), run_id, "branch-b", 1, source_branch=source.branch_name
+        )
+
+        # Make non-conflicting changes in each branch
+        (Path(branch_a.worktree_path) / "file_a.txt").write_text("content A")
+        subprocess.run(
+            ["git", "add", "."], cwd=branch_a.worktree_path, check=True, capture_output=True
+        )
+        subprocess.run(
+            ["git", "commit", "-m", "add file A"],
+            cwd=branch_a.worktree_path,
+            check=True,
+            capture_output=True,
+        )
+
+        (Path(branch_b.worktree_path) / "file_b.txt").write_text("content B")
+        subprocess.run(
+            ["git", "add", "."], cwd=branch_b.worktree_path, check=True, capture_output=True
+        )
+        subprocess.run(
+            ["git", "commit", "-m", "add file B"],
+            cwd=branch_b.worktree_path,
+            check=True,
+            capture_output=True,
+        )
+
+        # Create merge target
+        target = await create_node_worktree(
+            str(git_repo), run_id, "join", 1, source_branch=source.branch_name
+        )
+
+        result = await merge_worktrees(target, [branch_a.branch_name, branch_b.branch_name])
+
+        assert not result.has_conflicts
+        assert result.conflict_files == []
+        # Both files should be present in the target
+        assert (Path(target.worktree_path) / "file_a.txt").exists()
+        assert (Path(target.worktree_path) / "file_b.txt").exists()
+
+        # Cleanup
+        for wt in [target, branch_b, branch_a, source]:
+            await cleanup_worktree(wt)
+
+    @pytest.mark.asyncio
+    async def test_conflict_merge(self, git_repo: Path) -> None:
+        """Merging branches with conflicting changes should report conflicts."""
+        run_id = "merge-test-conflict"
+        source = await create_node_worktree(str(git_repo), run_id, "source", 1)
+
+        # Create two branches from source
+        branch_a = await create_node_worktree(
+            str(git_repo), run_id, "branch-a", 1, source_branch=source.branch_name
+        )
+        branch_b = await create_node_worktree(
+            str(git_repo), run_id, "branch-b", 1, source_branch=source.branch_name
+        )
+
+        # Make conflicting changes to the same file
+        (Path(branch_a.worktree_path) / "conflict.txt").write_text("version A")
+        subprocess.run(
+            ["git", "add", "."], cwd=branch_a.worktree_path, check=True, capture_output=True
+        )
+        subprocess.run(
+            ["git", "commit", "-m", "version A"],
+            cwd=branch_a.worktree_path,
+            check=True,
+            capture_output=True,
+        )
+
+        (Path(branch_b.worktree_path) / "conflict.txt").write_text("version B")
+        subprocess.run(
+            ["git", "add", "."], cwd=branch_b.worktree_path, check=True, capture_output=True
+        )
+        subprocess.run(
+            ["git", "commit", "-m", "version B"],
+            cwd=branch_b.worktree_path,
+            check=True,
+            capture_output=True,
+        )
+
+        # Create merge target
+        target = await create_node_worktree(
+            str(git_repo), run_id, "join", 1, source_branch=source.branch_name
+        )
+
+        result = await merge_worktrees(target, [branch_a.branch_name, branch_b.branch_name])
+
+        assert result.has_conflicts
+        assert "conflict.txt" in result.conflict_files
+
+        # Cleanup
+        for wt in [target, branch_b, branch_a, source]:
+            await cleanup_worktree(wt)
+
+
+# --- worktree_to_dict / worktree_from_dict ---
+
+
+class TestWorktreeSerDe:
+    def test_round_trip(self) -> None:
+        """worktree_to_dict -> worktree_from_dict should produce the original."""
+        info = WorktreeInfo(
+            original_workspace="/home/user/project",
+            worktree_path="/tmp/flowstate-abc123-node/",
+            branch_name="flowstate/abc123/analyze-1",
+        )
+        d = worktree_to_dict(info)
+        assert d == {
+            "path": "/tmp/flowstate-abc123-node/",
+            "branch": "flowstate/abc123/analyze-1",
+            "original_workspace": "/home/user/project",
+        }
+        restored = worktree_from_dict(d)
+        assert restored.original_workspace == info.original_workspace
+        assert restored.worktree_path == info.worktree_path
+        assert restored.branch_name == info.branch_name
+
+    def test_from_dict_preserves_fields(self) -> None:
+        """worktree_from_dict maps artifact schema keys correctly."""
+        d = {
+            "path": "/tmp/wt-xyz",
+            "branch": "flowstate/abc/node-2",
+            "original_workspace": "/repo",
+        }
+        info = worktree_from_dict(d)
+        assert info.worktree_path == "/tmp/wt-xyz"
+        assert info.branch_name == "flowstate/abc/node-2"
+        assert info.original_workspace == "/repo"

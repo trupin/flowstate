@@ -1,18 +1,25 @@
 """Git worktree management for workspace isolation.
 
-When a flow's workspace points to a git repository, each flow run gets its own
-worktree so concurrent runs don't conflict. The worktree is created at run start
-and cleaned up on completion/cancellation.
+Provides per-node worktree isolation: each node in a flow gets its own git
+worktree. Worktree references flow along edges:
+  - Linear/conditional: next node inherits predecessor's worktree (reuse)
+  - Fork (1->N): each branch gets a new worktree branched from predecessor's HEAD
+  - Join (N->1): join node merges all branch worktrees before starting
+
+The worktree reference is stored as a ``worktree`` artifact on each task
+execution (path + branch name + original workspace).
 """
 
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import shutil
 import tempfile
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Any
 
 logger = logging.getLogger(__name__)
 
@@ -200,6 +207,184 @@ async def cleanup_worktree(info: WorktreeInfo) -> None:
             logger.warning("Failed to delete branch %s", info.branch_name)
     except Exception:
         logger.warning("Error deleting branch %s", info.branch_name, exc_info=True)
+
+
+@dataclass
+class MergeResult:
+    """Result of merging multiple worktree branches."""
+
+    has_conflicts: bool
+    conflict_files: list[str] = field(default_factory=list)
+
+
+async def create_node_worktree(
+    workspace: str,
+    run_id: str,
+    node_name: str,
+    generation: int,
+    source_branch: str | None = None,
+) -> WorktreeInfo:
+    """Create a worktree for a specific node execution.
+
+    Branch name: ``flowstate/<run_id[:8]>/<node_name>-<generation>``
+    If *source_branch* is provided, branch from it instead of HEAD.
+
+    Raises WorktreeError if creation fails.
+    """
+    workspace = str(Path(workspace).resolve())
+    branch_name = f"flowstate/{run_id[:8]}/{node_name}-{generation}"
+    worktree_dir = tempfile.mkdtemp(prefix=f"flowstate-{run_id[:8]}-{node_name}-")
+
+    cmd: list[str] = ["git", "worktree", "add", worktree_dir, "-b", branch_name]
+    if source_branch:
+        cmd.append(source_branch)
+
+    proc = await asyncio.create_subprocess_exec(
+        *cmd,
+        cwd=workspace,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
+    )
+    _stdout, stderr = await proc.communicate()
+
+    if proc.returncode != 0:
+        # Try with longer UUID suffix if branch already exists
+        branch_name = f"flowstate/{run_id[:12]}/{node_name}-{generation}"
+        cmd = ["git", "worktree", "add", worktree_dir, "-b", branch_name]
+        if source_branch:
+            cmd.append(source_branch)
+
+        proc = await asyncio.create_subprocess_exec(
+            *cmd,
+            cwd=workspace,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        _stdout, stderr = await proc.communicate()
+
+        if proc.returncode != 0:
+            shutil.rmtree(worktree_dir, ignore_errors=True)
+            raise WorktreeError(f"Failed to create node worktree: {stderr.decode().strip()}")
+
+    return WorktreeInfo(
+        original_workspace=workspace,
+        worktree_path=worktree_dir,
+        branch_name=branch_name,
+    )
+
+
+async def merge_worktrees(
+    target: WorktreeInfo,
+    source_branches: list[str],
+) -> MergeResult:
+    """Merge source branches into the target worktree.
+
+    Uses sequential ``git merge`` for each source branch. Successful
+    merges auto-commit. If conflicts occur on any branch, the conflicts
+    are recorded, then resolved by adding all files and committing so
+    that subsequent branch merges can proceed. The final working tree
+    will contain conflict markers for the agent to resolve.
+
+    Returns a MergeResult indicating whether any conflicts were found.
+    """
+    all_conflict_files: list[str] = []
+    has_conflicts = False
+
+    for branch in source_branches:
+        proc = await asyncio.create_subprocess_exec(
+            "git",
+            "merge",
+            "--no-ff",
+            "-m",
+            f"flowstate: merge {branch}",
+            branch,
+            cwd=target.worktree_path,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        _stdout, stderr = await proc.communicate()
+
+        if proc.returncode == 0:
+            # Clean merge, auto-committed
+            continue
+
+        # Check for merge conflicts (exit code 1 with conflicts)
+        conflict_proc = await asyncio.create_subprocess_exec(
+            "git",
+            "diff",
+            "--name-only",
+            "--diff-filter=U",
+            cwd=target.worktree_path,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        conflict_stdout, _ = await conflict_proc.communicate()
+        conflict_files = [f for f in conflict_stdout.decode().strip().split("\n") if f]
+        if conflict_files:
+            has_conflicts = True
+            all_conflict_files.extend(conflict_files)
+            logger.warning(
+                "Merge conflicts in %d files from branch %s",
+                len(conflict_files),
+                branch,
+            )
+            # Add all files (including conflicted ones) and commit so
+            # subsequent merges can proceed. The conflict markers
+            # remain in the file content for the agent to resolve.
+            await asyncio.create_subprocess_exec(
+                "git",
+                "add",
+                "--all",
+                cwd=target.worktree_path,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+            )
+            commit_proc = await asyncio.create_subprocess_exec(
+                "git",
+                "commit",
+                "-m",
+                f"flowstate: merge {branch} (with conflicts)",
+                cwd=target.worktree_path,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+            )
+            await commit_proc.communicate()
+        else:
+            logger.warning(
+                "Merge failed (non-conflict) for branch %s: %s",
+                branch,
+                stderr.decode().strip(),
+            )
+
+    return MergeResult(has_conflicts=has_conflicts, conflict_files=all_conflict_files)
+
+
+def worktree_to_dict(info: WorktreeInfo) -> dict[str, str]:
+    """Serialize a WorktreeInfo to a dict for artifact storage."""
+    return {
+        "path": info.worktree_path,
+        "branch": info.branch_name,
+        "original_workspace": info.original_workspace,
+    }
+
+
+def worktree_from_dict(data: dict[str, Any]) -> WorktreeInfo:
+    """Deserialize a WorktreeInfo from an artifact dict."""
+    return WorktreeInfo(
+        original_workspace=data["original_workspace"],
+        worktree_path=data["path"],
+        branch_name=data["branch"],
+    )
+
+
+def worktree_artifact_to_json(info: WorktreeInfo) -> str:
+    """Serialize a WorktreeInfo to a JSON string for artifact storage."""
+    return json.dumps(worktree_to_dict(info))
+
+
+def worktree_artifact_from_json(content: str) -> WorktreeInfo:
+    """Deserialize a WorktreeInfo from an artifact JSON string."""
+    return worktree_from_dict(json.loads(content))
 
 
 def map_cwd_to_worktree(

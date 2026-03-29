@@ -50,8 +50,13 @@ from flowstate.engine.subprocess_mgr import StreamEvent, StreamEventType
 from flowstate.engine.worktree import (
     WorktreeInfo,
     cleanup_worktree,
+    create_node_worktree,
+    is_existing_worktree,
+    is_git_repo,
     map_cwd_to_worktree,
-    setup_worktree_if_needed,
+    merge_worktrees,
+    worktree_artifact_from_json,
+    worktree_artifact_to_json,
 )
 
 if TYPE_CHECKING:
@@ -252,9 +257,8 @@ class FlowExecutor:
         self._expanded_prompts: dict[str, str] = {}
         self._budget: BudgetGuard | None = None
         self._completed_queue: asyncio.Queue[str] | None = None
-        # Worktree isolation
+        # Per-node worktree cleanup setting
         self._worktree_cleanup = worktree_cleanup
-        self._worktree_info: WorktreeInfo | None = None
         # Queue task tracking (set by execute() when processing a queue task)
         self._task_id: str | None = None
         # Track which harness each session uses for kill() dispatch
@@ -383,13 +387,6 @@ class FlowExecutor:
 
             flow = replace(flow, workspace=workspace)
 
-        # Git worktree isolation
-        self._worktree_info = await setup_worktree_if_needed(workspace, flow_run_id, flow.worktree)
-        if self._worktree_info is not None:
-            workspace = self._worktree_info.worktree_path
-            self._db.update_flow_run_worktree(flow_run_id, workspace)
-            logger.info("Created git worktree at %s for run %s", workspace, flow_run_id)
-
         # Ensure workspace directory exists (ignore errors for test paths)
         with contextlib.suppress(OSError):
             os.makedirs(workspace, exist_ok=True)
@@ -424,7 +421,7 @@ class FlowExecutor:
 
         # 6. Enqueue entry node
         entry_node = _find_entry_node(flow)
-        entry_task_id = self._create_task_execution(
+        entry_task_id = await self._create_task_execution(
             flow_run_id=flow_run_id,
             node=entry_node,
             generation=1,
@@ -495,10 +492,10 @@ class FlowExecutor:
                 completed_id, flow_run_id, flow, expanded_prompts, budget, pending
             )
             if should_stop:
-                await self._cleanup_worktree()
+                await self._cleanup_all_worktrees(flow_run_id)
                 return flow_run_id
 
-        await self._cleanup_worktree()
+        await self._cleanup_all_worktrees(flow_run_id)
         return flow_run_id
 
     async def _process_completed_task(
@@ -620,7 +617,7 @@ class FlowExecutor:
             ctx_mode = get_context_mode(edge, flow)
             is_cycle = _has_been_executed(flow_run_id, edge.target, self._db)
             target_gen = _get_next_generation(flow_run_id, edge.target, self._db) if is_cycle else 1
-            next_task_id = self._create_task_execution(
+            next_task_id = await self._create_task_execution(
                 flow_run_id=flow_run_id,
                 node=flow.nodes[edge.target],
                 generation=target_gen,
@@ -700,12 +697,37 @@ class FlowExecutor:
         assert fork_edge.fork_targets is not None
         join_node_name = _find_join_node(flow, fork_edge.fork_targets)
 
+        # Per-node worktree: read predecessor's worktree for branching (ENGINE-070)
+        pred_wt: WorktreeInfo | None = None
+        pred_wt_artifact = self._db.get_artifact(source_task_id, "worktree")
+        if pred_wt_artifact is not None:
+            pred_wt = worktree_artifact_from_json(pred_wt_artifact.content)
+
         # Create task executions for all fork targets
         member_task_ids: list[str] = []
         for target_name in fork_edge.fork_targets:
             target_node = flow.nodes[target_name]
             ctx_mode = get_context_mode(fork_edge, flow)
-            task_id = self._create_task_execution(
+
+            # Create a new worktree branch for each fork member
+            fork_wt: WorktreeInfo | None = None
+            if pred_wt is not None:
+                try:
+                    fork_wt = await create_node_worktree(
+                        pred_wt.original_workspace,
+                        flow_run_id,
+                        target_name,
+                        generation,
+                        source_branch=pred_wt.branch_name,
+                    )
+                except Exception:
+                    logger.warning(
+                        "Failed to create fork worktree for %s, using predecessor's",
+                        target_name,
+                        exc_info=True,
+                    )
+
+            task_id = await self._create_task_execution(
                 flow_run_id=flow_run_id,
                 node=target_node,
                 generation=generation,
@@ -713,6 +735,7 @@ class FlowExecutor:
                 expanded_prompt=expanded_prompts[target_name],
                 context_mode=ctx_mode,
                 predecessor_task_id=source_task_id,
+                worktree_override=fork_wt,
             )
             member_task_ids.append(task_id)
             pending.add(task_id)
@@ -809,8 +832,45 @@ class FlowExecutor:
         join_node = flow.nodes[fork_group.join_node_name]
         join_gen = fork_group.generation + 1
         cwd = resolve_cwd(join_node, flow)
-        cwd = self._apply_worktree_mapping(cwd)
+
+        # Per-node worktree: merge all member branches into join worktree (ENGINE-070)
+        join_wt: WorktreeInfo | None = None
+        merge_conflict_msg = ""
+        member_worktrees: list[WorktreeInfo] = []
+        for m in members:
+            wt_artifact = self._db.get_artifact(m.id, "worktree")
+            if wt_artifact is not None:
+                member_worktrees.append(worktree_artifact_from_json(wt_artifact.content))
+
+        if member_worktrees:
+            original_ws = member_worktrees[0].original_workspace
+            try:
+                join_wt = await create_node_worktree(
+                    original_ws, flow_run_id, join_node.name, join_gen
+                )
+                source_branches = [wt.branch_name for wt in member_worktrees]
+                merge_result = await merge_worktrees(join_wt, source_branches)
+                if merge_result.has_conflicts:
+                    conflict_list = ", ".join(merge_result.conflict_files[:10])
+                    merge_conflict_msg = (
+                        f"\n\n## Merge Conflicts\n"
+                        f"There are merge conflicts from {len(member_worktrees)} parallel branches "
+                        f"in the following files: {conflict_list}\n"
+                        f"Resolve all conflicts before proceeding with your task.\n"
+                    )
+            except Exception:
+                logger.warning(
+                    "Failed to create/merge join worktree for %s",
+                    join_node.name,
+                    exc_info=True,
+                )
+                join_wt = None
+
+        if join_wt is not None:
+            cwd = map_cwd_to_worktree(cwd, join_wt.original_workspace, join_wt.worktree_path)
+
         prompt = build_prompt_join(join_node, cwd, member_summaries)
+        prompt += merge_conflict_msg
 
         # Expand template if needed
         expanded = expanded_prompts.get(join_node.name, join_node.prompt)
@@ -829,6 +889,12 @@ class FlowExecutor:
             task_dir="",
             prompt_text=prompt,
         )
+
+        # Save worktree artifact on join task
+        if join_wt is not None:
+            self._db.save_artifact(
+                join_task_id, "worktree", worktree_artifact_to_json(join_wt), "application/json"
+            )
 
         # Append task management instructions for join node (ENGINE-040)
         self._maybe_update_task_prompt(prompt, flow, join_node, flow_run_id, join_task_id, None)
@@ -1026,7 +1092,7 @@ class FlowExecutor:
         target_node = flow.nodes[decision.target]
 
         # Create task execution for the target
-        next_task_id = self._create_task_execution_conditional(
+        next_task_id = await self._create_task_execution_conditional(
             flow_run_id=flow_run_id,
             target_node=target_node,
             generation=target_gen,
@@ -1121,7 +1187,7 @@ class FlowExecutor:
             ctx_mode = get_context_mode(default_edge, flow)
             target_node = flow.nodes[default_edge.target]
 
-            next_task_id = self._create_task_execution_conditional(
+            next_task_id = await self._create_task_execution_conditional(
                 flow_run_id=flow_run_id,
                 target_node=target_node,
                 generation=target_gen,
@@ -1181,7 +1247,7 @@ class FlowExecutor:
         ctx_mode = get_context_mode(chosen_edge, flow)
         target_node = flow.nodes[decision.target]
 
-        next_task_id = self._create_task_execution_conditional(
+        next_task_id = await self._create_task_execution_conditional(
             flow_run_id=flow_run_id,
             target_node=target_node,
             generation=target_gen,
@@ -1220,7 +1286,7 @@ class FlowExecutor:
             )
         )
 
-    def _create_task_execution_conditional(
+    async def _create_task_execution_conditional(
         self,
         flow_run_id: str,
         target_node: Node,
@@ -1238,7 +1304,41 @@ class FlowExecutor:
         assert isinstance(source_task, TaskExecutionRow)
 
         cwd = resolve_cwd(target_node, flow)
-        cwd = self._apply_worktree_mapping(cwd)
+        workspace = flow.workspace or cwd
+
+        # Per-node worktree isolation (ENGINE-070)
+        use_sandbox = target_node.sandbox if target_node.sandbox is not None else flow.sandbox
+        worktree_enabled = (
+            flow.worktree
+            and not use_sandbox
+            and is_git_repo(workspace)
+            and not is_existing_worktree(workspace)
+        )
+
+        worktree_info: WorktreeInfo | None = None
+        if worktree_enabled:
+            pred_wt_artifact = self._db.get_artifact(source_task.id, "worktree")
+            if pred_wt_artifact is not None:
+                pred_wt = worktree_artifact_from_json(pred_wt_artifact.content)
+                if context_mode == ContextMode.NONE:
+                    try:
+                        worktree_info = await create_node_worktree(
+                            pred_wt.original_workspace, flow_run_id, target_node.name, generation
+                        )
+                    except Exception:
+                        logger.warning(
+                            "Failed to create fresh worktree for conditional %s",
+                            target_node.name,
+                            exc_info=True,
+                        )
+                else:
+                    worktree_info = pred_wt
+
+        if worktree_info is not None:
+            cwd = map_cwd_to_worktree(
+                cwd, worktree_info.original_workspace, worktree_info.worktree_path
+            )
+
         claude_session_id: str | None = None
 
         if is_cycle and context_mode == ContextMode.HANDOFF:
@@ -1293,6 +1393,12 @@ class FlowExecutor:
             task_dir="",
             prompt_text=prompt,
         )
+
+        # Save worktree artifact on conditional task
+        if worktree_info is not None:
+            self._db.save_artifact(
+                task_id, "worktree", worktree_artifact_to_json(worktree_info), "application/json"
+            )
 
         # Append task management instructions (ENGINE-040)
         # In conditional transitions, the source_task is the predecessor
@@ -1590,8 +1696,8 @@ class FlowExecutor:
         for group in groups:
             self._db.update_fork_group_status(group.id, "cancelled")
 
-        # Cleanup worktree
-        await self._cleanup_worktree()
+        # Cleanup per-node worktrees
+        await self._cleanup_all_worktrees(flow_run_id)
 
         # Mark the queue task as cancelled
         queue_task_id = self._task_id
@@ -1638,6 +1744,43 @@ class FlowExecutor:
             task_dir="",
             prompt_text=new_prompt,
         )
+
+        # Forward worktree artifact to the retried task (ENGINE-070)
+        old_wt_artifact = self._db.get_artifact(task_execution_id, "worktree")
+        if old_wt_artifact is not None:
+            old_wt = worktree_artifact_from_json(old_wt_artifact.content)
+            if Path(old_wt.worktree_path).exists():
+                # Worktree path still valid -- reuse it
+                self._db.save_artifact(
+                    new_task_id, "worktree", old_wt_artifact.content, "application/json"
+                )
+            else:
+                # Worktree was cleaned up -- create fresh from workspace HEAD
+                try:
+                    fresh_wt = await create_node_worktree(
+                        old_wt.original_workspace, flow_run_id, old_task.node_name, new_gen
+                    )
+                    self._db.save_artifact(
+                        new_task_id,
+                        "worktree",
+                        worktree_artifact_to_json(fresh_wt),
+                        "application/json",
+                    )
+                    # Update cwd on the new task
+                    new_cwd = map_cwd_to_worktree(
+                        old_task.cwd, fresh_wt.original_workspace, fresh_wt.worktree_path
+                    )
+                    self._db._execute(  # type: ignore[attr-defined]
+                        "UPDATE task_executions SET cwd = ? WHERE id = ?",
+                        (new_cwd, new_task_id),
+                    )
+                    self._db._commit()  # type: ignore[attr-defined]
+                except Exception:
+                    logger.warning(
+                        "Failed to create fresh worktree for retried task %s",
+                        old_task.node_name,
+                        exc_info=True,
+                    )
 
         # Update task management URLs to reference the new task_execution_id (ENGINE-040)
         if task_execution_id in new_prompt:
@@ -1688,7 +1831,7 @@ class FlowExecutor:
                 if edge.edge_type == EdgeType.UNCONDITIONAL and edge.target:
                     ctx_mode = get_context_mode(edge, self._flow)
                     expanded = self._expanded_prompts.get(edge.target, "")
-                    next_task_id = self._create_task_execution(
+                    next_task_id = await self._create_task_execution(
                         flow_run_id=flow_run_id,
                         node=self._flow.nodes[edge.target],
                         generation=1,
@@ -2676,7 +2819,7 @@ class FlowExecutor:
     # Task creation helpers
     # ------------------------------------------------------------------ #
 
-    def _create_task_execution(
+    async def _create_task_execution(
         self,
         flow_run_id: str,
         node: Node,
@@ -2685,10 +2828,64 @@ class FlowExecutor:
         expanded_prompt: str,
         context_mode: ContextMode,
         predecessor_task_id: str | None = None,
+        worktree_override: WorktreeInfo | None = None,
     ) -> str:
-        """Create a task execution record."""
+        """Create a task execution record with per-node worktree isolation.
+
+        If *worktree_override* is provided (e.g. from fork branching), it is
+        used directly and the normal worktree resolution is skipped.
+        """
         cwd = resolve_cwd(node, flow)
-        cwd = self._apply_worktree_mapping(cwd)
+        workspace = flow.workspace or cwd
+
+        # Per-node worktree isolation (ENGINE-070)
+        worktree_info: WorktreeInfo | None = worktree_override
+        if worktree_info is None:
+            use_sandbox = node.sandbox if node.sandbox is not None else flow.sandbox
+            worktree_enabled = (
+                flow.worktree
+                and not use_sandbox
+                and is_git_repo(workspace)
+                and not is_existing_worktree(workspace)
+            )
+
+            if worktree_enabled and predecessor_task_id is not None:
+                # Read predecessor's worktree artifact
+                pred_wt_artifact = self._db.get_artifact(predecessor_task_id, "worktree")
+                if pred_wt_artifact is not None:
+                    pred_wt = worktree_artifact_from_json(pred_wt_artifact.content)
+                    if context_mode == ContextMode.NONE:
+                        # Fresh worktree from original workspace HEAD
+                        try:
+                            worktree_info = await create_node_worktree(
+                                pred_wt.original_workspace, flow_run_id, node.name, generation
+                            )
+                        except Exception:
+                            logger.warning(
+                                "Failed to create fresh worktree for %s, using workspace",
+                                node.name,
+                                exc_info=True,
+                            )
+                    else:
+                        # Reuse predecessor's worktree
+                        worktree_info = pred_wt
+            elif worktree_enabled and predecessor_task_id is None:
+                # Entry node: create first worktree from workspace
+                try:
+                    worktree_info = await create_node_worktree(
+                        workspace, flow_run_id, node.name, generation
+                    )
+                except Exception:
+                    logger.warning(
+                        "Failed to create entry worktree for %s, using workspace",
+                        node.name,
+                        exc_info=True,
+                    )
+
+        if worktree_info is not None:
+            cwd = map_cwd_to_worktree(
+                cwd, worktree_info.original_workspace, worktree_info.worktree_path
+            )
 
         # Build the full prompt based on context mode
         if context_mode == ContextMode.HANDOFF and predecessor_task_id:
@@ -2732,6 +2929,12 @@ class FlowExecutor:
 
         # Save the assembled prompt as an input artifact
         self._db.save_artifact(task_id, "input", prompt, "text/markdown")
+
+        # Save worktree artifact if worktree isolation is active
+        if worktree_info is not None:
+            self._db.save_artifact(
+                task_id, "worktree", worktree_artifact_to_json(worktree_info), "application/json"
+            )
 
         # Append task management instructions after task creation so we have
         # the task_execution_id for API URLs (ENGINE-040)
@@ -2809,7 +3012,7 @@ class FlowExecutor:
                     edge = outgoing[0]
                     if edge.target:
                         ctx_mode = get_context_mode(edge, flow)
-                        next_task_id = self._create_task_execution(
+                        next_task_id = await self._create_task_execution(
                             flow_run_id=flow_run_id,
                             node=flow.nodes[edge.target],
                             generation=1,
@@ -2920,14 +3123,6 @@ class FlowExecutor:
             f" (confidence: {decision.confidence:.2f})",
         )
 
-    def _apply_worktree_mapping(self, cwd: str) -> str:
-        """Remap cwd through the worktree if worktree isolation is active."""
-        if self._worktree_info is not None:
-            return map_cwd_to_worktree(
-                cwd, self._worktree_info.original_workspace, self._worktree_info.worktree_path
-            )
-        return cwd
-
     def _inject_task_context(self, prompt: str) -> str:
         """Prepend task queue context to a prompt when executing on behalf of a task.
 
@@ -2942,17 +3137,32 @@ class FlowExecutor:
             task_context += f"Description: {task.description}\n"
         return task_context + "\n" + prompt
 
-    async def _cleanup_worktree(self) -> None:
-        """Clean up the git worktree if one was created and cleanup is enabled.
+    async def _cleanup_all_worktrees(self, flow_run_id: str) -> None:
+        """Clean up all per-node worktrees for a flow run.
 
-        Resets ``_worktree_info`` to ``None`` so the method is idempotent
-        (safe to call from both the main loop exit and ``cancel()``).
+        Collects unique worktree paths from all task ``worktree`` artifacts
+        in the run and removes each one. Skipped when ``_worktree_cleanup``
+        is False. Idempotent (safe to call from both main loop exit and
+        ``cancel()``).
         """
-        if self._worktree_info is not None and self._worktree_cleanup:
-            info = self._worktree_info
-            self._worktree_info = None
+        if not self._worktree_cleanup:
+            return
+
+        tasks = self._db.list_task_executions(flow_run_id)
+        # Deduplicate by worktree path (linear edges reuse the same worktree)
+        seen_paths: set[str] = set()
+        for task in tasks:
+            wt_artifact = self._db.get_artifact(task.id, "worktree")
+            if wt_artifact is None:
+                continue
+            info = worktree_artifact_from_json(wt_artifact.content)
+            if info.worktree_path in seen_paths:
+                continue
+            seen_paths.add(info.worktree_path)
             try:
                 await cleanup_worktree(info)
                 logger.info("Cleaned up worktree at %s", info.worktree_path)
             except Exception:
-                logger.warning("Failed to cleanup worktree", exc_info=True)
+                logger.warning(
+                    "Failed to cleanup worktree at %s", info.worktree_path, exc_info=True
+                )
