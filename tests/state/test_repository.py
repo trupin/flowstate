@@ -2265,3 +2265,129 @@ class TestAgentSubtasks:
         assert results1[0].title == "Task 1 subtask A"
         assert results1[1].title == "Task 1 subtask B"
         assert results2[0].title == "Task 2 subtask A"
+
+
+# ================================================================== #
+# Task Artifact Tests
+# ================================================================== #
+
+
+class TestTaskArtifacts:
+    """Tests for task artifact CRUD operations."""
+
+    def _create_task(self, db: FlowstateDB, flow_run_id: str, name: str = "a") -> str:
+        """Helper to create a task execution and return its ID."""
+        return db.create_task_execution(
+            flow_run_id, name, "task", 1, "handoff", "/tmp", f"/tmp/{name}-1", f"do {name}"
+        )
+
+    def test_save_and_get_artifact(self, db: FlowstateDB, flow_run_id: str) -> None:
+        """Save an artifact, retrieve it by task_execution_id and name."""
+        task_id = self._create_task(db, flow_run_id)
+
+        saved = db.save_artifact(task_id, "decision", '{"target": "review"}')
+
+        assert saved.task_execution_id == task_id
+        assert saved.name == "decision"
+        assert saved.content == '{"target": "review"}'
+        assert saved.content_type == "application/json"
+        assert saved.created_at is not None
+        assert len(saved.id) == 36  # UUID format
+
+        retrieved = db.get_artifact(task_id, "decision")
+        assert retrieved is not None
+        assert retrieved.id == saved.id
+        assert retrieved.name == "decision"
+        assert retrieved.content == '{"target": "review"}'
+        assert retrieved.content_type == "application/json"
+
+    def test_save_artifact_custom_content_type(self, db: FlowstateDB, flow_run_id: str) -> None:
+        """Save an artifact with a custom content_type."""
+        task_id = self._create_task(db, flow_run_id)
+
+        saved = db.save_artifact(task_id, "summary", "# Task Summary", "text/markdown")
+
+        assert saved.content_type == "text/markdown"
+        assert saved.content == "# Task Summary"
+
+    def test_upsert_overwrites_previous_content(self, db: FlowstateDB, flow_run_id: str) -> None:
+        """Saving the same (task_execution_id, name) replaces the previous artifact."""
+        task_id = self._create_task(db, flow_run_id)
+
+        first = db.save_artifact(task_id, "decision", '{"target": "review"}')
+        second = db.save_artifact(task_id, "decision", '{"target": "deploy"}')
+
+        # The IDs should differ (new UUID generated on each save)
+        assert first.id != second.id
+        assert second.content == '{"target": "deploy"}'
+
+        # Only one artifact should exist for this name
+        retrieved = db.get_artifact(task_id, "decision")
+        assert retrieved is not None
+        assert retrieved.id == second.id
+        assert retrieved.content == '{"target": "deploy"}'
+
+    def test_get_nonexistent_artifact_returns_none(self, db: FlowstateDB, flow_run_id: str) -> None:
+        """get_artifact for a non-existent name returns None."""
+        task_id = self._create_task(db, flow_run_id)
+        result = db.get_artifact(task_id, "nonexistent")
+        assert result is None
+
+    def test_list_artifacts_returns_all_for_task(self, db: FlowstateDB, flow_run_id: str) -> None:
+        """list_artifacts returns all artifacts for a task, ordered by created_at."""
+        task_id = self._create_task(db, flow_run_id)
+
+        db.save_artifact(task_id, "input", "prompt text", "text/markdown")
+        db.save_artifact(task_id, "decision", '{"target": "done"}')
+        db.save_artifact(task_id, "summary", "# Summary", "text/markdown")
+
+        artifacts = db.list_artifacts(task_id)
+        assert len(artifacts) == 3
+        names = [a.name for a in artifacts]
+        assert "input" in names
+        assert "decision" in names
+        assert "summary" in names
+
+    def test_list_artifacts_empty(self, db: FlowstateDB, flow_run_id: str) -> None:
+        """list_artifacts for a task with no artifacts returns empty list."""
+        task_id = self._create_task(db, flow_run_id)
+        artifacts = db.list_artifacts(task_id)
+        assert artifacts == []
+
+    def test_foreign_key_constraint_enforced(self, db: FlowstateDB) -> None:
+        """Saving an artifact with an invalid task_execution_id raises IntegrityError."""
+        with pytest.raises(sqlite3.IntegrityError):
+            db.save_artifact("nonexistent-task-id", "decision", '{"target": "x"}')
+
+    def test_artifacts_isolated_between_tasks(self, db: FlowstateDB, flow_run_id: str) -> None:
+        """Artifacts for different tasks don't interfere with each other."""
+        task1 = self._create_task(db, flow_run_id, "task1")
+        task2 = self._create_task(db, flow_run_id, "task2")
+
+        db.save_artifact(task1, "decision", '{"target": "a"}')
+        db.save_artifact(task1, "summary", "Summary A", "text/markdown")
+        db.save_artifact(task2, "decision", '{"target": "b"}')
+
+        artifacts1 = db.list_artifacts(task1)
+        artifacts2 = db.list_artifacts(task2)
+
+        assert len(artifacts1) == 2
+        assert len(artifacts2) == 1
+
+        decision1 = db.get_artifact(task1, "decision")
+        decision2 = db.get_artifact(task2, "decision")
+        assert decision1 is not None
+        assert decision2 is not None
+        assert decision1.content == '{"target": "a"}'
+        assert decision2.content == '{"target": "b"}'
+
+    def test_save_artifact_empty_content(self, db: FlowstateDB, flow_run_id: str) -> None:
+        """Empty content is allowed (agent may submit empty summary)."""
+        task_id = self._create_task(db, flow_run_id)
+
+        saved = db.save_artifact(task_id, "summary", "", "text/markdown")
+        assert saved.content == ""
+
+        retrieved = db.get_artifact(task_id, "summary")
+        assert retrieved is not None
+        assert retrieved.content == ""

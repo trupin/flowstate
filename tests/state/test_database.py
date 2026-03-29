@@ -18,6 +18,7 @@ EXPECTED_TABLES = {
     "fork_group_members",
     "task_logs",
     "task_messages",
+    "task_artifacts",
     "flow_schedules",
     "tasks",
     "task_node_history",
@@ -41,6 +42,7 @@ EXPECTED_INDEXES = {
     "idx_tasks_queue",
     "idx_tasks_parent",
     "idx_task_node_history_task",
+    "idx_task_artifacts_task",
     "idx_agent_subtasks_task",
 }
 

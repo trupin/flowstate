@@ -19,6 +19,7 @@ from flowstate.state.models import (
     FlowRunRow,
     FlowScheduleRow,
     ForkGroupRow,
+    TaskArtifactRow,
     TaskExecutionRow,
     TaskLogRow,
     TaskMessageRow,
@@ -105,6 +106,7 @@ class FlowstateDB:
         tables = [
             "task_messages",
             "task_logs",
+            "task_artifacts",
             "agent_subtasks",
             "edge_transitions",
             "fork_group_members",
@@ -1311,3 +1313,78 @@ class FlowstateDB:
         )
         self._commit()
         return self.list_agent_subtasks(task_execution_id)
+
+    # ================================================================== #
+    # Task Artifacts
+    # ================================================================== #
+
+    def save_artifact(
+        self,
+        task_execution_id: str,
+        name: str,
+        content: str,
+        content_type: str = "application/json",
+    ) -> TaskArtifactRow:
+        """Save or replace an artifact for a task execution.
+
+        Uses INSERT OR REPLACE for upsert semantics: if an artifact with the
+        same (task_execution_id, name) already exists, it is replaced entirely
+        (new id, new created_at).
+
+        Args:
+            task_execution_id: The task execution this artifact belongs to.
+            name: Artifact name (e.g. "decision", "summary", "output").
+            content: Artifact content (typically JSON or Markdown).
+            content_type: MIME type of the content (default "application/json").
+
+        Returns:
+            The saved TaskArtifactRow.
+        """
+        artifact_id = str(uuid.uuid4())
+        now = datetime.now(UTC).isoformat()
+        self._execute(
+            """INSERT OR REPLACE INTO task_artifacts
+               (id, task_execution_id, name, content, content_type, created_at)
+               VALUES (?, ?, ?, ?, ?, ?)""",
+            (artifact_id, task_execution_id, name, content, content_type, now),
+        )
+        self._commit()
+        return TaskArtifactRow(
+            id=artifact_id,
+            task_execution_id=task_execution_id,
+            name=name,
+            content=content,
+            content_type=content_type,
+            created_at=now,
+        )
+
+    def get_artifact(self, task_execution_id: str, name: str) -> TaskArtifactRow | None:
+        """Retrieve a single artifact by task execution ID and name.
+
+        Args:
+            task_execution_id: The task execution ID.
+            name: The artifact name.
+
+        Returns:
+            The matching TaskArtifactRow, or None if not found.
+        """
+        row = self._fetchone(
+            "SELECT * FROM task_artifacts WHERE task_execution_id = ? AND name = ?",
+            (task_execution_id, name),
+        )
+        return TaskArtifactRow(**dict(row)) if row else None
+
+    def list_artifacts(self, task_execution_id: str) -> list[TaskArtifactRow]:
+        """List all artifacts for a task execution, ordered by creation time.
+
+        Args:
+            task_execution_id: The task execution ID.
+
+        Returns:
+            List of TaskArtifactRow ordered by created_at ascending.
+        """
+        rows = self._fetchall(
+            "SELECT * FROM task_artifacts WHERE task_execution_id = ? ORDER BY created_at",
+            (task_execution_id,),
+        )
+        return [TaskArtifactRow(**dict(r)) for r in rows]

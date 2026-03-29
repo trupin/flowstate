@@ -166,6 +166,17 @@ class TaskNodeHistoryRow(BaseModel):
     completed_at: str | None = None
 
 
+class TaskArtifactRow(BaseModel):
+    """Row model for the task_artifacts table."""
+
+    id: str
+    task_execution_id: str
+    name: str
+    content: str
+    content_type: str
+    created_at: str
+
+
 class AgentSubtaskRow(BaseModel):
     """Row model for the agent_subtasks table."""
 

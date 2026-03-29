@@ -163,6 +163,17 @@ CREATE TABLE IF NOT EXISTS flow_enabled (
     enabled INTEGER DEFAULT 1
 );
 
+-- Task artifacts (structured data stored by agents and the engine per task)
+CREATE TABLE IF NOT EXISTS task_artifacts (
+    id TEXT PRIMARY KEY,
+    task_execution_id TEXT NOT NULL REFERENCES task_executions(id),
+    name TEXT NOT NULL,
+    content TEXT NOT NULL,
+    content_type TEXT NOT NULL DEFAULT 'application/json',
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE(task_execution_id, name)
+);
+
 -- Agent subtasks (subtasks created by agents during node execution)
 CREATE TABLE IF NOT EXISTS agent_subtasks (
     id TEXT PRIMARY KEY,
@@ -195,4 +206,5 @@ CREATE INDEX IF NOT EXISTS idx_tasks_parent ON tasks(parent_task_id);
 CREATE INDEX IF NOT EXISTS idx_tasks_scheduled ON tasks(status, scheduled_at)
     WHERE status = 'scheduled';
 CREATE INDEX IF NOT EXISTS idx_task_node_history_task ON task_node_history(task_id);
+CREATE INDEX IF NOT EXISTS idx_task_artifacts_task ON task_artifacts(task_execution_id);
 CREATE INDEX IF NOT EXISTS idx_agent_subtasks_task ON agent_subtasks(task_execution_id);
