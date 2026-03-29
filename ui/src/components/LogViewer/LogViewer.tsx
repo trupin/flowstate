@@ -13,6 +13,7 @@ import { ToolCallBlock } from './ToolCallBlock';
 import { SUBTASK_URL_PATTERN, getInputCommand } from './subtaskDetection';
 import { CollapsibleSection } from './CollapsibleSection';
 import { SubtaskProgress } from './SubtaskProgress';
+import { ArtifactDisplay } from './ArtifactDisplay';
 import { useSubtasks } from '../../hooks/useSubtasks';
 import './LogViewer.css';
 
@@ -89,56 +90,67 @@ function CountdownTimer({ until }: { until: string }) {
 
 interface NodeDetailsPanelProps {
   execution: TaskExecutionInfo;
+  runId?: string;
+  taskId?: string;
 }
 
-function NodeDetailsPanel({ execution }: NodeDetailsPanelProps) {
+function NodeDetailsPanel({ execution, runId, taskId }: NodeDetailsPanelProps) {
   const hasExecution =
     execution.status !== 'pending' ||
     execution.cwd != null ||
     execution.taskDir != null;
 
   return (
-    <div className="log-viewer-details">
-      <span className="log-viewer-details-type-badge">
-        {execution.nodeType}
-      </span>
-      {execution.elapsedSeconds != null && (
-        <span className="log-viewer-details-elapsed">
-          {formatElapsed(execution.elapsedSeconds)}
+    <>
+      <div className="log-viewer-details">
+        <span className="log-viewer-details-type-badge">
+          {execution.nodeType}
         </span>
+        {execution.elapsedSeconds != null && (
+          <span className="log-viewer-details-elapsed">
+            {formatElapsed(execution.elapsedSeconds)}
+          </span>
+        )}
+        {hasExecution ? (
+          <div className="log-viewer-details-dirs">
+            {execution.cwd && (
+              <span className="log-viewer-details-dir">
+                <span className="log-viewer-details-dir-label">cwd</span>
+                <ClickablePath path={execution.cwd} truncate={50} />
+              </span>
+            )}
+            {execution.taskDir && (
+              <span className="log-viewer-details-dir">
+                <span className="log-viewer-details-dir-label">task</span>
+                <ClickablePath path={execution.taskDir} truncate={50} />
+              </span>
+            )}
+            {execution.worktreeDir && (
+              <span className="log-viewer-details-dir">
+                <span className="log-viewer-details-dir-label">worktree</span>
+                <ClickablePath path={execution.worktreeDir} truncate={50} />
+              </span>
+            )}
+          </div>
+        ) : (
+          <span className="log-viewer-details-not-executed">
+            Not yet executed
+          </span>
+        )}
+        {execution.status === 'waiting' && execution.waitUntil && (
+          <span className="log-viewer-details-countdown">
+            Wait: <CountdownTimer until={execution.waitUntil} />
+          </span>
+        )}
+      </div>
+      {runId && taskId && (
+        <ArtifactDisplay
+          runId={runId}
+          taskId={taskId}
+          taskStatus={execution.status}
+        />
       )}
-      {hasExecution ? (
-        <div className="log-viewer-details-dirs">
-          {execution.cwd && (
-            <span className="log-viewer-details-dir">
-              <span className="log-viewer-details-dir-label">cwd</span>
-              <ClickablePath path={execution.cwd} truncate={50} />
-            </span>
-          )}
-          {execution.taskDir && (
-            <span className="log-viewer-details-dir">
-              <span className="log-viewer-details-dir-label">task</span>
-              <ClickablePath path={execution.taskDir} truncate={50} />
-            </span>
-          )}
-          {execution.worktreeDir && (
-            <span className="log-viewer-details-dir">
-              <span className="log-viewer-details-dir-label">worktree</span>
-              <ClickablePath path={execution.worktreeDir} truncate={50} />
-            </span>
-          )}
-        </div>
-      ) : (
-        <span className="log-viewer-details-not-executed">
-          Not yet executed
-        </span>
-      )}
-      {execution.status === 'waiting' && execution.waitUntil && (
-        <span className="log-viewer-details-countdown">
-          Wait: <CountdownTimer until={execution.waitUntil} />
-        </span>
-      )}
-    </div>
+    </>
   );
 }
 
@@ -1060,7 +1072,11 @@ export function LogViewer({
         </div>
       </div>
       {showDetails && taskExecution && (
-        <NodeDetailsPanel execution={taskExecution} />
+        <NodeDetailsPanel
+          execution={taskExecution}
+          runId={runId}
+          taskId={taskExecutionId}
+        />
       )}
       {executions && executions.length > 1 && (
         <div className="execution-tabs">
