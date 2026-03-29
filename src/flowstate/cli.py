@@ -85,6 +85,9 @@ def run(
     param: Annotated[
         list[str] | None, typer.Option("--param", help="Parameter as key=value")
     ] = None,
+    server: Annotated[
+        str | None, typer.Option("--server", help="Flowstate server URL for artifact API")
+    ] = None,
     config: Annotated[str | None, typer.Option("--config", help="Path to config file")] = None,
 ) -> None:
     """Start a flow run from a .flow file."""
@@ -129,6 +132,9 @@ def run(
 
     cfg = load_config(path=config)
 
+    # Resolve server URL: CLI flag takes precedence over config
+    server_base_url = server or f"http://{cfg.server_host}:{cfg.server_port}"
+
     async def _run() -> str:
         db = FlowstateDB(cfg.database_path)
         try:
@@ -153,6 +159,7 @@ def run(
 
     run_id = asyncio.run(_run())
     typer.echo(f"Run started: {run_id}")
+    typer.echo(f"Server URL: {server_base_url}")
 
 
 @app.command()

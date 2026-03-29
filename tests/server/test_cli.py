@@ -406,6 +406,39 @@ class TestRunWithParams:
         assert result.exit_code == 1
         assert "File not found" in result.output
 
+    def test_run_default_server_url(self, tmp_path: Path) -> None:
+        """flowstate run without --server uses config defaults for server URL."""
+        flow_file = _write_flow(tmp_path, VALID_FLOW_SOURCE)
+
+        with patch("flowstate.state.repository.FlowstateDB") as MockDB:
+            mock_db = MockDB.return_value
+            mock_db.create_flow_definition.return_value = "def-id"
+            mock_db.create_flow_run.return_value = "run-id"
+            mock_db.close.return_value = None
+
+            result = runner.invoke(app, ["run", str(flow_file)])
+
+        assert result.exit_code == 0
+        assert "Server URL: http://127.0.0.1:9090" in result.output
+
+    def test_run_custom_server_url(self, tmp_path: Path) -> None:
+        """flowstate run --server overrides the default server URL."""
+        flow_file = _write_flow(tmp_path, VALID_FLOW_SOURCE)
+
+        with patch("flowstate.state.repository.FlowstateDB") as MockDB:
+            mock_db = MockDB.return_value
+            mock_db.create_flow_definition.return_value = "def-id"
+            mock_db.create_flow_run.return_value = "run-id"
+            mock_db.close.return_value = None
+
+            result = runner.invoke(
+                app,
+                ["run", str(flow_file), "--server", "http://myhost:4000"],
+            )
+
+        assert result.exit_code == 0
+        assert "Server URL: http://myhost:4000" in result.output
+
 
 # ---------------------------------------------------------------------------
 # schedules command
