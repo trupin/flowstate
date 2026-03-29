@@ -42,27 +42,46 @@ class SandboxManager:
     async def download_file(self, sandbox_path: str, host_path: str) -> bool:
         """Download a file from the sandbox to the host.
 
-        Uses ``openshell sandbox download`` to copy a file from the sandbox
-        filesystem to a local path.  Returns True on success, False on failure
-        (e.g. the file does not exist inside the sandbox).
+        Pipes ``cat <file>`` through ``openshell sandbox connect`` to read the
+        file content, then writes it locally.  This avoids ``openshell sandbox
+        download`` which is broken by Landlock warnings corrupting the tar stream.
+
+        Returns True on success, False on failure (e.g. file not found).
         """
         try:
             proc = await asyncio.create_subprocess_exec(
-                "openshell",
-                "sandbox",
-                "download",
+                self._connect_wrapper_path(),
                 self.sandbox_name,
-                sandbox_path,
-                host_path,
+                f"cat {shlex.quote(sandbox_path)}",
+                stdin=asyncio.subprocess.PIPE,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
             )
-            await proc.wait()
-            return proc.returncode == 0
-        except OSError:
+            stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=15)
+            if proc.returncode != 0 or not stdout:
+                return False
+            # Filter out non-content lines (shell control codes, warnings)
+            lines = stdout.decode("utf-8", errors="replace").splitlines()
+            content_lines = [
+                line
+                for line in lines
+                if not line.startswith("\x1b[")
+                and "WARN" not in line
+                and "landlock" not in line
+                and "stty" not in line
+                and "\x1b[?2004" not in line
+            ]
+            content = "\n".join(content_lines).strip()
+            if not content:
+                return False
+            Path(host_path).parent.mkdir(parents=True, exist_ok=True)
+            Path(host_path).write_text(content)
+            return True
+        except (OSError, TimeoutError):
             logger.debug(
-                "Failed to download %s from sandbox %s: openshell not available",
+                "Failed to download %s from sandbox %s",
                 sandbox_path,
                 self.sandbox_name,
+                exc_info=True,
             )
             return False

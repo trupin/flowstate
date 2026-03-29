@@ -156,80 +156,106 @@ class TestNoLegacyApi:
 
 
 class TestDownloadFile:
-    """download_file() calls openshell sandbox download and returns success/failure."""
+    """download_file() reads file from sandbox via connect-wrapper and writes locally."""
 
     @pytest.mark.asyncio
-    async def test_download_success(self) -> None:
-        """Returns True when openshell exits with code 0."""
+    async def test_download_success(self, tmp_path: Path) -> None:
+        """Returns True and writes file when connect-wrapper succeeds."""
         mgr = SandboxManager(sandbox_name="test-sandbox")
         mock_proc = AsyncMock()
         mock_proc.returncode = 0
-        mock_proc.wait = AsyncMock()
+        mock_proc.communicate = AsyncMock(
+            return_value=(b'{"decision":"alice","reasoning":"test","confidence":0.9}\n', b"")
+        )
 
-        with patch("asyncio.create_subprocess_exec", return_value=mock_proc) as mock_exec:
-            result = await mgr.download_file("/sandbox/DECISION.json", "/host/path/DECISION.json")
+        host_path = str(tmp_path / "DECISION.json")
+        with patch("asyncio.create_subprocess_exec", return_value=mock_proc):
+            result = await mgr.download_file("/sandbox/DECISION.json", host_path)
 
         assert result is True
-        mock_exec.assert_called_once_with(
-            "openshell",
-            "sandbox",
-            "download",
-            "test-sandbox",
-            "/sandbox/DECISION.json",
-            "/host/path/DECISION.json",
-            stdout=-1,  # asyncio.subprocess.PIPE
-            stderr=-1,
-        )
-        mock_proc.wait.assert_awaited_once()
+        assert Path(host_path).exists()
+        import json
+
+        data = json.loads(Path(host_path).read_text())
+        assert data["decision"] == "alice"
 
     @pytest.mark.asyncio
-    async def test_download_failure_nonzero_exit(self) -> None:
-        """Returns False when openshell exits with non-zero code (file not found)."""
+    async def test_download_failure_nonzero_exit(self, tmp_path: Path) -> None:
+        """Returns False when connect-wrapper exits with non-zero code."""
         mgr = SandboxManager(sandbox_name="test-sandbox")
         mock_proc = AsyncMock()
         mock_proc.returncode = 1
-        mock_proc.wait = AsyncMock()
+        mock_proc.communicate = AsyncMock(return_value=(b"", b"error"))
 
+        host_path = str(tmp_path / "DECISION.json")
         with patch("asyncio.create_subprocess_exec", return_value=mock_proc):
-            result = await mgr.download_file("/sandbox/DECISION.json", "/host/path/DECISION.json")
+            result = await mgr.download_file("/sandbox/DECISION.json", host_path)
 
         assert result is False
 
     @pytest.mark.asyncio
     async def test_download_oserror(self) -> None:
-        """Returns False when openshell binary is not found (OSError)."""
+        """Returns False when connect-wrapper is not found (OSError)."""
         mgr = SandboxManager(sandbox_name="test-sandbox")
 
         with patch("asyncio.create_subprocess_exec", side_effect=OSError("not found")):
-            result = await mgr.download_file("/sandbox/DECISION.json", "/host/path/DECISION.json")
+            result = await mgr.download_file("/sandbox/DECISION.json", "/tmp/test.json")
 
         assert result is False
 
     @pytest.mark.asyncio
-    async def test_download_uses_sandbox_name(self) -> None:
-        """download_file passes the correct sandbox name to openshell."""
+    async def test_download_filters_control_codes(self, tmp_path: Path) -> None:
+        """Filters shell control codes and warnings from output."""
+        mgr = SandboxManager(sandbox_name="test-sandbox")
+        # Simulate output with shell control codes mixed in
+        raw_output = (
+            b"\x1b[?2004h\n"
+            b"\x1b[2m2026-03-28 WARN landlock unavailable\n"
+            b'{"decision":"bob","reasoning":"test","confidence":0.8}\n'
+            b"\x1b[?2004l\n"
+        )
+        mock_proc = AsyncMock()
+        mock_proc.returncode = 0
+        mock_proc.communicate = AsyncMock(return_value=(raw_output, b""))
+
+        host_path = str(tmp_path / "DECISION.json")
+        with patch("asyncio.create_subprocess_exec", return_value=mock_proc):
+            result = await mgr.download_file("/sandbox/DECISION.json", host_path)
+
+        assert result is True
+        import json
+
+        data = json.loads(Path(host_path).read_text())
+        assert data["decision"] == "bob"
+
+    @pytest.mark.asyncio
+    async def test_download_uses_sandbox_name(self, tmp_path: Path) -> None:
+        """download_file uses the correct sandbox name."""
         mgr = SandboxManager(sandbox_name="my-custom-sandbox")
         mock_proc = AsyncMock()
         mock_proc.returncode = 0
-        mock_proc.wait = AsyncMock()
+        mock_proc.communicate = AsyncMock(return_value=(b'{"test": true}\n', b""))
 
+        host_path = str(tmp_path / "test.json")
         with patch("asyncio.create_subprocess_exec", return_value=mock_proc) as mock_exec:
-            await mgr.download_file("/sandbox/file.txt", "/host/file.txt")
+            await mgr.download_file("/sandbox/file.txt", host_path)
 
+        # connect-wrapper.sh is args[0], sandbox name is args[1]
         args = mock_exec.call_args[0]
-        assert args[3] == "my-custom-sandbox"
+        assert args[1] == "my-custom-sandbox"
 
     @pytest.mark.asyncio
-    async def test_download_passes_paths(self) -> None:
-        """download_file passes sandbox_path and host_path correctly."""
+    async def test_download_passes_sandbox_path_in_cat(self, tmp_path: Path) -> None:
+        """download_file passes sandbox_path as cat argument."""
         mgr = SandboxManager()
         mock_proc = AsyncMock()
         mock_proc.returncode = 0
-        mock_proc.wait = AsyncMock()
+        mock_proc.communicate = AsyncMock(return_value=(b'{"test": true}\n', b""))
 
+        host_path = str(tmp_path / "output.json")
         with patch("asyncio.create_subprocess_exec", return_value=mock_proc) as mock_exec:
-            await mgr.download_file("/sandbox/output.json", "/tmp/output.json")
+            await mgr.download_file("/sandbox/output.json", host_path)
 
+        # args[2] is the cat command with the sandbox path
         args = mock_exec.call_args[0]
-        assert args[4] == "/sandbox/output.json"
-        assert args[5] == "/tmp/output.json"
+        assert "/sandbox/output.json" in args[2]
