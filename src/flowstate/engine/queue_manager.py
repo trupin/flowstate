@@ -17,6 +17,7 @@ from typing import TYPE_CHECKING
 
 from flowstate.dsl.parser import parse_flow
 from flowstate.engine.executor import FlowExecutor
+from flowstate.engine.worktree import init_git_repo
 
 if TYPE_CHECKING:
     from flowstate.engine.harness import Harness, HarnessManager
@@ -167,6 +168,9 @@ class QueueManager:
             workspace = flow_ast.workspace
         else:
             workspace = os.path.expanduser(f"~/.flowstate/workspaces/{flow_ast.name}/{run_id[:8]}")
+            os.makedirs(workspace, exist_ok=True)
+            if not await init_git_repo(workspace):
+                logger.warning("Failed to initialize git repo in auto-workspace %s", workspace)
 
         # Build params from task's params_json (matches flow's declared input fields)
         task_params: dict[str, str | float | bool] = {}

@@ -8,6 +8,7 @@ from flowstate.engine.worktree import (
     WorktreeInfo,
     cleanup_worktree,
     create_worktree,
+    init_git_repo,
     is_existing_worktree,
     is_git_repo,
     map_cwd_to_worktree,
@@ -50,6 +51,75 @@ class TestIsGitRepo:
 
     def test_nonexistent_path(self) -> None:
         assert is_git_repo("/nonexistent/path") is False
+
+
+# --- init_git_repo ---
+
+
+class TestInitGitRepo:
+    @pytest.mark.asyncio
+    async def test_creates_valid_git_repo(self, tmp_path: Path) -> None:
+        """init_git_repo should create a .git dir and an initial commit."""
+        target = tmp_path / "workspace"
+        target.mkdir()
+        result = await init_git_repo(str(target))
+        assert result is True
+        assert is_git_repo(str(target))
+
+    @pytest.mark.asyncio
+    async def test_has_initial_commit(self, tmp_path: Path) -> None:
+        """The repo should have exactly one commit after init."""
+        target = tmp_path / "workspace"
+        target.mkdir()
+        await init_git_repo(str(target))
+        log = subprocess.run(
+            ["git", "log", "--oneline"],
+            cwd=target,
+            capture_output=True,
+            text=True,
+        )
+        assert log.returncode == 0
+        lines = log.stdout.strip().splitlines()
+        assert len(lines) == 1
+        assert "flowstate: init workspace" in lines[0]
+
+    @pytest.mark.asyncio
+    async def test_idempotent_on_existing_repo(self, git_repo: Path) -> None:
+        """Calling init_git_repo on an existing repo should succeed (git init is idempotent)."""
+        result = await init_git_repo(str(git_repo))
+        # git init on existing repo is fine, commit may add a second commit
+        assert result is True
+
+    @pytest.mark.asyncio
+    async def test_returns_false_when_git_not_found(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Should return False if git binary is not available."""
+        import asyncio
+
+        target = tmp_path / "workspace"
+        target.mkdir()
+
+        original_exec = asyncio.create_subprocess_exec
+
+        async def fake_exec(*args: object, **kwargs: object) -> None:
+            raise FileNotFoundError("git not found")
+
+        monkeypatch.setattr(asyncio, "create_subprocess_exec", fake_exec)
+        result = await init_git_repo(str(target))
+        assert result is False
+        monkeypatch.setattr(asyncio, "create_subprocess_exec", original_exec)
+
+    @pytest.mark.asyncio
+    async def test_worktree_works_after_init(self, tmp_path: Path) -> None:
+        """After init_git_repo, worktree creation should succeed."""
+        target = tmp_path / "workspace"
+        target.mkdir()
+        await init_git_repo(str(target))
+        info = await create_worktree(str(target), "test-run-id-123")
+        assert Path(info.worktree_path).exists()
+        assert info.branch_name.startswith("flowstate/")
+        await cleanup_worktree(info)
 
 
 # --- is_existing_worktree ---

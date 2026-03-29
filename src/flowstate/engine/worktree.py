@@ -30,6 +30,44 @@ class WorktreeInfo:
     branch_name: str  # Branch name (flowstate/<run-id-prefix>)
 
 
+async def init_git_repo(path: str) -> bool:
+    """Initialize a git repo with an initial empty commit.
+
+    Used to bootstrap auto-created workspaces so that worktree isolation
+    has a HEAD to branch from.
+
+    Returns True if successful, False if git is not available or the
+    commands fail.
+    """
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            "git",
+            "init",
+            cwd=path,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        await proc.communicate()
+        if proc.returncode != 0:
+            return False
+
+        # Initial commit so worktree creation has a HEAD to branch from
+        proc = await asyncio.create_subprocess_exec(
+            "git",
+            "commit",
+            "--allow-empty",
+            "-m",
+            "flowstate: init workspace",
+            cwd=path,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        await proc.communicate()
+        return proc.returncode == 0
+    except FileNotFoundError:
+        return False
+
+
 def is_git_repo(path: str) -> bool:
     """Check if path is a git repository (has .git dir or .git file)."""
     git_path = Path(path) / ".git"

@@ -4,17 +4,20 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import os
+import re
 import shutil
 import uuid
 from typing import TYPE_CHECKING, Any
 
 from fastapi import APIRouter, Request
+from starlette.responses import Response
 
 from flowstate.dsl.parser import parse_flow
 from flowstate.engine.context import read_summary
 from flowstate.engine.executor import FlowExecutor
-from flowstate.engine.worktree import is_git_repo
+from flowstate.engine.worktree import init_git_repo, is_git_repo
 from flowstate.server.app import FlowstateError
 from flowstate.server.models import (
     CreateSubtaskRequest,
@@ -39,10 +42,16 @@ from flowstate.server.run_manager import InvalidStateError
 if TYPE_CHECKING:
     from flowstate.server.flow_registry import DiscoveredFlow, FlowRegistry
     from flowstate.server.run_manager import RunManager
-    from flowstate.state.models import AgentSubtaskRow, FlowRunRow, TaskNodeHistoryRow, TaskRow
+    from flowstate.state.models import (
+        AgentSubtaskRow,
+        FlowRunRow,
+        TaskNodeHistoryRow,
+        TaskRow,
+    )
     from flowstate.state.repository import FlowstateDB
 
 router = APIRouter(prefix="/api")
+logger = logging.getLogger(__name__)
 
 
 # ---------------------------------------------------------------------------
@@ -53,11 +62,19 @@ router = APIRouter(prefix="/api")
 _ALLOWED_IDE_COMMANDS = frozenset({"code", "cursor", "zed", "subl", "open", "xdg-open"})
 
 
-def _resolve_workspace(flow_name: str, workspace: str | None, run_id: str) -> str:
-    """Determine workspace: use the flow's explicit workspace or auto-generate an isolated one."""
+async def _resolve_workspace(flow_name: str, workspace: str | None, run_id: str) -> str:
+    """Determine workspace: use the flow's explicit workspace or auto-generate an isolated one.
+
+    For auto-generated workspaces, creates the directory and initializes it as
+    a git repo so that worktree isolation works out of the box.
+    """
     if workspace:
         return workspace
-    return os.path.expanduser(f"~/.flowstate/workspaces/{flow_name}/{run_id[:8]}")
+    auto_path = os.path.expanduser(f"~/.flowstate/workspaces/{flow_name}/{run_id[:8]}")
+    os.makedirs(auto_path, exist_ok=True)
+    if not await init_git_repo(auto_path):
+        logger.warning("Failed to initialize git repo in auto-workspace %s", auto_path)
+    return auto_path
 
 
 @router.post("/open")
@@ -379,7 +396,7 @@ async def start_run(
     run_manager = _get_run_manager(request)
     run_id = str(uuid.uuid4())
 
-    workspace = _resolve_workspace(flow_ast.name, flow_ast.workspace, run_id)
+    workspace = await _resolve_workspace(flow_ast.name, flow_ast.workspace, run_id)
 
     # Pass run_id to execute so DB uses the same key as RunManager
     execute_coro = executor.execute(flow_ast, body.params, workspace, flow_run_id=run_id)
@@ -517,6 +534,10 @@ async def get_run(request: Request, run_id: str) -> dict[str, Any]:
                 "elapsed_seconds": t.elapsed_seconds,
                 "exit_code": t.exit_code,
                 "error_message": t.error_message,
+                "artifacts": [
+                    {"name": a.name, "content_type": a.content_type}
+                    for a in db.list_artifacts(t.id)
+                ],
             }
             for t in tasks
         ],
@@ -1127,7 +1148,7 @@ async def trigger_schedule(request: Request, schedule_id: str) -> dict[str, str]
     run_manager = _get_run_manager(request)
     run_id = str(uuid.uuid4())
 
-    workspace = _resolve_workspace(flow_ast.name, flow_ast.workspace, run_id)
+    workspace = await _resolve_workspace(flow_ast.name, flow_ast.workspace, run_id)
     execute_coro = executor.execute(flow_ast, {}, workspace, flow_run_id=run_id)
     await run_manager.start_run(run_id, executor, execute_coro)
 
@@ -1464,6 +1485,121 @@ async def update_subtask(
         )
     _emit_subtask_event(request, run_id, row)
     return _subtask_to_response(row)
+
+
+# ---------------------------------------------------------------------------
+# Artifact endpoints (SERVER-022)
+# ---------------------------------------------------------------------------
+
+# Artifact name: alphanumeric, hyphens, underscores, max 64 chars.
+_ARTIFACT_NAME_RE = re.compile(r"^[A-Za-z0-9._-]{1,64}$")
+
+# Maximum artifact content size: 1 MB.
+_MAX_ARTIFACT_SIZE = 1_048_576
+
+
+def _validate_artifact_name(name: str) -> None:
+    """Validate artifact name format.
+
+    Raises FlowstateError(400) if the name is invalid.
+    """
+    if not _ARTIFACT_NAME_RE.match(name):
+        raise FlowstateError(
+            f"Invalid artifact name '{name}'. "
+            "Must be 1-64 characters: alphanumeric, hyphens, underscores, or dots.",
+            status_code=400,
+        )
+
+
+@router.post(
+    "/runs/{run_id}/tasks/{task_id}/artifacts/{name}",
+    status_code=201,
+)
+async def upload_artifact(
+    run_id: str,
+    task_id: str,
+    name: str,
+    request: Request,
+) -> dict[str, str]:
+    """Upload (or replace) an artifact for a task execution.
+
+    Reads raw body bytes, decodes as UTF-8, and stores with the provided
+    Content-Type (default: application/json). Returns 201 on success.
+    Uses upsert semantics: uploading the same name twice replaces the content.
+    """
+    _validate_artifact_name(name)
+    _validate_task_in_run(request, run_id, task_id)
+
+    body = await request.body()
+    if len(body) > _MAX_ARTIFACT_SIZE:
+        raise FlowstateError(
+            f"Artifact content too large: {len(body)} bytes (max {_MAX_ARTIFACT_SIZE})",
+            status_code=413,
+        )
+
+    try:
+        content = body.decode("utf-8")
+    except UnicodeDecodeError as exc:
+        raise FlowstateError(
+            "Artifact content must be valid UTF-8 text",
+            status_code=415,
+        ) from exc
+
+    content_type = request.headers.get("content-type", "application/json")
+
+    db = _get_db(request)
+    db.save_artifact(task_id, name, content, content_type)
+
+    return {"status": "ok", "name": name}
+
+
+@router.get("/runs/{run_id}/tasks/{task_id}/artifacts/{name}")
+async def download_artifact(
+    run_id: str,
+    task_id: str,
+    name: str,
+    request: Request,
+) -> Response:
+    """Download a single artifact by name.
+
+    Returns the artifact content with the stored Content-Type header.
+    Returns 404 if the artifact does not exist.
+    """
+    _validate_task_in_run(request, run_id, task_id)
+
+    db = _get_db(request)
+    artifact = db.get_artifact(task_id, name)
+    if not artifact:
+        raise FlowstateError(
+            f"Artifact '{name}' not found for task '{task_id}'",
+            status_code=404,
+        )
+
+    return Response(content=artifact.content, media_type=artifact.content_type)
+
+
+@router.get("/runs/{run_id}/tasks/{task_id}/artifacts")
+async def list_artifacts(
+    run_id: str,
+    task_id: str,
+    request: Request,
+) -> list[dict[str, str]]:
+    """List all artifacts for a task execution.
+
+    Returns an array of ``{name, content_type, created_at}`` objects.
+    """
+    _validate_task_in_run(request, run_id, task_id)
+
+    db = _get_db(request)
+    artifacts = db.list_artifacts(task_id)
+    return [
+        {
+            "name": a.name,
+            "content_type": a.content_type,
+            "created_at": a.created_at,
+        }
+        for a in artifacts
+    ]
 
 
 @router.post("/_test/reset")
