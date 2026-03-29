@@ -112,13 +112,13 @@ def _is_conditional(edges: list[Edge]) -> bool:
     return any(e.edge_type == EdgeType.CONDITIONAL for e in edges)
 
 
-def _maybe_append_routing(prompt: str, flow: Flow, node: Node, task_dir: str) -> str:
+def _maybe_append_routing(prompt: str, flow: Flow, node: Node) -> str:
     """Append self-report routing instructions if judge is disabled and node has conditionals."""
     if _use_judge(flow, node):
         return prompt
     cond_edges = _conditional_edge_pairs(_get_outgoing_edges(flow, node.name))
     if cond_edges:
-        return prompt + build_routing_instructions(task_dir, cond_edges)
+        return prompt + build_routing_instructions(cond_edges)
     return prompt
 
 
@@ -273,6 +273,25 @@ class FlowExecutor:
         self._task_session: dict[str, str] = {}
         # Sandbox lifecycle management (ENGINE-059, ENGINE-065)
         self._sandbox_mgr = SandboxManager(sandbox_name=sandbox_name)
+
+    def _resolve_server_url(self, use_sandbox: bool) -> str:
+        """Resolve the server URL for artifact API calls.
+
+        For host agents, returns the server base URL as-is.
+        For sandboxed agents, replaces the hostname with ``host.docker.internal``
+        so the sandbox container can reach the host server.
+        """
+        base = self._server_base_url or "http://127.0.0.1:9090"
+        if use_sandbox:
+            from urllib.parse import urlparse, urlunparse
+
+            parsed = urlparse(base)
+            # urlparse stores hostname separately; _replace on netloc preserves port
+            host_port = (
+                f"host.docker.internal:{parsed.port}" if parsed.port else "host.docker.internal"
+            )
+            return urlunparse(parsed._replace(netloc=host_port))
+        return base
 
     def _emit(self, event: FlowEvent) -> None:
         """Emit an event via the callback, catching any callback exceptions."""
@@ -816,7 +835,7 @@ class FlowExecutor:
         if expanded != join_node.prompt:
             prompt = prompt.replace(join_node.prompt, expanded)
 
-        prompt = _maybe_append_routing(prompt, flow, join_node, task_dir)
+        prompt = _maybe_append_routing(prompt, flow, join_node)
 
         join_task_id = self._db.create_task_execution(
             flow_run_id=flow_run_id,
@@ -1261,7 +1280,7 @@ class FlowExecutor:
         if expanded_prompt != target_node.prompt:
             prompt = prompt.replace(target_node.prompt, expanded_prompt)
 
-        prompt = _maybe_append_routing(prompt, flow, target_node, task_dir)
+        prompt = _maybe_append_routing(prompt, flow, target_node)
 
         # Inject task queue context if executing on behalf of a task
         prompt = self._inject_task_context(prompt)
@@ -2371,6 +2390,13 @@ class FlowExecutor:
             # Resolve sandbox settings: node-level overrides flow-level (ENGINE-059)
             use_sandbox = node.sandbox if node.sandbox is not None else flow.sandbox
 
+            # Build artifact API env vars for the agent subprocess (ENGINE-067)
+            artifact_env = {
+                "FLOWSTATE_SERVER_URL": self._resolve_server_url(use_sandbox),
+                "FLOWSTATE_RUN_ID": flow_run_id,
+                "FLOWSTATE_TASK_ID": task_execution_id,
+            }
+
             if use_sandbox:
                 from flowstate.engine.acp_client import AcpHarness
 
@@ -2378,19 +2404,29 @@ class FlowExecutor:
                 harness_command: list[str] = getattr(harness, "command", [])
                 harness_env: dict[str, str] | None = getattr(harness, "env", None)
 
+                # Merge artifact env into harness env
+                merged_env = {**(harness_env or {}), **artifact_env}
+
                 wrapped_cmd = self._sandbox_mgr.wrap_command(harness_command)
                 # Sandbox connect takes a few seconds; use a longer timeout.
                 # session_cwd="/sandbox" ensures the agent creates sessions
                 # inside the sandbox filesystem, not the host path.
                 harness = AcpHarness(
                     command=wrapped_cmd,
-                    env=harness_env,
+                    env=merged_env,
                     init_timeout=120.0,
                     session_cwd="/sandbox",
                 )
                 # openshell runs on the host, so cwd must be a valid host path.
                 # The agent inside the sandbox works in /sandbox automatically.
                 task_exec.cwd = str(Path.cwd())
+            else:
+                # Inject artifact env vars into process environment (ENGINE-067).
+                # For non-sandbox harnesses the env dict is already set at
+                # construction time, so we inject into os.environ which the
+                # ACP subprocess inherits.  This is safe in asyncio because
+                # no await occurs between the update and the run_task call.
+                os.environ.update(artifact_env)
 
             # Determine if this is a session resume or fresh task
             if task_exec.context_mode == ContextMode.SESSION.value and task_exec.claude_session_id:
@@ -2684,7 +2720,7 @@ class FlowExecutor:
         if expanded_prompt != node.prompt:
             prompt = prompt.replace(node.prompt, expanded_prompt)
 
-        prompt = _maybe_append_routing(prompt, flow, node, task_dir)
+        prompt = _maybe_append_routing(prompt, flow, node)
 
         # Append cross-flow output instructions if this node has FILE/AWAIT edges (ENGINE-029)
         cross_flow_targets = [

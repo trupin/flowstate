@@ -9,10 +9,12 @@ import pytest
 from flowstate.dsl.ast import ContextMode, Edge, EdgeConfig, EdgeType, Flow, Node, NodeType
 from flowstate.engine.context import (
     CwdResolutionError,
+    build_cross_flow_instructions,
     build_prompt_handoff,
     build_prompt_join,
     build_prompt_none,
     build_prompt_session,
+    build_routing_instructions,
     create_task_dir,
     expand_templates,
     get_context_mode,
@@ -98,7 +100,7 @@ class TestCreateTaskDir:
 
 class TestBuildPromptHandoff:
     def test_build_prompt_handoff(self) -> None:
-        """Handoff prompt contains all required sections."""
+        """Handoff prompt contains all required sections with curl-based artifact upload."""
         node = _make_node(prompt="Implement the feature")
         prompt = build_prompt_handoff(
             node=node,
@@ -112,9 +114,13 @@ class TestBuildPromptHandoff:
         assert "Implement the feature" in prompt
         assert "Working directory" in prompt
         assert "/project" in prompt
-        assert "Task coordination directory" in prompt
-        assert "SUMMARY.md" in prompt
-        assert "/home/user/.flowstate/runs/r1/tasks/implement-1/SUMMARY.md" in prompt
+        assert "Task coordination" in prompt
+        # Should use curl-based artifact upload with env var references
+        assert "$FLOWSTATE_SERVER_URL" in prompt
+        assert "$FLOWSTATE_RUN_ID" in prompt
+        assert "$FLOWSTATE_TASK_ID" in prompt
+        assert "curl" in prompt
+        assert "artifacts/summary" in prompt
 
     def test_build_prompt_handoff_no_summary(self) -> None:
         """Handoff with predecessor_summary=None includes fallback message."""
@@ -149,7 +155,7 @@ class TestBuildPromptHandoff:
 
 class TestBuildPromptSession:
     def test_build_prompt_session(self) -> None:
-        """Session prompt contains node name, prompt, and SUMMARY.md instruction."""
+        """Session prompt contains node name, prompt, and curl-based summary upload."""
         node = _make_node(name="review", prompt="Review the implementation")
         prompt = build_prompt_session(
             node=node,
@@ -157,8 +163,12 @@ class TestBuildPromptSession:
         )
         assert "Next task: review" in prompt
         assert "Review the implementation" in prompt
-        assert "SUMMARY.md" in prompt
-        assert "/home/user/.flowstate/runs/r1/tasks/review-1/SUMMARY.md" in prompt
+        # Should use curl-based artifact upload with env var references
+        assert "$FLOWSTATE_SERVER_URL" in prompt
+        assert "$FLOWSTATE_RUN_ID" in prompt
+        assert "$FLOWSTATE_TASK_ID" in prompt
+        assert "curl" in prompt
+        assert "artifacts/summary" in prompt
         # Session mode should NOT contain these sections
         assert "Context from previous task" not in prompt
         assert "Working directory" not in prompt
@@ -171,7 +181,7 @@ class TestBuildPromptSession:
 
 class TestBuildPromptNone:
     def test_build_prompt_none(self) -> None:
-        """None-mode prompt contains task and SUMMARY.md but no predecessor context."""
+        """None-mode prompt contains task and curl-based summary upload but no predecessor context."""
         node = _make_node(prompt="Initialize the project")
         prompt = build_prompt_none(
             node=node,
@@ -181,7 +191,10 @@ class TestBuildPromptNone:
         assert "Your task" in prompt
         assert "Initialize the project" in prompt
         assert "Working directory" in prompt
-        assert "SUMMARY.md" in prompt
+        # Should use curl-based artifact upload
+        assert "$FLOWSTATE_SERVER_URL" in prompt
+        assert "curl" in prompt
+        assert "artifacts/summary" in prompt
         # Should NOT contain predecessor context
         assert "Context from previous task" not in prompt
         assert "Context from parallel tasks" not in prompt
@@ -212,7 +225,10 @@ class TestBuildPromptJoin:
         assert "Did implementation" in prompt
         assert "Your task" in prompt
         assert "Merge the results" in prompt
-        assert "SUMMARY.md" in prompt
+        # Should use curl-based artifact upload
+        assert "$FLOWSTATE_SERVER_URL" in prompt
+        assert "curl" in prompt
+        assert "artifacts/summary" in prompt
 
     def test_build_prompt_join_missing_summary(self) -> None:
         """Join with one member missing summary includes fallback for that member."""
@@ -365,3 +381,114 @@ class TestReadSummary:
 
         result = read_summary(str(tmp_path))
         assert result == ""
+
+
+# ---------------------------------------------------------------------------
+# Tests: build_routing_instructions
+# ---------------------------------------------------------------------------
+
+
+class TestBuildRoutingInstructions:
+    def test_build_routing_instructions_curl_format(self) -> None:
+        """Routing instructions use curl POST with env var references."""
+        result = build_routing_instructions(
+            [
+                ("tests_pass", "deploy"),
+                ("tests_fail", "fix"),
+            ]
+        )
+        assert "Routing Decision" in result
+        assert '"tests_pass"' in result
+        assert "deploy" in result
+        assert '"tests_fail"' in result
+        assert "fix" in result
+        assert "$FLOWSTATE_SERVER_URL" in result
+        assert "$FLOWSTATE_RUN_ID" in result
+        assert "$FLOWSTATE_TASK_ID" in result
+        assert "curl" in result
+        assert "artifacts/decision" in result
+        assert "Content-Type: application/json" in result
+
+    def test_build_routing_instructions_no_task_dir(self) -> None:
+        """Routing instructions do not reference a filesystem path."""
+        result = build_routing_instructions([("done", "next")])
+        # Should not contain any filesystem path patterns
+        assert "Write a JSON file to" not in result
+        assert "DECISION.json" not in result
+
+    def test_build_routing_instructions_none_fallback(self) -> None:
+        """Routing instructions include __none__ fallback."""
+        result = build_routing_instructions([("done", "next")])
+        assert "__none__" in result
+
+
+# ---------------------------------------------------------------------------
+# Tests: build_cross_flow_instructions
+# ---------------------------------------------------------------------------
+
+
+class TestBuildCrossFlowInstructions:
+    def test_build_cross_flow_instructions_curl_format(self) -> None:
+        """Cross-flow instructions use curl POST with env var references."""
+        result = build_cross_flow_instructions(["deploy_flow", "notify_flow"])
+        assert "Cross-flow output" in result
+        assert "deploy_flow" in result
+        assert "notify_flow" in result
+        assert "$FLOWSTATE_SERVER_URL" in result
+        assert "$FLOWSTATE_RUN_ID" in result
+        assert "$FLOWSTATE_TASK_ID" in result
+        assert "curl" in result
+        assert "artifacts/output" in result
+        assert "Content-Type: application/json" in result
+
+    def test_build_cross_flow_instructions_no_filesystem(self) -> None:
+        """Cross-flow instructions do not reference filesystem paths."""
+        result = build_cross_flow_instructions(["target_flow"])
+        assert "OUTPUT.json file" not in result
+        assert "task coordination directory" not in result
+
+
+# ---------------------------------------------------------------------------
+# Tests: _resolve_server_url (via FlowExecutor)
+# ---------------------------------------------------------------------------
+
+
+class TestResolveServerUrl:
+    @staticmethod
+    def _make_executor(server_base_url: str | None) -> object:
+        """Create a minimal FlowExecutor for testing _resolve_server_url."""
+        from unittest.mock import MagicMock
+
+        from flowstate.engine.executor import FlowExecutor
+
+        return FlowExecutor(
+            db=MagicMock(),
+            event_callback=lambda _: None,
+            harness=MagicMock(),
+            server_base_url=server_base_url,
+        )
+
+    def test_resolve_server_url_host(self) -> None:
+        """Host mode returns the server URL unchanged."""
+        executor = self._make_executor("http://127.0.0.1:9090")
+        assert executor._resolve_server_url(use_sandbox=False) == "http://127.0.0.1:9090"  # type: ignore[union-attr]
+
+    def test_resolve_server_url_sandbox(self) -> None:
+        """Sandbox mode replaces hostname with host.docker.internal."""
+        executor = self._make_executor("http://127.0.0.1:9090")
+        assert executor._resolve_server_url(use_sandbox=True) == "http://host.docker.internal:9090"  # type: ignore[union-attr]
+
+    def test_resolve_server_url_no_port(self) -> None:
+        """Sandbox mode with no explicit port still replaces hostname."""
+        executor = self._make_executor("http://127.0.0.1")
+        assert executor._resolve_server_url(use_sandbox=True) == "http://host.docker.internal"  # type: ignore[union-attr]
+
+    def test_resolve_server_url_default_when_none(self) -> None:
+        """When server_base_url is None, falls back to default."""
+        executor = self._make_executor(None)
+        assert executor._resolve_server_url(use_sandbox=False) == "http://127.0.0.1:9090"  # type: ignore[union-attr]
+
+    def test_resolve_server_url_default_sandbox(self) -> None:
+        """When server_base_url is None in sandbox mode, uses default with docker host."""
+        executor = self._make_executor(None)
+        assert executor._resolve_server_url(use_sandbox=True) == "http://host.docker.internal:9090"  # type: ignore[union-attr]

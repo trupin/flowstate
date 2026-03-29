@@ -41,20 +41,22 @@ def create_task_dir(run_data_dir: str, node_name: str, generation: int) -> str:
     return str(task_dir.resolve())
 
 
-def _build_directory_sections(cwd: str, task_dir: str) -> str:
-    """Build the shared 'Working directory' and 'Task coordination directory' prompt sections."""
+def _build_directory_sections(cwd: str) -> str:
+    """Build the shared 'Working directory' and 'Task coordination' prompt sections."""
     return (
         "## Working directory\n"
         f"Your working directory is: {cwd}\n"
         "Make all code changes and deliverable output in this directory.\n"
         "\n"
-        "## Task coordination directory\n"
-        f"Write coordination files to {task_dir}/.\n"
-        "Do NOT write project deliverables here — this is for inter-agent communication only.\n"
-        f"When you are done, you MUST write a SUMMARY.md to {task_dir}/SUMMARY.md describing:\n"
-        "- What you did\n"
-        "- What changed\n"
-        "- The outcome / current state"
+        "## Task coordination\n"
+        "When you are done, you MUST submit a summary of your work:\n"
+        "```bash\n"
+        "curl -s -X POST $FLOWSTATE_SERVER_URL/api/runs/$FLOWSTATE_RUN_ID"
+        "/tasks/$FLOWSTATE_TASK_ID/artifacts/summary \\\n"
+        '  -H "Content-Type: text/markdown" \\\n'
+        "  -d 'Your summary here: what you did, what changed, the outcome'\n"
+        "```\n"
+        "Describe: what you did, what changed, the outcome / current state."
     )
 
 
@@ -82,7 +84,7 @@ def build_prompt_handoff(
         "\n"
         "## Your task\n"
         f"{node.prompt}\n"
-        "\n" + _build_directory_sections(cwd, task_dir)
+        "\n" + _build_directory_sections(cwd)
     )
 
 
@@ -97,8 +99,13 @@ def build_prompt_session(node: Node, task_dir: str) -> str:
         f"## Next task: {node.name}\n"
         f"{node.prompt}\n"
         "\n"
-        f"When you are done, write a SUMMARY.md to {task_dir}/SUMMARY.md\n"
-        "describing what you did and the outcome."
+        "When you are done, submit a summary of your work:\n"
+        "```bash\n"
+        "curl -s -X POST $FLOWSTATE_SERVER_URL/api/runs/$FLOWSTATE_RUN_ID"
+        "/tasks/$FLOWSTATE_TASK_ID/artifacts/summary \\\n"
+        '  -H "Content-Type: text/markdown" \\\n'
+        "  -d 'Your summary here: what you did, what changed, the outcome'\n"
+        "```"
     )
 
 
@@ -110,7 +117,7 @@ def build_prompt_none(node: Node, task_dir: str, cwd: str) -> str:
         "\n"
         "## Your task\n"
         f"{node.prompt}\n"
-        "\n" + _build_directory_sections(cwd, task_dir)
+        "\n" + _build_directory_sections(cwd)
     )
 
 
@@ -142,7 +149,7 @@ def build_prompt_join(
         "\n"
         "## Your task\n"
         f"{node.prompt}\n"
-        "\n" + _build_directory_sections(cwd, task_dir)
+        "\n" + _build_directory_sections(cwd)
     )
 
 
@@ -296,8 +303,8 @@ def build_task_management_instructions(
 def build_cross_flow_instructions(target_flow_names: list[str]) -> str:
     """Build prompt section instructing the agent to produce cross-flow output.
 
-    When a node has outgoing FILE or AWAIT edges, the agent should be told to
-    write an OUTPUT.json so its output can be forwarded to the target flows.
+    When a node has outgoing FILE or AWAIT edges, the agent should POST an
+    OUTPUT.json to the Flowstate API so its output can be forwarded to the target flows.
 
     Args:
         target_flow_names: Names of the target flows referenced by FILE/AWAIT edges.
@@ -308,8 +315,13 @@ def build_cross_flow_instructions(target_flow_names: list[str]) -> str:
         "\n\n## Cross-flow output\n"
         f"This task will file tasks to other flows: {targets}.\n"
         f"{bullets}\n"
-        "Write an OUTPUT.json file in your task coordination directory with "
-        "key-value pairs representing structured output from this task.\n"
+        "Submit your structured output via the API:\n"
+        "```bash\n"
+        "curl -s -X POST $FLOWSTATE_SERVER_URL/api/runs/$FLOWSTATE_RUN_ID"
+        "/tasks/$FLOWSTATE_TASK_ID/artifacts/output \\\n"
+        '  -H "Content-Type: application/json" \\\n'
+        """  -d '{"key": "value", ...}'\n"""
+        "```\n"
         "These values will be passed as input parameters to the target flow(s)."
     )
 
@@ -325,16 +337,14 @@ def write_task_input(task_dir: str, prompt: str) -> str:
 
 
 def build_routing_instructions(
-    task_dir: str,
     outgoing_edges: list[tuple[str, str]],
 ) -> str:
     """Build self-report routing instructions to append to a task prompt.
 
     When the judge is disabled, the task agent itself decides which transition
-    to take by writing a DECISION.json file.
+    to take by POSTing a DECISION.json to the Flowstate API.
 
     Args:
-        task_dir: Path to the task's working directory.
         outgoing_edges: List of (condition, target_node_name) pairs.
     """
     transitions = "\n".join(
@@ -343,19 +353,22 @@ def build_routing_instructions(
 
     return (
         "\n\n## Routing Decision\n"
-        "After completing your task, you must decide which transition to take.\n"
+        "After completing your task, decide which transition to take.\n"
         "\n"
         "### Available Transitions\n"
         f"{transitions}\n"
         '\nIf no condition clearly matches, use "__none__".\n'
         "\n"
-        "### Instructions\n"
-        f"Write a JSON file to {task_dir}/DECISION.json with this format:\n"
-        "```json\n"
-        '{"decision": "<target_node_name>", "reasoning": "<brief explanation>", '
-        '"confidence": <float 0.0 to 1.0>}\n'
+        "### Submit your decision\n"
+        "```bash\n"
+        "curl -s -X POST $FLOWSTATE_SERVER_URL/api/runs/$FLOWSTATE_RUN_ID"
+        "/tasks/$FLOWSTATE_TASK_ID/artifacts/decision \\\n"
+        '  -H "Content-Type: application/json" \\\n'
+        """  -d '{"decision": "<target_node_name>", """
+        """"reasoning": "<brief explanation>", """
+        """"confidence": <0.0-1.0>}'\n"""
         "```\n"
-        "You MUST write this file before completing your task."
+        "You MUST submit this decision before completing your task."
     )
 
 

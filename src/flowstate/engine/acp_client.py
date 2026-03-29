@@ -52,6 +52,10 @@ _REQUIRED_ENV_VARS = (
     "ANTHROPIC_API_KEY",
     "CLAUDE_CONFIG_DIR",
     "XDG_CONFIG_HOME",
+    # Artifact API coordinates injected by the executor (ENGINE-067)
+    "FLOWSTATE_SERVER_URL",
+    "FLOWSTATE_RUN_ID",
+    "FLOWSTATE_TASK_ID",
 )
 
 

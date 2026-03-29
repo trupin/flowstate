@@ -4137,7 +4137,7 @@ class TestCrossFlowInputMapping:
         assert work_prompt is not None
         assert "Cross-flow output" in work_prompt
         assert "deploy-flow" in work_prompt
-        assert "OUTPUT.json" in work_prompt
+        assert "artifacts/output" in work_prompt
 
         # The "start" and "finish" nodes should NOT have cross-flow instructions
         for call in subprocess_mgr.calls:
