@@ -147,6 +147,12 @@ class _FlowTransformer(Transformer[Token, Flow]):
     def node_sandbox_policy(self, items: list[Token]) -> tuple[str, str]:
         return ("sandbox_policy", _strip_string(items[0]))
 
+    def node_lumon(self, items: list[Token]) -> tuple[str, bool]:
+        return ("lumon", str(items[0]) == "true")
+
+    def node_lumon_config(self, items: list[Token]) -> tuple[str, str]:
+        return ("lumon_config", _strip_string(items[0]))
+
     def node_body(self, items: list[tuple[str, str | bool]]) -> dict[str, str | bool]:
         result: dict[str, str | bool] = {}
         for key, value in items:
@@ -168,6 +174,8 @@ class _FlowTransformer(Transformer[Token, Flow]):
         subtasks = body.get("subtasks")
         sandbox = body.get("sandbox")
         sandbox_policy = body.get("sandbox_policy")
+        lumon = body.get("lumon")
+        lumon_config = body.get("lumon_config")
         return Node(
             name=name,
             node_type=NodeType.ENTRY,
@@ -178,6 +186,8 @@ class _FlowTransformer(Transformer[Token, Flow]):
             subtasks=bool(subtasks) if subtasks is not None else None,
             sandbox=bool(sandbox) if sandbox is not None else None,
             sandbox_policy=str(sandbox_policy) if sandbox_policy is not None else None,
+            lumon=bool(lumon) if lumon is not None else None,
+            lumon_config=str(lumon_config) if lumon_config is not None else None,
             line=_meta_line(meta),
             column=_meta_column(meta),
         )
@@ -195,6 +205,8 @@ class _FlowTransformer(Transformer[Token, Flow]):
         subtasks = body.get("subtasks")
         sandbox = body.get("sandbox")
         sandbox_policy = body.get("sandbox_policy")
+        lumon = body.get("lumon")
+        lumon_config = body.get("lumon_config")
         return Node(
             name=name,
             node_type=NodeType.TASK,
@@ -205,6 +217,8 @@ class _FlowTransformer(Transformer[Token, Flow]):
             subtasks=bool(subtasks) if subtasks is not None else None,
             sandbox=bool(sandbox) if sandbox is not None else None,
             sandbox_policy=str(sandbox_policy) if sandbox_policy is not None else None,
+            lumon=bool(lumon) if lumon is not None else None,
+            lumon_config=str(lumon_config) if lumon_config is not None else None,
             line=_meta_line(meta),
             column=_meta_column(meta),
         )
@@ -222,6 +236,8 @@ class _FlowTransformer(Transformer[Token, Flow]):
         subtasks = body.get("subtasks")
         sandbox = body.get("sandbox")
         sandbox_policy = body.get("sandbox_policy")
+        lumon = body.get("lumon")
+        lumon_config = body.get("lumon_config")
         return Node(
             name=name,
             node_type=NodeType.EXIT,
@@ -232,6 +248,8 @@ class _FlowTransformer(Transformer[Token, Flow]):
             subtasks=bool(subtasks) if subtasks is not None else None,
             sandbox=bool(sandbox) if sandbox is not None else None,
             sandbox_policy=str(sandbox_policy) if sandbox_policy is not None else None,
+            lumon=bool(lumon) if lumon is not None else None,
+            lumon_config=str(lumon_config) if lumon_config is not None else None,
             line=_meta_line(meta),
             column=_meta_column(meta),
         )
@@ -294,6 +312,8 @@ class _FlowTransformer(Transformer[Token, Flow]):
         subtasks = body.get("subtasks")
         sandbox = body.get("sandbox")
         sandbox_policy = body.get("sandbox_policy")
+        lumon = body.get("lumon")
+        lumon_config = body.get("lumon_config")
         return Node(
             name=name,
             node_type=NodeType.ATOMIC,
@@ -304,6 +324,8 @@ class _FlowTransformer(Transformer[Token, Flow]):
             subtasks=bool(subtasks) if subtasks is not None else None,
             sandbox=bool(sandbox) if sandbox is not None else None,
             sandbox_policy=str(sandbox_policy) if sandbox_policy is not None else None,
+            lumon=bool(lumon) if lumon is not None else None,
+            lumon_config=str(lumon_config) if lumon_config is not None else None,
             line=_meta_line(meta),
             column=_meta_column(meta),
         )
@@ -505,6 +527,12 @@ class _FlowTransformer(Transformer[Token, Flow]):
     def flow_sandbox_policy(self, items: list[Token]) -> tuple[str, str]:
         return ("sandbox_policy", _strip_string(items[0]))
 
+    def flow_lumon(self, items: list[Token]) -> tuple[str, bool]:
+        return ("lumon", str(items[0]) == "true")
+
+    def flow_lumon_config(self, items: list[Token]) -> tuple[str, str]:
+        return ("lumon_config", _strip_string(items[0]))
+
     def flow_max_parallel(self, items: list[Token]) -> tuple[str, int]:
         text = str(items[0])
         return ("max_parallel", int(text) if "." not in text else int(float(text)))
@@ -569,6 +597,8 @@ class _FlowTransformer(Transformer[Token, Flow]):
             subtasks=bool(attrs.get("subtasks", False)),
             sandbox=bool(attrs.get("sandbox", False)),
             sandbox_policy=(str(attrs["sandbox_policy"]) if "sandbox_policy" in attrs else None),
+            lumon=bool(attrs.get("lumon", False)),
+            lumon_config=(str(attrs["lumon_config"]) if "lumon_config" in attrs else None),
             max_parallel=int(attrs.get("max_parallel", 1)),
             input_fields=input_fields,
             output_fields=output_fields,

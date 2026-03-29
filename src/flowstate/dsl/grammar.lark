@@ -27,6 +27,8 @@ flow_attr: "budget" "=" DURATION       -> flow_budget
          | "subtasks" "=" BOOL_LIT -> flow_subtasks
          | "sandbox" "=" BOOL_LIT -> flow_sandbox
          | "sandbox_policy" "=" STRING -> flow_sandbox_policy
+         | "lumon" "=" BOOL_LIT -> flow_lumon
+         | "lumon_config" "=" STRING -> flow_lumon_config
 
 BOOL_LIT.2: "true" | "false"
 ERROR_POLICY.2: "pause" | "abort" | "skip"
@@ -68,6 +70,8 @@ node_attr: "prompt" "=" string  -> node_prompt
          | "subtasks" "=" BOOL_LIT -> node_subtasks
          | "sandbox" "=" BOOL_LIT -> node_sandbox
          | "sandbox_policy" "=" STRING -> node_sandbox_policy
+         | "lumon" "=" BOOL_LIT -> node_lumon
+         | "lumon_config" "=" STRING -> node_lumon_config
 
 // Edges
 edge_decl: simple_edge | cond_edge | fork_edge | join_edge | file_edge | file_cond_edge | file_delayed_edge | file_scheduled_edge | await_edge | await_cond_edge

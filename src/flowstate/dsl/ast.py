@@ -58,6 +58,8 @@ class Node:
     subtasks: bool | None = None
     sandbox: bool | None = None
     sandbox_policy: str | None = None
+    lumon: bool | None = None
+    lumon_config: str | None = None
     wait_delay_seconds: int | None = None
     wait_until_cron: str | None = None
     line: int = 0
@@ -100,6 +102,8 @@ class Flow:
     subtasks: bool = False
     sandbox: bool = False
     sandbox_policy: str | None = None
+    lumon: bool = False
+    lumon_config: str | None = None
     input_fields: tuple[TaskTypeField, ...] = ()
     output_fields: tuple[TaskTypeField, ...] = ()
     max_parallel: int = 1

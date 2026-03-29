@@ -37,6 +37,7 @@ def check_flow(flow: Flow) -> list[FlowTypeError]:
     errors.extend(_check_fork_join(flow))
     errors.extend(_check_scheduling(flow))
     errors.extend(_check_sandbox(flow))
+    errors.extend(_check_lumon(flow))
     return errors
 
 
@@ -883,6 +884,42 @@ def _check_sandbox(flow: Flow) -> list[FlowTypeError]:
                         "SB1",
                         f"Node '{node.name}' sets sandbox_policy but sandbox is not enabled"
                         " (sandbox must be true, either on the node or inherited from flow)",
+                        node.name,
+                    )
+                )
+
+    return errors
+
+
+# ---------------------------------------------------------------------------
+# LM1: Lumon rules
+# ---------------------------------------------------------------------------
+
+
+def _check_lumon(flow: Flow) -> list[FlowTypeError]:
+    errors: list[FlowTypeError] = []
+
+    # LM1 (flow level): lumon_config requires lumon = true
+    if flow.lumon_config is not None and not flow.lumon:
+        errors.append(
+            FlowTypeError(
+                "LM1",
+                "lumon_config requires lumon = true at flow level",
+                flow.name,
+            )
+        )
+
+    # LM1 (node level): lumon_config requires lumon = true (explicit or inherited)
+    for node in flow.nodes.values():
+        if node.lumon_config is not None:
+            # Determine the effective lumon value for this node
+            effective_lumon = node.lumon if node.lumon is not None else flow.lumon
+            if not effective_lumon:
+                errors.append(
+                    FlowTypeError(
+                        "LM1",
+                        f"Node '{node.name}' sets lumon_config but lumon is not enabled"
+                        " (lumon must be true, either on the node or inherited from flow)",
                         node.name,
                     )
                 )

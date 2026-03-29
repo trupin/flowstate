@@ -1,0 +1,36 @@
+// Test fixture: flow-level and node-level lumon attributes
+flow lumon_pipeline {
+    budget = 2h
+    on_error = pause
+    context = handoff
+    lumon = true
+    lumon_config = "security/strict.lumon.json"
+
+    input {
+        task_name: string
+    }
+
+    entry prepare {
+        prompt = "Prepare environment"
+        lumon = true
+        lumon_config = "node-lumon.json"
+    }
+
+    task build {
+        prompt = "Build the project"
+        lumon = false
+    }
+
+    task test_suite {
+        prompt = "Run tests"
+    }
+
+    exit deploy {
+        prompt = "Deploy to production"
+        lumon = true
+    }
+
+    prepare -> build
+    build -> test_suite
+    test_suite -> deploy
+}

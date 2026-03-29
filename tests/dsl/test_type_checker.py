@@ -1855,3 +1855,123 @@ class TestSB1SandboxPolicyRequiresSandbox:
         errors = check_flow(flow)
         sb1 = _errors_with_rule(errors, "SB1")
         assert len(sb1) == 0
+
+
+# ===========================================================================
+# DSL-014: Lumon rules (LM1)
+# ===========================================================================
+
+
+class TestLM1LumonConfigRequiresLumon:
+    """LM1: lumon_config requires lumon = true at flow and node level."""
+
+    def test_flow_lumon_config_without_lumon_is_error(self) -> None:
+        """lumon_config at flow level with lumon defaulting to false."""
+        flow = _minimal_flow(lumon_config="strict.lumon.json")
+        errors = check_flow(flow)
+        lm1 = _errors_with_rule(errors, "LM1")
+        assert len(lm1) == 1
+        assert "lumon_config requires lumon = true" in lm1[0].message
+
+    def test_flow_lumon_false_with_config_is_error(self) -> None:
+        """Explicit lumon = false with lumon_config."""
+        flow = _minimal_flow(lumon=False, lumon_config="strict.lumon.json")
+        errors = check_flow(flow)
+        lm1 = _errors_with_rule(errors, "LM1")
+        assert len(lm1) == 1
+
+    def test_flow_lumon_true_with_config_is_valid(self) -> None:
+        """lumon = true with lumon_config is valid."""
+        flow = _minimal_flow(lumon=True, lumon_config="strict.lumon.json")
+        errors = check_flow(flow)
+        lm1 = _errors_with_rule(errors, "LM1")
+        assert len(lm1) == 0
+
+    def test_flow_lumon_true_without_config_is_valid(self) -> None:
+        """lumon = true without lumon_config is valid."""
+        flow = _minimal_flow(lumon=True)
+        errors = check_flow(flow)
+        lm1 = _errors_with_rule(errors, "LM1")
+        assert len(lm1) == 0
+
+    def test_node_lumon_false_with_config_is_error(self) -> None:
+        """Node sets lumon = false with lumon_config."""
+        nodes = {
+            "start": Node(
+                name="start",
+                node_type=NodeType.ENTRY,
+                prompt="begin",
+                lumon=False,
+                lumon_config="node.lumon.json",
+            ),
+            "end": Node(name="end", node_type=NodeType.EXIT, prompt="done"),
+        }
+        flow = _minimal_flow(nodes=nodes, lumon=True)
+        errors = check_flow(flow)
+        lm1 = _errors_with_rule(errors, "LM1")
+        assert len(lm1) == 1
+        assert "start" in lm1[0].message
+
+    def test_node_lumon_config_inherits_false_from_flow_is_error(self) -> None:
+        """Node sets lumon_config, inherits lumon = false from flow."""
+        nodes = {
+            "start": Node(
+                name="start",
+                node_type=NodeType.ENTRY,
+                prompt="begin",
+                lumon_config="node.lumon.json",
+            ),
+            "end": Node(name="end", node_type=NodeType.EXIT, prompt="done"),
+        }
+        flow = _minimal_flow(nodes=nodes, lumon=False)
+        errors = check_flow(flow)
+        lm1 = _errors_with_rule(errors, "LM1")
+        assert len(lm1) == 1
+        assert "start" in lm1[0].message
+
+    def test_node_lumon_config_inherits_true_from_flow_is_valid(self) -> None:
+        """Node sets lumon_config, inherits lumon = true from flow."""
+        nodes = {
+            "start": Node(
+                name="start",
+                node_type=NodeType.ENTRY,
+                prompt="begin",
+                lumon_config="node.lumon.json",
+            ),
+            "end": Node(name="end", node_type=NodeType.EXIT, prompt="done"),
+        }
+        flow = _minimal_flow(nodes=nodes, lumon=True)
+        errors = check_flow(flow)
+        lm1 = _errors_with_rule(errors, "LM1")
+        assert len(lm1) == 0
+
+    def test_node_lumon_true_with_config_overrides_flow_false(self) -> None:
+        """Node with lumon = true and lumon_config is valid even if flow lumon = false."""
+        nodes = {
+            "start": Node(
+                name="start",
+                node_type=NodeType.ENTRY,
+                prompt="begin",
+                lumon=True,
+                lumon_config="node.lumon.json",
+            ),
+            "end": Node(name="end", node_type=NodeType.EXIT, prompt="done"),
+        }
+        flow = _minimal_flow(nodes=nodes, lumon=False)
+        errors = check_flow(flow)
+        lm1 = _errors_with_rule(errors, "LM1")
+        assert len(lm1) == 0
+
+    def test_no_lumon_attrs_is_valid(self) -> None:
+        """Default flow (no lumon attrs) has no LM1 errors."""
+        flow = _minimal_flow()
+        errors = check_flow(flow)
+        lm1 = _errors_with_rule(errors, "LM1")
+        assert len(lm1) == 0
+
+    def test_lumon_fixture_type_checks(self) -> None:
+        """The valid_lumon.flow fixture should type-check with no LM1 errors."""
+        flow = parse_flow(load_fixture("valid_lumon.flow"))
+        errors = check_flow(flow)
+        lm1 = _errors_with_rule(errors, "LM1")
+        assert len(lm1) == 0
