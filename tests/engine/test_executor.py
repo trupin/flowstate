@@ -542,25 +542,8 @@ class TestTemplateExpansion:
 
 
 class TestTaskDirectoryCreation:
-    async def test_task_directory_creation(self, tmp_path: Path) -> None:
-        """After execution, verify task directories exist under the data dir."""
-        db = _make_db()
-        _events, callback = _collect_events()
-        mock_mgr = MockSubprocessManager()
-        executor = FlowExecutor(db, callback, mock_mgr)
-
-        flow = _make_linear_flow(node_names=["start", "finish"])
-
-        flow_run_id = await executor.execute(flow, {}, "/workspace")
-
-        tasks = db.list_task_executions(flow_run_id)
-        assert len(tasks) == 2
-        for t in tasks:
-            task_dir = Path(t.task_dir)
-            assert task_dir.exists()
-
-    async def test_task_dir_naming(self) -> None:
-        """Task directories follow <name>-<generation> naming."""
+    async def test_task_dir_is_empty_string(self) -> None:
+        """After ENGINE-068, task_dir is empty string (DB-backed artifacts)."""
         db = _make_db()
         _events, callback = _collect_events()
         mock_mgr = MockSubprocessManager()
@@ -571,7 +554,24 @@ class TestTaskDirectoryCreation:
 
         tasks = db.list_task_executions(flow_run_id)
         for t in tasks:
-            assert t.task_dir.endswith(f"{t.node_name}-{t.generation}")
+            assert t.task_dir == ""
+
+    async def test_input_artifact_saved(self) -> None:
+        """After task creation, an input artifact is saved to the DB."""
+        db = _make_db()
+        _events, callback = _collect_events()
+        mock_mgr = MockSubprocessManager()
+        executor = FlowExecutor(db, callback, mock_mgr)
+
+        flow = _make_linear_flow(node_names=["start", "finish"])
+        flow_run_id = await executor.execute(flow, {}, "/workspace")
+
+        tasks = db.list_task_executions(flow_run_id)
+        for t in tasks:
+            artifact = db.get_artifact(t.id, "input")
+            assert artifact is not None
+            assert artifact.content_type == "text/markdown"
+            assert len(artifact.content) > 0
 
 
 class TestBudgetWarningEvents:
@@ -723,7 +723,7 @@ class TestContextModeHandoff:
         assert "Context from previous task" in finish_task.prompt_text
 
     async def test_context_mode_handoff_with_summary(self) -> None:
-        """When predecessor writes SUMMARY.md, the handoff prompt includes it."""
+        """When predecessor saves a summary artifact, the handoff prompt includes it."""
         db = _make_db()
         _events, callback = _collect_events()
         mock_mgr = MockSubprocessManager()
@@ -745,8 +745,12 @@ class TestContextModeHandoff:
                     task_list = db.list_task_executions(runs[0].id)
                     for t in task_list:
                         if t.node_name == "start":
-                            summary_path = Path(t.task_dir) / "SUMMARY.md"
-                            summary_path.write_text("I set up the project successfully.")
+                            db.save_artifact(
+                                t.id,
+                                "summary",
+                                "I set up the project successfully.",
+                                "text/markdown",
+                            )
                             break
 
             async for evt in original_run_task(prompt, workspace, session_id):
@@ -1093,18 +1097,24 @@ class TestForkJoinContextAggregation:
         async def run_task_with_summaries(
             prompt: str, workspace: str, session_id: str, *, skip_permissions: bool = False
         ) -> AsyncGenerator[StreamEvent, None]:
-            # Write SUMMARY.md for fork members
+            # Save summary artifacts for fork members
             runs = db.list_flow_runs()
             if runs:
                 task_list = db.list_task_executions(runs[0].id)
                 for t in task_list:
                     if t.node_name == "task_a" and t.status == "running":
-                        Path(t.task_dir).joinpath("SUMMARY.md").write_text(
-                            "Task A completed frontend."
+                        db.save_artifact(
+                            t.id,
+                            "summary",
+                            "Task A completed frontend.",
+                            "text/markdown",
                         )
                     elif t.node_name == "task_b" and t.status == "running":
-                        Path(t.task_dir).joinpath("SUMMARY.md").write_text(
-                            "Task B completed backend."
+                        db.save_artifact(
+                            t.id,
+                            "summary",
+                            "Task B completed backend.",
+                            "text/markdown",
                         )
 
             async for evt in original_run_task(prompt, workspace, session_id):
@@ -1412,11 +1422,9 @@ class TestCycleGenerationIncrement:
         generations = sorted(t.generation for t in implement_tasks)
         assert generations == [1, 2]
 
-        # Task directories should be different
-        dirs = [t.task_dir for t in implement_tasks]
-        assert dirs[0] != dirs[1]
-        assert "implement-1" in dirs[0] or "implement-1" in dirs[1]
-        assert "implement-2" in dirs[0] or "implement-2" in dirs[1]
+        # Task directories are empty strings (DB-backed artifacts)
+        for t in implement_tasks:
+            assert t.task_dir == ""
 
 
 class TestCycleThreeIterations:
@@ -1774,7 +1782,7 @@ class TestRetryFailedTask:
         new_task = next(t for t in work_tasks if t.id != failed_task.id)
         assert new_task.status == "pending"
         assert new_task.generation == 2
-        assert new_task.task_dir != failed_task.task_dir
+        assert new_task.task_dir == ""
 
         await executor.cancel(flow_run_id)
         await execute_task
@@ -3247,7 +3255,7 @@ class TestActivityLogsConditional:
 class TestSelfReportRouting:
     """Tests for judge=False self-report routing (ENGINE-047).
 
-    When judge=False, the executor should read DECISION.json from the task directory
+    When judge=False, the executor reads the decision artifact from DB
     instead of invoking a judge subprocess. Activity logs should say 'Self-report routed'
     instead of 'Judge decided', and no judge.started/judge.decided events should be emitted.
     """
@@ -3273,8 +3281,11 @@ class TestSelfReportRouting:
 
         mock_decision = JudgeDecision(target="done", reasoning="Approved", confidence=0.95)
 
-        with patch("flowstate.engine.judge.read_judge_decision", return_value=mock_decision):
-            executor = FlowExecutor(db, callback, mock_mgr, max_concurrent=4)
+        async def mock_read_decision(task_id: str, flow_run_id: str) -> JudgeDecision:
+            return mock_decision
+
+        executor = FlowExecutor(db, callback, mock_mgr, max_concurrent=4)
+        with patch.object(executor, "_read_decision_artifact", side_effect=mock_read_decision):
             await executor.execute(flow, {}, "/workspace")
 
         # No judge events should be emitted
@@ -3312,8 +3323,11 @@ class TestSelfReportRouting:
 
         mock_decision = JudgeDecision(target="done", reasoning="Approved", confidence=0.95)
 
-        with patch("flowstate.engine.judge.read_judge_decision", return_value=mock_decision):
-            executor = FlowExecutor(db, callback, mock_mgr, max_concurrent=4)
+        async def mock_read_decision(task_id: str, flow_run_id: str) -> JudgeDecision:
+            return mock_decision
+
+        executor = FlowExecutor(db, callback, mock_mgr, max_concurrent=4)
+        with patch.object(executor, "_read_decision_artifact", side_effect=mock_read_decision):
             await executor.execute(flow, {}, "/workspace")
 
         activities = _extract_activity_logs(events)
@@ -3356,13 +3370,13 @@ class TestSelfReportRouting:
         ]
         call_count = {"n": 0}
 
-        def mock_read(_task_dir: str) -> JudgeDecision:
+        async def mock_read_decision(task_id: str, flow_run_id: str) -> JudgeDecision:
             idx = call_count["n"]
             call_count["n"] += 1
             return decisions[idx]
 
-        with patch("flowstate.engine.judge.read_judge_decision", side_effect=mock_read):
-            executor = FlowExecutor(db, callback, mock_mgr, max_concurrent=4)
+        executor = FlowExecutor(db, callback, mock_mgr, max_concurrent=4)
+        with patch.object(executor, "_read_decision_artifact", side_effect=mock_read_decision):
             await executor.execute(flow, {}, "/workspace")
 
         judge_started = [e for e in events if e.type == EventType.JUDGE_STARTED]
@@ -3383,7 +3397,7 @@ class TestSelfReportRouting:
         assert len(self_report_logs) >= 1
 
     async def test_self_report_failure_pauses_flow(self) -> None:
-        """judge=False: when DECISION.json is missing, flow pauses."""
+        """judge=False: when decision artifact is missing, flow pauses."""
         db = _make_db()
         events, callback = _collect_events()
         mock_mgr = MockSubprocessManager()
@@ -3400,11 +3414,11 @@ class TestSelfReportRouting:
             edges=flow.edges,
         )
 
-        with patch(
-            "flowstate.engine.judge.read_judge_decision",
-            side_effect=FileNotFoundError("DECISION.json not found"),
-        ):
-            executor = FlowExecutor(db, callback, mock_mgr, max_concurrent=4)
+        async def mock_read_decision(task_id: str, flow_run_id: str) -> JudgeDecision:
+            raise FileNotFoundError("No decision artifact submitted by agent")
+
+        executor = FlowExecutor(db, callback, mock_mgr, max_concurrent=4)
+        with patch.object(executor, "_read_decision_artifact", side_effect=mock_read_decision):
             flow_run_id, execute_task = await _execute_until_paused(
                 executor, flow, {}, "/workspace", db
             )
@@ -3933,8 +3947,8 @@ class TestFileEdgeChildTaskMetadata:
         assert child.description is not None
         assert len(child.description) > 0
 
-    async def test_child_task_params_from_output_json(self) -> None:
-        """Child task params should come from source node OUTPUT.json, not parent params."""
+    async def test_child_task_params_from_output_artifact(self) -> None:
+        """Child task params should come from source node output artifact, not parent params."""
         flow = _make_file_edge_flow(target_flow="deploy-flow")
         db = FlowstateDB(":memory:")
         subprocess_mgr = MockSubprocessManager()
@@ -3952,12 +3966,20 @@ class TestFileEdgeChildTaskMetadata:
             harness=subprocess_mgr,
         )
 
-        # Patch read_output_json to simulate the work node writing OUTPUT.json
-        output_data = {"target_env": "staging", "version": "1.2.3"}
-        with patch(
-            "flowstate.engine.executor.read_output_json",
-            return_value=output_data,
-        ):
+        # Save output artifact on the "work" node's task execution after it's created
+        original_build = executor._build_child_params
+
+        def patched_build(task_execution_id: str) -> dict[str, str | float | bool]:
+            # Save the output artifact before the real method reads it
+            db.save_artifact(
+                task_execution_id,
+                "output",
+                json.dumps({"target_env": "staging", "version": "1.2.3"}),
+                "application/json",
+            )
+            return original_build(task_execution_id)
+
+        with patch.object(executor, "_build_child_params", side_effect=patched_build):
             await executor.execute(flow, {}, "/workspace", task_id=task_id)
 
         child_tasks = db.list_tasks(flow_name="deploy-flow")
@@ -3965,7 +3987,7 @@ class TestFileEdgeChildTaskMetadata:
         child = child_tasks[0]
         assert child.params_json is not None
         params = json.loads(child.params_json)
-        # Child params come from OUTPUT.json, not parent params
+        # Child params come from output artifact, not parent params
         assert params["target_env"] == "staging"
         assert params["version"] == "1.2.3"
         assert "env" not in params  # Parent params are NOT inherited
@@ -3974,8 +3996,8 @@ class TestFileEdgeChildTaskMetadata:
 class TestCrossFlowInputMapping:
     """ENGINE-029: Cross-flow task filing maps source output to child params."""
 
-    async def test_file_edge_with_output_json(self) -> None:
-        """FILE edge with OUTPUT.json -> child params come from OUTPUT.json fields."""
+    async def test_file_edge_with_output_artifact(self) -> None:
+        """FILE edge with output artifact -> child params come from output artifact fields."""
         flow = _make_file_edge_flow(target_flow="deploy-flow")
         db = FlowstateDB(":memory:")
         subprocess_mgr = MockSubprocessManager()
@@ -3989,11 +4011,18 @@ class TestCrossFlowInputMapping:
             harness=subprocess_mgr,
         )
 
-        output_data = {"repo": "my-app", "branch": "main", "deploy": True}
-        with patch(
-            "flowstate.engine.executor.read_output_json",
-            return_value=output_data,
-        ):
+        original_build = executor._build_child_params
+
+        def patched_build(task_execution_id: str) -> dict[str, str | float | bool]:
+            db.save_artifact(
+                task_execution_id,
+                "output",
+                json.dumps({"repo": "my-app", "branch": "main", "deploy": True}),
+                "application/json",
+            )
+            return original_build(task_execution_id)
+
+        with patch.object(executor, "_build_child_params", side_effect=patched_build):
             await executor.execute(flow, {}, "/workspace", task_id=task_id)
 
         child_tasks = db.list_tasks(flow_name="deploy-flow")
@@ -4003,8 +4032,8 @@ class TestCrossFlowInputMapping:
         params = json.loads(child.params_json)
         assert params == {"repo": "my-app", "branch": "main", "deploy": True}
 
-    async def test_file_edge_without_output_json_uses_summary(self) -> None:
-        """FILE edge without OUTPUT.json -> child params use SUMMARY.md as description."""
+    async def test_file_edge_without_output_uses_summary(self) -> None:
+        """FILE edge without output artifact -> child params use summary as description."""
         flow = _make_file_edge_flow(target_flow="deploy-flow")
         db = FlowstateDB(":memory:")
         subprocess_mgr = MockSubprocessManager()
@@ -4018,14 +4047,19 @@ class TestCrossFlowInputMapping:
             harness=subprocess_mgr,
         )
 
-        # No OUTPUT.json, but SUMMARY.md exists
-        with (
-            patch("flowstate.engine.executor.read_output_json", return_value=None),
-            patch(
-                "flowstate.engine.executor.read_summary",
-                return_value="Completed the work step successfully",
-            ),
-        ):
+        # No output artifact, but summary artifact exists
+        original_build = executor._build_child_params
+
+        def patched_build(task_execution_id: str) -> dict[str, str | float | bool]:
+            db.save_artifact(
+                task_execution_id,
+                "summary",
+                "Completed the work step successfully",
+                "text/markdown",
+            )
+            return original_build(task_execution_id)
+
+        with patch.object(executor, "_build_child_params", side_effect=patched_build):
             await executor.execute(flow, {}, "/workspace", task_id=task_id)
 
         child_tasks = db.list_tasks(flow_name="deploy-flow")
@@ -4050,12 +4084,8 @@ class TestCrossFlowInputMapping:
             harness=subprocess_mgr,
         )
 
-        # No OUTPUT.json, no SUMMARY.md
-        with (
-            patch("flowstate.engine.executor.read_output_json", return_value=None),
-            patch("flowstate.engine.executor.read_summary", return_value=None),
-        ):
-            await executor.execute(flow, {}, "/workspace", task_id=task_id)
+        # No output, no summary artifacts -- _build_child_params returns {}
+        await executor.execute(flow, {}, "/workspace", task_id=task_id)
 
         child_tasks = db.list_tasks(flow_name="deploy-flow")
         assert len(child_tasks) == 1
@@ -4063,8 +4093,8 @@ class TestCrossFlowInputMapping:
         # Empty params -> params_json should be None
         assert child.params_json is None
 
-    async def test_await_edge_with_output_json(self) -> None:
-        """AWAIT edge should also map output to child params."""
+    async def test_await_edge_with_output_artifact(self) -> None:
+        """AWAIT edge should also map output artifact to child params."""
         flow = _make_await_edge_flow(target_flow="blocking-flow")
         db = FlowstateDB(":memory:")
         subprocess_mgr = MockSubprocessManager()
@@ -4078,7 +4108,16 @@ class TestCrossFlowInputMapping:
             harness=subprocess_mgr,
         )
 
-        output_data = {"issue_id": "BUG-42", "severity": "high"}
+        original_build = executor._build_child_params
+
+        def patched_build(task_execution_id: str) -> dict[str, str | float | bool]:
+            db.save_artifact(
+                task_execution_id,
+                "output",
+                json.dumps({"issue_id": "BUG-42", "severity": "high"}),
+                "application/json",
+            )
+            return original_build(task_execution_id)
 
         async def complete_child_after_delay() -> None:
             for _ in range(100):
@@ -4090,10 +4129,7 @@ class TestCrossFlowInputMapping:
                         db.update_task_queue_status(child.id, "completed")
                         return
 
-        with patch(
-            "flowstate.engine.executor.read_output_json",
-            return_value=output_data,
-        ):
+        with patch.object(executor, "_build_child_params", side_effect=patched_build):
             execute_task = asyncio.create_task(
                 executor.execute(flow, {}, "/workspace", task_id=task_id)
             )
@@ -7495,125 +7531,7 @@ class TestSandboxNewHarnessInstance:
 
 
 # ---------------------------------------------------------------------------
-# Sandbox DECISION.json download (ENGINE-066)
+# Sandbox DECISION.json download removed (ENGINE-068)
 # ---------------------------------------------------------------------------
-
-
-class TestSandboxDecisionDownload:
-    """ENGINE-066: Download DECISION.json from sandbox after task completion."""
-
-    async def test_download_called_for_sandboxed_task(self) -> None:
-        """After a sandboxed task exits 0, download_file is called for DECISION.json."""
-        db = _make_db()
-        _events, callback = _collect_events()
-        mock_mgr = _make_sandboxed_mock()
-        executor = FlowExecutor(db, callback, mock_mgr, max_concurrent=4)
-
-        flow = _make_sandbox_flow(sandbox=True)
-
-        download_calls: list[tuple[str, str]] = []
-        original_download = AsyncMock(return_value=True)
-
-        async def track_download(sandbox_path: str, host_path: str) -> bool:
-            download_calls.append((sandbox_path, host_path))
-            return await original_download(sandbox_path, host_path)
-
-        with (
-            patch(
-                "flowstate.engine.acp_client.AcpHarness",
-                side_effect=lambda command, env=None, init_timeout=30.0, session_cwd=None: mock_mgr,
-            ),
-            patch.object(executor._sandbox_mgr, "download_file", side_effect=track_download),
-        ):
-            await executor.execute(flow, {}, "/workspace")
-
-        # download_file should be called once per sandboxed task that exits 0
-        # (all 3 nodes: start, work, finish)
-        assert len(download_calls) == 3
-        for sandbox_path, host_path in download_calls:
-            assert sandbox_path == "/sandbox/DECISION.json"
-            assert host_path.endswith("DECISION.json")
-
-    async def test_no_download_for_non_sandboxed_task(self) -> None:
-        """Non-sandboxed tasks do not trigger download_file."""
-        db = _make_db()
-        _events, callback = _collect_events()
-        mock_mgr = MockSubprocessManager()
-        executor = FlowExecutor(db, callback, mock_mgr, max_concurrent=4)
-
-        flow = _make_sandbox_flow(sandbox=False)
-
-        with patch.object(
-            executor._sandbox_mgr, "download_file", new_callable=AsyncMock
-        ) as mock_download:
-            await executor.execute(flow, {}, "/workspace")
-
-        mock_download.assert_not_called()
-
-    async def test_no_download_on_task_failure(self) -> None:
-        """When a sandboxed task fails (exit code != 0), download is skipped."""
-        db = _make_db()
-        _events, callback = _collect_events()
-        mock_mgr = _make_sandboxed_mock()
-        # Make the 'work' node fail
-        mock_mgr.task_responses["work"] = (1, [])
-        executor = FlowExecutor(db, callback, mock_mgr, max_concurrent=4)
-
-        # Use ABORT so the flow terminates immediately on failure instead
-        # of pausing (which would cause the test to hang).
-        flow = _make_sandbox_flow(sandbox=True)
-        flow = Flow(
-            name=flow.name,
-            budget_seconds=flow.budget_seconds,
-            on_error=ErrorPolicy.ABORT,
-            context=flow.context,
-            workspace=flow.workspace,
-            nodes=flow.nodes,
-            edges=flow.edges,
-            sandbox=flow.sandbox,
-            sandbox_policy=flow.sandbox_policy,
-        )
-
-        download_calls: list[tuple[str, str]] = []
-
-        async def track_download(sandbox_path: str, host_path: str) -> bool:
-            download_calls.append((sandbox_path, host_path))
-            return True
-
-        with (
-            patch(
-                "flowstate.engine.acp_client.AcpHarness",
-                side_effect=lambda command, env=None, init_timeout=30.0, session_cwd=None: mock_mgr,
-            ),
-            patch.object(executor._sandbox_mgr, "download_file", side_effect=track_download),
-        ):
-            await executor.execute(flow, {}, "/workspace")
-
-        # Only 'start' node succeeds (entry task before 'work' fails).
-        # 'work' fails so no download for it; 'finish' never runs.
-        assert len(download_calls) == 1  # just the 'start' entry node
-
-    async def test_download_failure_is_silent(self) -> None:
-        """If download_file returns False, the flow still completes normally."""
-        db = _make_db()
-        _events, callback = _collect_events()
-        mock_mgr = _make_sandboxed_mock()
-        executor = FlowExecutor(db, callback, mock_mgr, max_concurrent=4)
-
-        flow = _make_sandbox_flow(sandbox=True)
-
-        with (
-            patch(
-                "flowstate.engine.acp_client.AcpHarness",
-                side_effect=lambda command, env=None, init_timeout=30.0, session_cwd=None: mock_mgr,
-            ),
-            patch.object(
-                executor._sandbox_mgr, "download_file", new_callable=AsyncMock, return_value=False
-            ),
-        ):
-            flow_run_id = await executor.execute(flow, {}, "/workspace")
-
-        # Flow should still complete successfully even when download fails
-        run = db.get_flow_run(flow_run_id)
-        assert run is not None
-        assert run.status == "completed"
+# The download_file mechanism was removed in ENGINE-068. Sandbox agents now
+# submit decision artifacts via the API, not via filesystem downloads.

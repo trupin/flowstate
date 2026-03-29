@@ -38,11 +38,8 @@ from flowstate.engine.context import (
     build_prompt_session,
     build_routing_instructions,
     build_task_management_instructions,
-    create_task_dir,
     expand_templates,
     get_context_mode,
-    read_output_json,
-    read_summary,
     resolve_cwd,
 )
 from flowstate.engine.events import EventType, FlowEvent
@@ -252,7 +249,6 @@ class FlowExecutor:
         self._pending_tasks: set[str] = set()
         self._flow: Flow | None = None
         self._flow_run_id: str | None = None
-        self._data_dir: str | None = None
         self._expanded_prompts: dict[str, str] = {}
         self._budget: BudgetGuard | None = None
         self._completed_queue: asyncio.Queue[str] | None = None
@@ -341,7 +337,6 @@ class FlowExecutor:
         the route handler ensures the RunManager key matches the DB key.
         """
         desired_id = flow_run_id or str(uuid.uuid4())
-        data_dir = os.path.expanduser(f"~/.flowstate/runs/{desired_id}")
 
         # 1. Look up or create flow definition
         flow_def = self._db.get_flow_definition_by_name(flow.name)
@@ -352,17 +347,16 @@ class FlowExecutor:
                 name=flow.name, source_dsl="", ast_json=json.dumps({"name": flow.name})
             )
 
-        # 2. Create flow run record
+        # 2. Create flow run record (data_dir="" for backwards compat)
         flow_run_id = self._db.create_flow_run(
             flow_definition_id=flow_definition_id,
-            data_dir=data_dir,
+            data_dir="",
             budget_seconds=flow.budget_seconds,
             on_error=flow.on_error.value,
             default_workspace=workspace,
             params_json=json.dumps(params) if params else None,
             run_id=desired_id,
         )
-        data_dir = os.path.expanduser(f"~/.flowstate/runs/{flow_run_id}")
 
         # Store task_id and cached task row for task-aware execution
         self._task_id = task_id
@@ -422,7 +416,6 @@ class FlowExecutor:
         # 5. Store shared state for control operations
         self._flow = flow
         self._flow_run_id = flow_run_id
-        self._data_dir = data_dir
         self._expanded_prompts = expanded_prompts
         self._budget = budget
         self._paused = False
@@ -437,7 +430,6 @@ class FlowExecutor:
             generation=1,
             flow=flow,
             expanded_prompt=expanded_prompts[entry_node.name],
-            data_dir=data_dir,
             context_mode=ContextMode.NONE,
         )
 
@@ -474,7 +466,6 @@ class FlowExecutor:
                         task_execution_id=task_id,
                         flow=flow,
                         expanded_prompts=expanded_prompts,
-                        data_dir=data_dir,
                         budget=budget,
                         completed_queue=completed_queue,
                     )
@@ -501,7 +492,7 @@ class FlowExecutor:
             self._semaphore.release()
 
             should_stop = await self._process_completed_task(
-                completed_id, flow_run_id, flow, expanded_prompts, data_dir, budget, pending
+                completed_id, flow_run_id, flow, expanded_prompts, budget, pending
             )
             if should_stop:
                 await self._cleanup_worktree()
@@ -516,7 +507,6 @@ class FlowExecutor:
         flow_run_id: str,
         flow: Flow,
         expanded_prompts: dict[str, str],
-        data_dir: str,
         budget: BudgetGuard,
         pending: set[str],
     ) -> bool:
@@ -546,7 +536,7 @@ class FlowExecutor:
             if self._cancelled:
                 return False
             await self._handle_error(
-                flow_run_id, flow, budget, completed_id, pending, expanded_prompts, data_dir
+                flow_run_id, flow, budget, completed_id, pending, expanded_prompts
             )
             return False
 
@@ -572,7 +562,7 @@ class FlowExecutor:
                     # Only attempt join if the group hasn't already been joined
                     # (a concurrent task completion may have already triggered the join)
                     await self._check_fork_join_completion(
-                        _fg_id, flow_run_id, flow, expanded_prompts, data_dir, budget, pending
+                        _fg_id, flow_run_id, flow, expanded_prompts, budget, pending
                     )
                 # If already joined or cancelled, this is a no-op
             else:
@@ -595,7 +585,6 @@ class FlowExecutor:
                 flow_run_id,
                 flow,
                 expanded_prompts,
-                data_dir,
                 pending,
             )
 
@@ -609,7 +598,6 @@ class FlowExecutor:
                 flow_run_id,
                 flow,
                 expanded_prompts,
-                data_dir,
                 pending,
             )
 
@@ -622,7 +610,6 @@ class FlowExecutor:
                 flow_run_id,
                 flow,
                 expanded_prompts,
-                data_dir,
                 pending,
             )
 
@@ -639,7 +626,6 @@ class FlowExecutor:
                 generation=target_gen,
                 flow=flow,
                 expanded_prompt=expanded_prompts[edge.target],
-                data_dir=data_dir,
                 context_mode=ctx_mode,
                 predecessor_task_id=completed_id,
             )
@@ -676,7 +662,7 @@ class FlowExecutor:
         fork_info = _get_fork_group_for_member(completed_id, flow_run_id, self._db)
         if fork_info is not None and fork_info[2] == "active":
             await self._check_fork_join_completion(
-                fork_info[0], flow_run_id, flow, expanded_prompts, data_dir, budget, pending
+                fork_info[0], flow_run_id, flow, expanded_prompts, budget, pending
             )
 
         # Handle FILE edges: async cross-flow task filing (ENGINE-028)
@@ -708,7 +694,6 @@ class FlowExecutor:
         flow_run_id: str,
         flow: Flow,
         expanded_prompts: dict[str, str],
-        data_dir: str,
         pending: set[str],
     ) -> None:
         """Create fork group and enqueue all fork target tasks."""
@@ -726,7 +711,6 @@ class FlowExecutor:
                 generation=generation,
                 flow=flow,
                 expanded_prompt=expanded_prompts[target_name],
-                data_dir=data_dir,
                 context_mode=ctx_mode,
                 predecessor_task_id=source_task_id,
             )
@@ -794,7 +778,6 @@ class FlowExecutor:
         flow_run_id: str,
         flow: Flow,
         expanded_prompts: dict[str, str],
-        data_dir: str,
         budget: BudgetGuard,
         pending: set[str],
     ) -> None:
@@ -816,19 +799,18 @@ class FlowExecutor:
         # Mark fork group as joined
         self._db.update_fork_group_status(fork_group_id, "joined")
 
-        # Collect summaries from all members
+        # Collect summaries from all members (DB-backed)
         member_summaries: dict[str, str | None] = {}
         for m in members:
-            summary = read_summary(m.task_dir)
-            member_summaries[m.node_name] = summary
+            artifact = self._db.get_artifact(m.id, "summary")
+            member_summaries[m.node_name] = artifact.content if artifact else None
 
         # Enqueue join target
         join_node = flow.nodes[fork_group.join_node_name]
         join_gen = fork_group.generation + 1
-        task_dir = create_task_dir(data_dir, join_node.name, join_gen)
         cwd = resolve_cwd(join_node, flow)
         cwd = self._apply_worktree_mapping(cwd)
-        prompt = build_prompt_join(join_node, task_dir, cwd, member_summaries)
+        prompt = build_prompt_join(join_node, cwd, member_summaries)
 
         # Expand template if needed
         expanded = expanded_prompts.get(join_node.name, join_node.prompt)
@@ -844,7 +826,7 @@ class FlowExecutor:
             generation=join_gen,
             context_mode=ContextMode.HANDOFF.value,
             cwd=cwd,
-            task_dir=task_dir,
+            task_dir="",
             prompt_text=prompt,
         )
 
@@ -911,13 +893,13 @@ class FlowExecutor:
 
         Returns the decision, or None if the flow was paused due to failure.
         """
-        from flowstate.engine.judge import read_judge_decision
         from flowstate.state.models import TaskExecutionRow
 
         assert isinstance(task_exec, TaskExecutionRow)
 
         if _use_judge(flow, node):
-            summary = read_summary(task_exec.task_dir)
+            artifact = self._db.get_artifact(task_exec.id, "summary")
+            summary = artifact.content if artifact else None
             judge_context = JudgeContext(
                 node_name=task_exec.node_name,
                 task_prompt=task_exec.prompt_text,
@@ -947,11 +929,32 @@ class FlowExecutor:
                 self._pause_flow(flow_run_id, f"Judge failed: {e.reason}")
                 return None
         else:
+            # Self-report: read the decision artifact from DB with brief poll
             try:
-                return read_judge_decision(task_exec.task_dir)
+                return await self._read_decision_artifact(task_exec.id, flow_run_id)
             except (FileNotFoundError, ValueError) as e:
                 self._pause_flow(flow_run_id, f"Task self-report failed: {e}")
                 return None
+
+    async def _read_decision_artifact(
+        self, task_execution_id: str, flow_run_id: str
+    ) -> JudgeDecision:
+        """Read the decision artifact from DB, with brief polling for race conditions.
+
+        The agent may POST the decision artifact just before its process exits.
+        Poll up to 5 seconds (0.5s intervals) before declaring missing.
+        """
+        for _ in range(10):
+            artifact = self._db.get_artifact(task_execution_id, "decision")
+            if artifact is not None:
+                data = json.loads(artifact.content)
+                return JudgeDecision(
+                    target=data["decision"],
+                    reasoning=data["reasoning"],
+                    confidence=float(data["confidence"]),
+                )
+            await asyncio.sleep(0.5)
+        raise FileNotFoundError("No decision artifact submitted by agent")
 
     async def _handle_conditional(
         self,
@@ -961,7 +964,6 @@ class FlowExecutor:
         flow_run_id: str,
         flow: Flow,
         expanded_prompts: dict[str, str],
-        data_dir: str,
         pending: set[str],
     ) -> None:
         """Evaluate conditional edges and route accordingly."""
@@ -1030,7 +1032,6 @@ class FlowExecutor:
             generation=target_gen,
             flow=flow,
             expanded_prompt=expanded_prompts[decision.target],
-            data_dir=data_dir,
             context_mode=ctx_mode,
             source_task=task_exec,
             judge_decision=decision,
@@ -1073,7 +1074,6 @@ class FlowExecutor:
         flow_run_id: str,
         flow: Flow,
         expanded_prompts: dict[str, str],
-        data_dir: str,
         pending: set[str],
     ) -> None:
         """Evaluate conditional edges; fall back to default edge if no match."""
@@ -1127,7 +1127,6 @@ class FlowExecutor:
                 generation=target_gen,
                 flow=flow,
                 expanded_prompt=expanded_prompts[default_edge.target],
-                data_dir=data_dir,
                 context_mode=ctx_mode,
                 source_task=task_exec,
                 judge_decision=decision,
@@ -1188,7 +1187,6 @@ class FlowExecutor:
             generation=target_gen,
             flow=flow,
             expanded_prompt=expanded_prompts[decision.target],
-            data_dir=data_dir,
             context_mode=ctx_mode,
             source_task=task_exec,
             judge_decision=decision,
@@ -1229,7 +1227,6 @@ class FlowExecutor:
         generation: int,
         flow: Flow,
         expanded_prompt: str,
-        data_dir: str,
         context_mode: ContextMode,
         source_task: object,
         judge_decision: JudgeDecision,
@@ -1240,7 +1237,6 @@ class FlowExecutor:
 
         assert isinstance(source_task, TaskExecutionRow)
 
-        task_dir = create_task_dir(data_dir, target_node.name, generation)
         cwd = resolve_cwd(target_node, flow)
         cwd = self._apply_worktree_mapping(cwd)
         claude_session_id: str | None = None
@@ -1248,7 +1244,8 @@ class FlowExecutor:
         if is_cycle and context_mode == ContextMode.HANDOFF:
             # For cycle re-entry with handoff: include source task's summary
             # AND the judge's reasoning as feedback
-            source_summary = read_summary(source_task.task_dir)
+            artifact = self._db.get_artifact(source_task.id, "summary")
+            source_summary = artifact.content if artifact else None
             cycle_context = (
                 f"{source_summary or '(No summary available)'}\n\n"
                 f"## Judge Feedback\n"
@@ -1256,25 +1253,26 @@ class FlowExecutor:
                 f"You are re-entering this task (generation {generation}) "
                 f"to address the feedback."
             )
-            prompt = build_prompt_handoff(target_node, task_dir, cwd, cycle_context)
+            prompt = build_prompt_handoff(target_node, cwd, cycle_context)
 
         elif is_cycle and context_mode == ContextMode.SESSION:
             # Resume the SOURCE task's session (the reviewer), not the
             # target's previous session
-            prompt = build_prompt_session(target_node, task_dir)
+            prompt = build_prompt_session(target_node)
             claude_session_id = source_task.claude_session_id
 
         elif context_mode == ContextMode.HANDOFF:
             # Normal (non-cycle) conditional transition
-            source_summary = read_summary(source_task.task_dir)
-            prompt = build_prompt_handoff(target_node, task_dir, cwd, source_summary)
+            artifact = self._db.get_artifact(source_task.id, "summary")
+            source_summary = artifact.content if artifact else None
+            prompt = build_prompt_handoff(target_node, cwd, source_summary)
 
         elif context_mode == ContextMode.SESSION:
-            prompt = build_prompt_session(target_node, task_dir)
+            prompt = build_prompt_session(target_node)
             claude_session_id = source_task.claude_session_id
 
         else:  # none
-            prompt = build_prompt_none(target_node, task_dir, cwd)
+            prompt = build_prompt_none(target_node, cwd)
 
         # Expand template if needed
         if expanded_prompt != target_node.prompt:
@@ -1292,7 +1290,7 @@ class FlowExecutor:
             generation=generation,
             context_mode=context_mode.value,
             cwd=cwd,
-            task_dir=task_dir,
+            task_dir="",
             prompt_text=prompt,
         )
 
@@ -1317,22 +1315,32 @@ class FlowExecutor:
         task = self._db.get_task(task_id)
         return task.depth if task else 0
 
-    def _build_child_params(self, source_task_dir: str) -> dict[str, str | float | bool]:
+    def _build_child_params(self, task_execution_id: str) -> dict[str, str | float | bool]:
         """Build child task params by mapping source node output to child input.
 
-        Reads the source node's OUTPUT.json for structured key-value output.
-        Falls back to SUMMARY.md content as a ``description`` field.
+        Reads the source node's output artifact for structured key-value output.
+        Falls back to summary artifact content as a ``description`` field.
         Returns an empty dict if neither source is available.
         """
         # Try structured output first
-        output_data = read_output_json(source_task_dir)
-        if output_data:
-            return output_data
+        output_artifact = self._db.get_artifact(task_execution_id, "output")
+        if output_artifact:
+            try:
+                raw = json.loads(output_artifact.content)
+                if isinstance(raw, dict):
+                    result: dict[str, str | float | bool] = {}
+                    for key, value in raw.items():
+                        if isinstance(value, str | int | float | bool):
+                            result[key] = value
+                    if result:
+                        return result
+            except (json.JSONDecodeError, TypeError):
+                pass
 
         # Fall back to summary as a general description
-        summary = read_summary(source_task_dir)
-        if summary:
-            return {"description": summary}
+        summary_artifact = self._db.get_artifact(task_execution_id, "summary")
+        if summary_artifact and summary_artifact.content:
+            return {"description": summary_artifact.content}
 
         return {}
 
@@ -1363,12 +1371,15 @@ class FlowExecutor:
                 )
                 return
 
-        # Read the source node's SUMMARY.md for the child task description
-        summary = read_summary(task_exec.task_dir) or f"Filed from {task_exec.node_name}"
+        # Read the source node's summary artifact for the child task description
+        summary_artifact = self._db.get_artifact(source_task_id, "summary")
+        summary = (
+            summary_artifact.content if summary_artifact else f"Filed from {task_exec.node_name}"
+        )
 
         # Build child task params from source node output (ENGINE-029)
         parent_task = self._db.get_task(self._task_id) if self._task_id else None
-        child_params = self._build_child_params(task_exec.task_dir)
+        child_params = self._build_child_params(source_task_id)
         parent_title = parent_task.title if parent_task else "Filed task"
 
         child_task_id = self._db.create_task(
@@ -1413,11 +1424,16 @@ class FlowExecutor:
 
         # Build child task params from source node output (ENGINE-029)
         parent_task = self._db.get_task(self._task_id) if self._task_id else None
-        child_params = self._build_child_params(task_exec.task_dir)
+        child_params = self._build_child_params(source_task_id)
         parent_title = parent_task.title if parent_task else "Filed task"
 
         for edge in edges:
-            summary = read_summary(task_exec.task_dir) or f"Awaited from {task_exec.node_name}"
+            summary_artifact = self._db.get_artifact(source_task_id, "summary")
+            summary = (
+                summary_artifact.content
+                if summary_artifact
+                else f"Awaited from {task_exec.node_name}"
+            )
 
             child_task_id = self._db.create_task(
                 flow_name=edge.target or flow.name,
@@ -1609,11 +1625,8 @@ class FlowExecutor:
         if flow_run is None:
             raise ValueError(f"Flow run not found: {flow_run_id}")
 
-        # Re-create task execution with new generation
-        new_task_dir = create_task_dir(flow_run.data_dir, old_task.node_name, new_gen)
-
-        # Use the same prompt as the original but with updated task_dir
-        new_prompt = old_task.prompt_text.replace(old_task.task_dir, new_task_dir)
+        # Re-create task execution with the same prompt
+        new_prompt = old_task.prompt_text
 
         new_task_id = self._db.create_task_execution(
             flow_run_id=flow_run_id,
@@ -1622,7 +1635,7 @@ class FlowExecutor:
             generation=new_gen,
             context_mode=old_task.context_mode,
             cwd=old_task.cwd,
-            task_dir=new_task_dir,
+            task_dir="",
             prompt_text=new_prompt,
         )
 
@@ -1674,7 +1687,6 @@ class FlowExecutor:
                 edge = outgoing[0]
                 if edge.edge_type == EdgeType.UNCONDITIONAL and edge.target:
                     ctx_mode = get_context_mode(edge, self._flow)
-                    data_dir = self._data_dir or ""
                     expanded = self._expanded_prompts.get(edge.target, "")
                     next_task_id = self._create_task_execution(
                         flow_run_id=flow_run_id,
@@ -1682,7 +1694,6 @@ class FlowExecutor:
                         generation=1,
                         flow=self._flow,
                         expanded_prompt=expanded,
-                        data_dir=data_dir,
                         context_mode=ctx_mode,
                         predecessor_task_id=task_execution_id,
                     )
@@ -1696,7 +1707,6 @@ class FlowExecutor:
                 flow_run_id,
                 self._flow,
                 self._expanded_prompts,
-                self._data_dir or "",
                 self._budget or BudgetGuard(3600),
                 self._pending_tasks,
             )
@@ -1755,7 +1765,6 @@ class FlowExecutor:
         if flow_run is None:
             raise ValueError(f"Flow run not found: {flow_run_id}")
 
-        data_dir = flow_run.data_dir
         workspace = flow_run.default_workspace or "."
 
         # If the flow has no workspace, inject the resolved one
@@ -1775,7 +1784,6 @@ class FlowExecutor:
         # 4. Store shared state for control operations
         self._flow = flow
         self._flow_run_id = flow_run_id
-        self._data_dir = data_dir
         self._expanded_prompts = expanded_prompts
         self._budget = budget
         self._paused = False
@@ -1835,7 +1843,6 @@ class FlowExecutor:
                         task_execution_id=task_id,
                         flow=flow,
                         expanded_prompts=expanded_prompts,
-                        data_dir=data_dir,
                         budget=budget,
                         completed_queue=completed_queue,
                     )
@@ -1859,7 +1866,7 @@ class FlowExecutor:
             self._semaphore.release()
 
             should_stop = await self._process_completed_task(
-                completed_id, flow_run_id, flow, expanded_prompts, data_dir, budget, pending
+                completed_id, flow_run_id, flow, expanded_prompts, budget, pending
             )
             if should_stop:
                 return flow_run_id
@@ -2306,7 +2313,6 @@ class FlowExecutor:
         task_execution_id: str,
         flow: Flow,
         expanded_prompts: dict[str, str],
-        data_dir: str,
         budget: BudgetGuard,
         completed_queue: asyncio.Queue[str],
     ) -> None:
@@ -2588,25 +2594,6 @@ class FlowExecutor:
                                     },
                                 )
                             )
-                # Download DECISION.json from sandbox (ENGINE-066)
-                # The agent writes DECISION.json at /sandbox/DECISION.json inside the
-                # sandbox, but routing reads it from the host task directory.  Download
-                # it before _process_completed_task evaluates outgoing edges.  The
-                # download is best-effort: unconditional edges don't need it.
-                if use_sandbox and exit_code == 0:
-                    host_decision_path = str(Path(task_exec.task_dir) / "DECISION.json")
-                    # The agent mirrors the host .flowstate structure under /sandbox/,
-                    # so DECISION.json is at /sandbox/.flowstate/runs/<id>/tasks/<node>-<gen>/
-                    home = Path.home()
-                    try:
-                        relative_task_dir = Path(task_exec.task_dir).relative_to(home)
-                        sandbox_decision = f"/sandbox/{relative_task_dir}/DECISION.json"
-                    except ValueError:
-                        sandbox_decision = "/sandbox/.flowstate/tasks/DECISION.json"
-                    await self._sandbox_mgr.download_file(
-                        sandbox_decision,
-                        host_decision_path,
-                    )
             else:
                 # When the flow is being cancelled, still mark as "failed" (DB
                 # schema constraint) but skip the TASK_FAILED event -- the
@@ -2696,24 +2683,22 @@ class FlowExecutor:
         generation: int,
         flow: Flow,
         expanded_prompt: str,
-        data_dir: str,
         context_mode: ContextMode,
         predecessor_task_id: str | None = None,
     ) -> str:
-        """Create a task execution record and its task directory."""
-        task_dir = create_task_dir(data_dir, node.name, generation)
+        """Create a task execution record."""
         cwd = resolve_cwd(node, flow)
         cwd = self._apply_worktree_mapping(cwd)
 
         # Build the full prompt based on context mode
         if context_mode == ContextMode.HANDOFF and predecessor_task_id:
-            pred = self._db.get_task_execution(predecessor_task_id)
-            summary = read_summary(pred.task_dir) if pred else None
-            prompt = build_prompt_handoff(node, task_dir, cwd, summary)
+            artifact = self._db.get_artifact(predecessor_task_id, "summary")
+            summary = artifact.content if artifact else None
+            prompt = build_prompt_handoff(node, cwd, summary)
         elif context_mode == ContextMode.SESSION:
-            prompt = build_prompt_session(node, task_dir)
+            prompt = build_prompt_session(node)
         else:
-            prompt = build_prompt_none(node, task_dir, cwd)
+            prompt = build_prompt_none(node, cwd)
 
         # Use expanded prompt in the prompt text (replace the node.prompt with expanded version)
         # The prompt builders use node.prompt, so we need to substitute
@@ -2741,9 +2726,12 @@ class FlowExecutor:
             generation=generation,
             context_mode=context_mode.value,
             cwd=cwd,
-            task_dir=task_dir,
+            task_dir="",
             prompt_text=prompt,
         )
+
+        # Save the assembled prompt as an input artifact
+        self._db.save_artifact(task_id, "input", prompt, "text/markdown")
 
         # Append task management instructions after task creation so we have
         # the task_execution_id for API URLs (ENGINE-040)
@@ -2796,7 +2784,6 @@ class FlowExecutor:
         failed_task_id: str,
         pending: set[str],
         expanded_prompts: dict[str, str],
-        data_dir: str,
     ) -> None:
         """Apply the flow's on_error policy after a task failure."""
         # Don't apply on_error policy when the flow is being cancelled.
@@ -2830,7 +2817,6 @@ class FlowExecutor:
                             expanded_prompt=expanded_prompts.get(
                                 edge.target, flow.nodes[edge.target].prompt
                             ),
-                            data_dir=data_dir,
                             context_mode=ctx_mode,
                             predecessor_task_id=failed_task_id,
                         )
@@ -2844,7 +2830,6 @@ class FlowExecutor:
                         flow_run_id,
                         flow,
                         expanded_prompts,
-                        data_dir,
                         budget,
                         pending,
                     )

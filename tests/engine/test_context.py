@@ -1,8 +1,6 @@
-"""Tests for context assembly -- task dirs, prompt construction, template expansion."""
+"""Tests for context assembly -- prompt construction, template expansion."""
 
 from __future__ import annotations
-
-from pathlib import Path
 
 import pytest
 
@@ -15,10 +13,8 @@ from flowstate.engine.context import (
     build_prompt_none,
     build_prompt_session,
     build_routing_instructions,
-    create_task_dir,
     expand_templates,
     get_context_mode,
-    read_summary,
     resolve_cwd,
 )
 
@@ -58,42 +54,6 @@ def _make_edge(context: ContextMode | None = None) -> Edge:
 
 
 # ---------------------------------------------------------------------------
-# Tests: create_task_dir
-# ---------------------------------------------------------------------------
-
-
-class TestCreateTaskDir:
-    def test_create_task_dir(self, tmp_path: Path) -> None:
-        """Creates <tmp>/tasks/<name>-1/ and returns the correct path."""
-        run_dir = str(tmp_path / "run-abc")
-        result = create_task_dir(run_dir, "analyze", 1)
-        assert Path(result).exists()
-        assert result.endswith("analyze-1")
-
-    def test_create_task_dir_creates_parents(self, tmp_path: Path) -> None:
-        """Non-existent run_data_dir is created along with parents."""
-        run_dir = str(tmp_path / "deep" / "nested" / "run-xyz")
-        result = create_task_dir(run_dir, "build", 1)
-        assert Path(result).exists()
-        assert Path(run_dir).exists()
-
-    def test_create_task_dir_generation_2(self, tmp_path: Path) -> None:
-        """Generation 2 creates a directory ending with <name>-2."""
-        run_dir = str(tmp_path / "run-gen")
-        result = create_task_dir(run_dir, "implement", 2)
-        assert result.endswith("implement-2")
-        assert Path(result).is_dir()
-
-    def test_create_task_dir_idempotent(self, tmp_path: Path) -> None:
-        """Calling twice with the same args does not raise."""
-        run_dir = str(tmp_path / "run-idem")
-        result1 = create_task_dir(run_dir, "test", 1)
-        result2 = create_task_dir(run_dir, "test", 1)
-        assert result1 == result2
-        assert Path(result1).is_dir()
-
-
-# ---------------------------------------------------------------------------
 # Tests: build_prompt_handoff
 # ---------------------------------------------------------------------------
 
@@ -104,7 +64,6 @@ class TestBuildPromptHandoff:
         node = _make_node(prompt="Implement the feature")
         prompt = build_prompt_handoff(
             node=node,
-            task_dir="/home/user/.flowstate/runs/r1/tasks/implement-1",
             cwd="/project",
             predecessor_summary="Previous task analyzed the codebase.",
         )
@@ -127,7 +86,6 @@ class TestBuildPromptHandoff:
         node = _make_node()
         prompt = build_prompt_handoff(
             node=node,
-            task_dir="/task/dir",
             cwd="/project",
             predecessor_summary=None,
         )
@@ -139,7 +97,6 @@ class TestBuildPromptHandoff:
         node = _make_node()
         prompt = build_prompt_handoff(
             node=node,
-            task_dir="/task/dir",
             cwd="/project",
             predecessor_summary="",
         )
@@ -157,10 +114,7 @@ class TestBuildPromptSession:
     def test_build_prompt_session(self) -> None:
         """Session prompt contains node name, prompt, and curl-based summary upload."""
         node = _make_node(name="review", prompt="Review the implementation")
-        prompt = build_prompt_session(
-            node=node,
-            task_dir="/home/user/.flowstate/runs/r1/tasks/review-1",
-        )
+        prompt = build_prompt_session(node=node)
         assert "Next task: review" in prompt
         assert "Review the implementation" in prompt
         # Should use curl-based artifact upload with env var references
@@ -185,7 +139,6 @@ class TestBuildPromptNone:
         node = _make_node(prompt="Initialize the project")
         prompt = build_prompt_none(
             node=node,
-            task_dir="/task/init-1",
             cwd="/project",
         )
         assert "Your task" in prompt
@@ -211,7 +164,6 @@ class TestBuildPromptJoin:
         node = _make_node(name="merge", prompt="Merge the results")
         prompt = build_prompt_join(
             node=node,
-            task_dir="/task/merge-1",
             cwd="/project",
             member_summaries={
                 "worker_a": "Did analysis",
@@ -235,7 +187,6 @@ class TestBuildPromptJoin:
         node = _make_node(name="merge", prompt="Merge")
         prompt = build_prompt_join(
             node=node,
-            task_dir="/task/merge-1",
             cwd="/project",
             member_summaries={
                 "worker_a": "Did analysis",
@@ -352,35 +303,6 @@ class TestResolveCwd:
         flow = _make_flow(workspace=None)
         with pytest.raises(CwdResolutionError, match="No working directory"):
             resolve_cwd(node, flow)
-
-
-# ---------------------------------------------------------------------------
-# Tests: read_summary
-# ---------------------------------------------------------------------------
-
-
-class TestReadSummary:
-    def test_read_summary_exists(self, tmp_path: Path) -> None:
-        """Read SUMMARY.md that exists in the task dir."""
-        summary_file = tmp_path / "SUMMARY.md"
-        summary_file.write_text("I did the thing.\n- Changed file A\n- Result: success\n")
-
-        result = read_summary(str(tmp_path))
-        assert result is not None
-        assert "I did the thing." in result
-
-    def test_read_summary_missing(self, tmp_path: Path) -> None:
-        """Read SUMMARY.md when it does not exist -> None."""
-        result = read_summary(str(tmp_path))
-        assert result is None
-
-    def test_read_summary_empty(self, tmp_path: Path) -> None:
-        """Read an empty SUMMARY.md -> returns empty string (not None)."""
-        summary_file = tmp_path / "SUMMARY.md"
-        summary_file.write_text("")
-
-        result = read_summary(str(tmp_path))
-        assert result == ""
 
 
 # ---------------------------------------------------------------------------

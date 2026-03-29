@@ -15,7 +15,6 @@ from fastapi import APIRouter, Request
 from starlette.responses import Response
 
 from flowstate.dsl.parser import parse_flow
-from flowstate.engine.context import read_summary
 from flowstate.engine.executor import FlowExecutor
 from flowstate.engine.worktree import init_git_repo, is_git_repo
 from flowstate.server.app import FlowstateError
@@ -633,14 +632,13 @@ async def _compute_run_results(
             await asyncio.to_thread(_walk, ws_path, 0)
             file_changes = entries
 
-    # Collect task summaries from SUMMARY.md files
+    # Collect task summaries from DB artifacts
     task_summaries: dict[str, str] = {}
     task_executions = db.list_task_executions(run.id)
     for te in task_executions:
-        if te.task_dir:
-            summary = read_summary(te.task_dir)
-            if summary:
-                task_summaries[te.node_name] = summary
+        artifact = db.get_artifact(te.id, "summary")
+        if artifact and artifact.content:
+            task_summaries[te.node_name] = artifact.content
 
     return RunResultsResponse(
         workspace=workspace,

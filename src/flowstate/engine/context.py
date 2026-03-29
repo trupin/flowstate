@@ -1,18 +1,14 @@
-"""Context assembly -- task directory setup, prompt construction, and template expansion.
+"""Context assembly -- prompt construction and template expansion.
 
 Prepares everything needed before launching a Claude Code subprocess:
-- Creating task directories under ~/.flowstate/runs/<run-id>/tasks/
 - Constructing prompts based on context mode (handoff, session, none, join)
 - Expanding {{param}} template variables
 - Resolving the effective context mode from edge/flow configuration
-- Reading SUMMARY.md files from predecessor tasks
 """
 
 from __future__ import annotations
 
-import json
 import re
-from pathlib import Path
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
@@ -21,24 +17,6 @@ if TYPE_CHECKING:
 
 class CwdResolutionError(Exception):
     """Raised when neither node nor flow specifies a working directory."""
-
-
-def create_task_dir(run_data_dir: str, node_name: str, generation: int) -> str:
-    """Create the task directory and return its absolute path.
-
-    Creates: <run_data_dir>/tasks/<name>-<gen>/
-    Also creates <run_data_dir>/ if it does not exist.
-    """
-    run_path = Path(run_data_dir)
-    run_path.mkdir(parents=True, exist_ok=True)
-
-    tasks_path = run_path / "tasks"
-    tasks_path.mkdir(exist_ok=True)
-
-    task_dir = tasks_path / f"{node_name}-{generation}"
-    task_dir.mkdir(exist_ok=True)
-
-    return str(task_dir.resolve())
 
 
 def _build_directory_sections(cwd: str) -> str:
@@ -62,7 +40,6 @@ def _build_directory_sections(cwd: str) -> str:
 
 def build_prompt_handoff(
     node: Node,
-    task_dir: str,
     cwd: str,
     predecessor_summary: str | None,
 ) -> str:
@@ -88,7 +65,7 @@ def build_prompt_handoff(
     )
 
 
-def build_prompt_session(node: Node, task_dir: str) -> str:
+def build_prompt_session(node: Node) -> str:
     """Build the shorter session-mode prompt (resumed session).
 
     Does not include context or working directory sections since the full
@@ -109,7 +86,7 @@ def build_prompt_session(node: Node, task_dir: str) -> str:
     )
 
 
-def build_prompt_none(node: Node, task_dir: str, cwd: str) -> str:
+def build_prompt_none(node: Node, cwd: str) -> str:
     """Build prompt with no upstream context (fresh session, self-contained task)."""
     return (
         "You are executing a task in a Flowstate workflow.\n"
@@ -123,7 +100,6 @@ def build_prompt_none(node: Node, task_dir: str, cwd: str) -> str:
 
 def build_prompt_join(
     node: Node,
-    task_dir: str,
     cwd: str,
     member_summaries: dict[str, str | None],
 ) -> str:
@@ -193,40 +169,6 @@ def resolve_cwd(node: Node, flow: Flow) -> str:
     raise CwdResolutionError(
         f"No working directory for node '{node.name}': neither node.cwd nor flow.workspace is set"
     )
-
-
-def read_summary(task_dir: str) -> str | None:
-    """Read SUMMARY.md from a task directory.
-
-    Returns the file contents as a string, or None if the file does not exist.
-    """
-    summary_path = Path(task_dir) / "SUMMARY.md"
-    if summary_path.exists():
-        return summary_path.read_text()
-    return None
-
-
-def read_output_json(task_dir: str) -> dict[str, str | float | bool] | None:
-    """Read OUTPUT.json from a task directory and return scalar fields.
-
-    Returns a dict of scalar (str, int, float, bool) key-value pairs from the
-    JSON file, or None if the file does not exist or is unparseable.  Non-scalar
-    values (lists, dicts, null) are silently skipped.
-    """
-    output_path = Path(task_dir) / "OUTPUT.json"
-    if not output_path.exists():
-        return None
-    try:
-        raw = json.loads(output_path.read_text())
-    except (json.JSONDecodeError, OSError):
-        return None
-    if not isinstance(raw, dict):
-        return None
-    result: dict[str, str | float | bool] = {}
-    for key, value in raw.items():
-        if isinstance(value, str | int | float | bool):
-            result[key] = value
-    return result or None
 
 
 def build_task_management_instructions(
@@ -326,16 +268,6 @@ def build_cross_flow_instructions(target_flow_names: list[str]) -> str:
     )
 
 
-def write_task_input(task_dir: str, prompt: str) -> str:
-    """Write the assembled task prompt to INPUT.md in the task directory.
-
-    Returns the absolute path to the written file.
-    """
-    input_path = Path(task_dir) / "INPUT.md"
-    input_path.write_text(prompt)
-    return str(input_path)
-
-
 def build_routing_instructions(
     outgoing_edges: list[tuple[str, str]],
 ) -> str:
@@ -370,13 +302,3 @@ def build_routing_instructions(
         "```\n"
         "You MUST submit this decision before completing your task."
     )
-
-
-def create_judge_dir(run_data_dir: str, source_node: str, generation: int) -> str:
-    """Create judge directory: <run_data_dir>/judge/<source>-<gen>/.
-
-    Returns the absolute path to the created directory.
-    """
-    judge_dir = Path(run_data_dir) / "judge" / f"{source_node}-{generation}"
-    judge_dir.mkdir(parents=True, exist_ok=True)
-    return str(judge_dir)

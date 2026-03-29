@@ -3,21 +3,28 @@
 Replaces the real SubprocessManager with a deterministic mock that returns
 configurable stream-json output, supports per-node behavior configuration,
 controllable gates for timing-sensitive tests, and configurable judge decisions.
+
+Artifact writes (summary, decision, output) go through the DB via the
+FlowstateDB instance set on the mock, matching the real agent behavior
+of POSTing artifacts to the Flowstate API.
 """
 
 from __future__ import annotations
 
 import asyncio
 import json
+import os
+import re
 import threading
 from dataclasses import dataclass
-from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from flowstate.engine.subprocess_mgr import JudgeResult, StreamEvent, StreamEventType
 
 if TYPE_CHECKING:
     from collections.abc import AsyncGenerator
+
+    from flowstate.state.repository import FlowstateDB
 
 
 @dataclass
@@ -163,14 +170,14 @@ class MockSubprocessManager:
         result = await mock.run_judge(prompt, workspace)
     """
 
-    def __init__(self) -> None:
+    def __init__(self, db: FlowstateDB | None = None) -> None:
         self._behaviors: dict[str, NodeBehavior] = {}
         self._default_behavior: NodeBehavior = NodeBehavior.success()
         self._judge_decisions: dict[str, list[JudgeDecision]] = {}
         self._judge_call_counts: dict[str, int] = {}
         self._gates: dict[str, threading.Event] = {}
-        self._task_dirs: dict[str, Path] = {}
         self._call_history: list[dict[str, str]] = []
+        self._db = db
 
     def configure_node(self, node_name: str, behavior: NodeBehavior) -> None:
         """Set the behavior for a specific node.
@@ -228,7 +235,6 @@ class MockSubprocessManager:
         self._judge_decisions.clear()
         self._judge_call_counts.clear()
         self._gates.clear()
-        self._task_dirs.clear()
         self._call_history.clear()
 
     @property
@@ -271,39 +277,28 @@ class MockSubprocessManager:
         return self._behaviors.get(node_name, self._default_behavior)
 
     def _write_summary(self, node_name: str, prompt: str, behavior: NodeBehavior) -> None:
-        """Write SUMMARY.md to the task directory if summary_content is set."""
-        import re
+        """Save summary artifact to DB if summary_content is set.
 
+        Extracts the task execution ID from the FLOWSTATE_TASK_ID environment
+        variable (set by the engine before launching the subprocess) and saves
+        the summary as a DB artifact.
+        """
         if not behavior.summary_content:
             return
 
-        # Look for SUMMARY.md write instruction in the prompt.
-        # The engine includes a line like:
-        #   "When you are done, you MUST write a SUMMARY.md to /path/tasks/node-gen/SUMMARY.md"
-        # Or for orchestrator instructions:
-        #   "Write SUMMARY.md to: /path/tasks/node-gen/SUMMARY.md"
-        m = re.search(r"SUMMARY\.md to[: ]+(.+)/SUMMARY\.md", prompt)
-        if m:
-            task_dir = Path(m.group(1))
-            task_dir.mkdir(parents=True, exist_ok=True)
-            (task_dir / "SUMMARY.md").write_text(behavior.summary_content)
+        if self._db is None:
             return
 
-        # Fallback: scan for task directory paths (/.flowstate/.../tasks/...)
-        for line in prompt.splitlines():
-            stripped = line.strip()
-            if "/.flowstate/" in stripped and "/tasks/" in stripped and "SUMMARY" not in stripped:
-                parts = stripped.split()
-                for part in parts:
-                    if "/.flowstate/" in part and "/tasks/" in part:
-                        # Only match directory paths, not file paths
-                        candidate = Path(part.rstrip("/").rstrip("."))
-                        if candidate.suffix:
-                            continue  # Skip file paths like INPUT.md
-                        if candidate.exists() or candidate.parent.exists():
-                            candidate.mkdir(parents=True, exist_ok=True)
-                            (candidate / "SUMMARY.md").write_text(behavior.summary_content)
-                            return
+        # The engine sets FLOWSTATE_TASK_ID in the process environment
+        task_id = os.environ.get("FLOWSTATE_TASK_ID")
+        if not task_id:
+            # Fallback: extract from prompt (curl example contains the env var reference)
+            # Try to find it in the prompt via a regex
+            m = re.search(r"/tasks/([0-9a-f-]{36})/artifacts/", prompt)
+            if m:
+                task_id = m.group(1)
+        if task_id:
+            self._db.save_artifact(task_id, "summary", behavior.summary_content, "text/markdown")
 
     @staticmethod
     def _to_stream_event_type(type_str: str) -> StreamEventType:

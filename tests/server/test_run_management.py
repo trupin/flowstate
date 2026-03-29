@@ -893,12 +893,13 @@ class TestGetRunResults:
 
         client = _make_test_client(db_mock=mock_db)
 
+        # Mock get_artifact to return a summary artifact
+        mock_artifact = MagicMock()
+        mock_artifact.content = "Created hello.txt"
+        mock_db.get_artifact.return_value = mock_artifact
+
         with (
             patch("flowstate.server.routes.is_git_repo", return_value=True),
-            patch(
-                "flowstate.server.routes.read_summary",
-                return_value="Created hello.txt",
-            ),
             patch("subprocess.check_output", return_value="diff --git a/hello.txt\n"),
             patch("pathlib.Path.is_dir", return_value=True),
         ):

@@ -12,9 +12,7 @@ invocation via the SubprocessManager, response parsing, and failure handling
 
 from __future__ import annotations
 
-import json
 from dataclasses import dataclass
-from pathlib import Path
 from typing import TYPE_CHECKING
 
 from flowstate.engine.subprocess_mgr import JudgeError, JudgeResult
@@ -217,79 +215,3 @@ class JudgeProtocol:
             reasoning=result.reasoning,
             confidence=result.confidence,
         )
-
-
-def write_judge_request(judge_dir: str, context: JudgeContext) -> str:
-    """Write REQUEST.md with judge evaluation context.
-
-    Uses the same content as build_judge_prompt() to produce the file.
-    Returns the absolute path to the written file.
-    """
-    request_path = Path(judge_dir) / "REQUEST.md"
-    request_path.write_text(build_judge_prompt(context))
-    return str(request_path)
-
-
-def write_judge_decision(judge_dir: str, decision: str, reasoning: str, confidence: float) -> str:
-    """Write DECISION.json with structured judge decision.
-
-    Returns the absolute path to the written file.
-    """
-    decision_path = Path(judge_dir) / "DECISION.json"
-    data = {
-        "decision": decision,
-        "reasoning": reasoning,
-        "confidence": confidence,
-    }
-    decision_path.write_text(json.dumps(data, indent=2))
-    return str(decision_path)
-
-
-def read_judge_decision(judge_dir: str) -> JudgeDecision:
-    """Read and parse DECISION.json from judge directory.
-
-    Returns a JudgeDecision with the parsed fields.
-    Raises FileNotFoundError if DECISION.json does not exist.
-    Raises ValueError if the JSON is malformed or fields are invalid.
-    """
-    decision_path = Path(judge_dir) / "DECISION.json"
-    if not decision_path.exists():
-        raise FileNotFoundError(f"DECISION.json not found in {judge_dir}")
-
-    raw = decision_path.read_text()
-    try:
-        data = json.loads(raw)
-    except json.JSONDecodeError as e:
-        raise ValueError(f"DECISION.json contains invalid JSON: {e}") from e
-
-    if not isinstance(data, dict):
-        raise ValueError(f"DECISION.json must be a JSON object, got {type(data).__name__}")
-
-    # Validate required fields
-    if "decision" not in data:
-        raise ValueError("DECISION.json missing required field 'decision'")
-    if "reasoning" not in data:
-        raise ValueError("DECISION.json missing required field 'reasoning'")
-    if "confidence" not in data:
-        raise ValueError("DECISION.json missing required field 'confidence'")
-
-    decision_val = data["decision"]
-    reasoning_val = data["reasoning"]
-    confidence_val = data["confidence"]
-
-    if not isinstance(decision_val, str):
-        raise ValueError(f"'decision' must be a string, got {type(decision_val).__name__}")
-    if not isinstance(reasoning_val, str):
-        raise ValueError(f"'reasoning' must be a string, got {type(reasoning_val).__name__}")
-    if not isinstance(confidence_val, int | float):
-        raise ValueError(f"'confidence' must be a number, got {type(confidence_val).__name__}")
-
-    confidence_float = float(confidence_val)
-    if not (0.0 <= confidence_float <= 1.0):
-        raise ValueError(f"'confidence' must be between 0.0 and 1.0, got {confidence_float}")
-
-    return JudgeDecision(
-        target=decision_val,
-        reasoning=reasoning_val,
-        confidence=confidence_float,
-    )

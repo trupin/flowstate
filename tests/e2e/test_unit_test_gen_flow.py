@@ -3,7 +3,7 @@
 Tests a complex flow with conditional routing, retry loops, and multi-path
 convergence using a mock subprocess manager. No real Claude Code processes
 are launched. The flow uses judge=false (self-report mode), so the mock
-writes DECISION.json files to drive routing decisions.
+saves decision artifacts to the DB to drive routing decisions.
 
 Test cases:
 1. Happy path: no defects, PR passes first time
@@ -17,7 +17,7 @@ Test cases:
 from __future__ import annotations
 
 import json
-import re
+import os
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -44,20 +44,22 @@ FLOW_PATH = Path(__file__).parent / "flows" / "unit_test_gen.flow"
 
 
 class RoutingMockSubprocessManager:
-    """Mock satisfying the Harness protocol that writes DECISION.json for self-report routing.
+    """Mock satisfying the Harness protocol that saves decision artifacts via DB.
 
-    For each conditional node, the mock writes a DECISION.json to the task_dir
-    with the routing decision. The task_dir is extracted from the prompt text
-    where the engine includes the "Write coordination files to <path>/" line.
+    For each conditional node, the mock saves a decision artifact to the DB
+    with the routing decision. The task execution ID is extracted from the
+    FLOWSTATE_TASK_ID environment variable set by the engine.
     """
 
-    def __init__(self, decisions: dict[str, str]) -> None:
+    def __init__(self, decisions: dict[str, str], db: FlowstateDB | None = None) -> None:
         """Initialize with routing decisions.
 
         Args:
             decisions: Maps node_name to target_node_name for conditional routing.
+            db: FlowstateDB instance for saving artifacts.
         """
         self._decisions = decisions
+        self._db = db
         self.executed_nodes: list[str] = []
 
     async def run_task(
@@ -70,29 +72,29 @@ class RoutingMockSubprocessManager:
     ) -> AsyncGenerator[StreamEvent, None]:
         """Simulate running a task subprocess.
 
-        Extracts the node name and task_dir from the prompt, writes DECISION.json
-        if this node has a routing decision, writes SUMMARY.md, then yields
-        standard success events.
+        Extracts the node name from the prompt, saves decision and summary
+        artifacts to the DB, then yields standard success events.
         """
         node_name = self._extract_node_name(prompt)
-        task_dir = self._extract_task_dir(prompt)
         self.executed_nodes.append(node_name)
 
-        if task_dir:
-            task_dir_path = Path(task_dir)
-            task_dir_path.mkdir(parents=True, exist_ok=True)
+        # Get the task execution ID from the environment (set by the engine)
+        task_id = os.environ.get("FLOWSTATE_TASK_ID")
 
-            # Write DECISION.json if this node has a routing decision
+        if task_id and self._db:
+            # Save decision artifact if this node has a routing decision
             if node_name in self._decisions:
                 decision_data = {
                     "decision": self._decisions[node_name],
                     "reasoning": f"Mock routing for {node_name}",
                     "confidence": 0.95,
                 }
-                (task_dir_path / "DECISION.json").write_text(json.dumps(decision_data))
+                self._db.save_artifact(
+                    task_id, "decision", json.dumps(decision_data), "application/json"
+                )
 
-            # Write SUMMARY.md
-            (task_dir_path / "SUMMARY.md").write_text(f"Completed {node_name}")
+            # Save summary artifact
+            self._db.save_artifact(task_id, "summary", f"Completed {node_name}", "text/markdown")
 
         # Yield standard success events
         yield StreamEvent(
@@ -152,22 +154,6 @@ class RoutingMockSubprocessManager:
                 return stripped[len("[flowstate:node=") : -1]
         return "unknown"
 
-    @staticmethod
-    def _extract_task_dir(prompt: str) -> str | None:
-        """Extract the task directory path from the prompt.
-
-        The engine includes a line like:
-            Write coordination files to /path/tasks/node-gen/.
-        """
-        m = re.search(r"Write coordination files to (.+)/\.\s*$", prompt, re.MULTILINE)
-        if m:
-            return m.group(1)
-        # Fallback: look for SUMMARY.md path
-        m = re.search(r"SUMMARY\.md to (.+)/SUMMARY\.md", prompt)
-        if m:
-            return m.group(1)
-        return None
-
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -209,7 +195,7 @@ async def _run_flow(
     flow = _load_flow()
     db = _make_db()
     events, callback = _collect_events()
-    mock_mgr = RoutingMockSubprocessManager(decisions)
+    mock_mgr = RoutingMockSubprocessManager(decisions, db=db)
     executor = FlowExecutor(db, callback, mock_mgr, worktree_cleanup=False)
 
     flow_run_id = await executor.execute(
