@@ -2558,9 +2558,18 @@ class FlowExecutor:
                 # it before _process_completed_task evaluates outgoing edges.  The
                 # download is best-effort: unconditional edges don't need it.
                 if use_sandbox and exit_code == 0:
+                    host_decision_path = str(Path(task_exec.task_dir) / "DECISION.json")
+                    # The agent mirrors the host .flowstate structure under /sandbox/,
+                    # so DECISION.json is at /sandbox/.flowstate/runs/<id>/tasks/<node>-<gen>/
+                    home = Path.home()
+                    try:
+                        relative_task_dir = Path(task_exec.task_dir).relative_to(home)
+                        sandbox_decision = f"/sandbox/{relative_task_dir}/DECISION.json"
+                    except ValueError:
+                        sandbox_decision = "/sandbox/.flowstate/tasks/DECISION.json"
                     await self._sandbox_mgr.download_file(
-                        "/sandbox/DECISION.json",
-                        str(Path(task_exec.task_dir) / "DECISION.json"),
+                        sandbox_decision,
+                        host_decision_path,
                     )
             else:
                 # When the flow is being cancelled, still mark as "failed" (DB
