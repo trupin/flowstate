@@ -91,25 +91,6 @@ def is_existing_worktree(path: str) -> bool:
     return git_path.is_file()
 
 
-async def setup_worktree_if_needed(
-    workspace: str,
-    run_id: str,
-    enable_worktree: bool,
-) -> WorktreeInfo | None:
-    """Create a worktree if the workspace is a git repo and worktree mode is enabled.
-
-    Returns WorktreeInfo if a worktree was created, None otherwise.
-    Catches WorktreeError internally and returns None on failure.
-    """
-    if not enable_worktree or not is_git_repo(workspace) or is_existing_worktree(workspace):
-        return None
-    try:
-        return await create_worktree(workspace, run_id)
-    except WorktreeError:
-        logger.warning("Failed to create worktree, using workspace directly", exc_info=True)
-        return None
-
-
 async def create_worktree(workspace: str, run_id: str) -> WorktreeInfo:
     """Create a git worktree for a flow run.
 
