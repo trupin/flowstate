@@ -385,7 +385,7 @@
 | ENGINE-063 | Pre-create sandbox before ACP connection (fix stdout interference) | engine | P0       | ENGINE-060  | done |
 | ENGINE-064 | Use custom Dockerfile for sandbox (fix image pull timeout)        | engine | P0       | ENGINE-063  | done |
 | ENGINE-065 | Redesign sandbox to use named persistent sandbox                 | engine | P0       | ENGINE-064  | done |
-| ENGINE-066 | Download DECISION.json from sandbox after task completion         | engine | P0       | ENGINE-065  | todo |
+| ENGINE-066 | Download DECISION.json from sandbox after task completion         | engine | P0       | ENGINE-065  | done | |
 
 
 ### Phase 24a — Lumon DSL Support
