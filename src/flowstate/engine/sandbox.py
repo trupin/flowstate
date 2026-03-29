@@ -6,9 +6,13 @@ Flowstate reuses this sandbox for all tasks by piping commands through
 ``openshell sandbox connect`` via a wrapper script.
 """
 
+import asyncio
+import logging
 import shlex
 from dataclasses import dataclass
 from pathlib import Path
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -34,3 +38,31 @@ class SandboxManager:
         """
         agent_cmd = " ".join(shlex.quote(c) for c in command)
         return [self._connect_wrapper_path(), self.sandbox_name, agent_cmd]
+
+    async def download_file(self, sandbox_path: str, host_path: str) -> bool:
+        """Download a file from the sandbox to the host.
+
+        Uses ``openshell sandbox download`` to copy a file from the sandbox
+        filesystem to a local path.  Returns True on success, False on failure
+        (e.g. the file does not exist inside the sandbox).
+        """
+        try:
+            proc = await asyncio.create_subprocess_exec(
+                "openshell",
+                "sandbox",
+                "download",
+                self.sandbox_name,
+                sandbox_path,
+                host_path,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+            )
+            await proc.wait()
+            return proc.returncode == 0
+        except OSError:
+            logger.debug(
+                "Failed to download %s from sandbox %s: openshell not available",
+                sandbox_path,
+                self.sandbox_name,
+            )
+            return False

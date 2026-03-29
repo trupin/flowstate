@@ -1,6 +1,9 @@
 """Tests for the SandboxManager (persistent sandbox connect-wrapper model)."""
 
 from pathlib import Path
+from unittest.mock import AsyncMock, patch
+
+import pytest
 
 from flowstate.engine.sandbox import SandboxManager
 
@@ -145,3 +148,88 @@ class TestNoLegacyApi:
         assert not hasattr(mgr, "register")
         assert not hasattr(mgr, "destroy")
         assert not hasattr(mgr, "destroy_all")
+
+
+# ---------------------------------------------------------------------------
+# download_file
+# ---------------------------------------------------------------------------
+
+
+class TestDownloadFile:
+    """download_file() calls openshell sandbox download and returns success/failure."""
+
+    @pytest.mark.asyncio
+    async def test_download_success(self) -> None:
+        """Returns True when openshell exits with code 0."""
+        mgr = SandboxManager(sandbox_name="test-sandbox")
+        mock_proc = AsyncMock()
+        mock_proc.returncode = 0
+        mock_proc.wait = AsyncMock()
+
+        with patch("asyncio.create_subprocess_exec", return_value=mock_proc) as mock_exec:
+            result = await mgr.download_file("/sandbox/DECISION.json", "/host/path/DECISION.json")
+
+        assert result is True
+        mock_exec.assert_called_once_with(
+            "openshell",
+            "sandbox",
+            "download",
+            "test-sandbox",
+            "/sandbox/DECISION.json",
+            "/host/path/DECISION.json",
+            stdout=-1,  # asyncio.subprocess.PIPE
+            stderr=-1,
+        )
+        mock_proc.wait.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_download_failure_nonzero_exit(self) -> None:
+        """Returns False when openshell exits with non-zero code (file not found)."""
+        mgr = SandboxManager(sandbox_name="test-sandbox")
+        mock_proc = AsyncMock()
+        mock_proc.returncode = 1
+        mock_proc.wait = AsyncMock()
+
+        with patch("asyncio.create_subprocess_exec", return_value=mock_proc):
+            result = await mgr.download_file("/sandbox/DECISION.json", "/host/path/DECISION.json")
+
+        assert result is False
+
+    @pytest.mark.asyncio
+    async def test_download_oserror(self) -> None:
+        """Returns False when openshell binary is not found (OSError)."""
+        mgr = SandboxManager(sandbox_name="test-sandbox")
+
+        with patch("asyncio.create_subprocess_exec", side_effect=OSError("not found")):
+            result = await mgr.download_file("/sandbox/DECISION.json", "/host/path/DECISION.json")
+
+        assert result is False
+
+    @pytest.mark.asyncio
+    async def test_download_uses_sandbox_name(self) -> None:
+        """download_file passes the correct sandbox name to openshell."""
+        mgr = SandboxManager(sandbox_name="my-custom-sandbox")
+        mock_proc = AsyncMock()
+        mock_proc.returncode = 0
+        mock_proc.wait = AsyncMock()
+
+        with patch("asyncio.create_subprocess_exec", return_value=mock_proc) as mock_exec:
+            await mgr.download_file("/sandbox/file.txt", "/host/file.txt")
+
+        args = mock_exec.call_args[0]
+        assert args[3] == "my-custom-sandbox"
+
+    @pytest.mark.asyncio
+    async def test_download_passes_paths(self) -> None:
+        """download_file passes sandbox_path and host_path correctly."""
+        mgr = SandboxManager()
+        mock_proc = AsyncMock()
+        mock_proc.returncode = 0
+        mock_proc.wait = AsyncMock()
+
+        with patch("asyncio.create_subprocess_exec", return_value=mock_proc) as mock_exec:
+            await mgr.download_file("/sandbox/output.json", "/tmp/output.json")
+
+        args = mock_exec.call_args[0]
+        assert args[4] == "/sandbox/output.json"
+        assert args[5] == "/tmp/output.json"

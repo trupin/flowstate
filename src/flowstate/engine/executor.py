@@ -2552,6 +2552,16 @@ class FlowExecutor:
                                     },
                                 )
                             )
+                # Download DECISION.json from sandbox (ENGINE-066)
+                # The agent writes DECISION.json at /sandbox/DECISION.json inside the
+                # sandbox, but routing reads it from the host task directory.  Download
+                # it before _process_completed_task evaluates outgoing edges.  The
+                # download is best-effort: unconditional edges don't need it.
+                if use_sandbox and exit_code == 0:
+                    await self._sandbox_mgr.download_file(
+                        "/sandbox/DECISION.json",
+                        str(Path(task_exec.task_dir) / "DECISION.json"),
+                    )
             else:
                 # When the flow is being cancelled, still mark as "failed" (DB
                 # schema constraint) but skip the TASK_FAILED event -- the

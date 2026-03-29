@@ -7492,3 +7492,128 @@ class TestSandboxNewHarnessInstance:
         for call in construction_calls:
             assert call["command"][0].endswith("connect-wrapper.sh")
             assert call["command"][1] == "my-custom-sandbox"
+
+
+# ---------------------------------------------------------------------------
+# Sandbox DECISION.json download (ENGINE-066)
+# ---------------------------------------------------------------------------
+
+
+class TestSandboxDecisionDownload:
+    """ENGINE-066: Download DECISION.json from sandbox after task completion."""
+
+    async def test_download_called_for_sandboxed_task(self) -> None:
+        """After a sandboxed task exits 0, download_file is called for DECISION.json."""
+        db = _make_db()
+        _events, callback = _collect_events()
+        mock_mgr = _make_sandboxed_mock()
+        executor = FlowExecutor(db, callback, mock_mgr, max_concurrent=4)
+
+        flow = _make_sandbox_flow(sandbox=True)
+
+        download_calls: list[tuple[str, str]] = []
+        original_download = AsyncMock(return_value=True)
+
+        async def track_download(sandbox_path: str, host_path: str) -> bool:
+            download_calls.append((sandbox_path, host_path))
+            return await original_download(sandbox_path, host_path)
+
+        with (
+            patch(
+                "flowstate.engine.acp_client.AcpHarness",
+                side_effect=lambda command, env=None, init_timeout=30.0, session_cwd=None: mock_mgr,
+            ),
+            patch.object(executor._sandbox_mgr, "download_file", side_effect=track_download),
+        ):
+            await executor.execute(flow, {}, "/workspace")
+
+        # download_file should be called once per sandboxed task that exits 0
+        # (all 3 nodes: start, work, finish)
+        assert len(download_calls) == 3
+        for sandbox_path, host_path in download_calls:
+            assert sandbox_path == "/sandbox/DECISION.json"
+            assert host_path.endswith("DECISION.json")
+
+    async def test_no_download_for_non_sandboxed_task(self) -> None:
+        """Non-sandboxed tasks do not trigger download_file."""
+        db = _make_db()
+        _events, callback = _collect_events()
+        mock_mgr = MockSubprocessManager()
+        executor = FlowExecutor(db, callback, mock_mgr, max_concurrent=4)
+
+        flow = _make_sandbox_flow(sandbox=False)
+
+        with patch.object(
+            executor._sandbox_mgr, "download_file", new_callable=AsyncMock
+        ) as mock_download:
+            await executor.execute(flow, {}, "/workspace")
+
+        mock_download.assert_not_called()
+
+    async def test_no_download_on_task_failure(self) -> None:
+        """When a sandboxed task fails (exit code != 0), download is skipped."""
+        db = _make_db()
+        _events, callback = _collect_events()
+        mock_mgr = _make_sandboxed_mock()
+        # Make the 'work' node fail
+        mock_mgr.task_responses["work"] = (1, [])
+        executor = FlowExecutor(db, callback, mock_mgr, max_concurrent=4)
+
+        # Use ABORT so the flow terminates immediately on failure instead
+        # of pausing (which would cause the test to hang).
+        flow = _make_sandbox_flow(sandbox=True)
+        flow = Flow(
+            name=flow.name,
+            budget_seconds=flow.budget_seconds,
+            on_error=ErrorPolicy.ABORT,
+            context=flow.context,
+            workspace=flow.workspace,
+            nodes=flow.nodes,
+            edges=flow.edges,
+            sandbox=flow.sandbox,
+            sandbox_policy=flow.sandbox_policy,
+        )
+
+        download_calls: list[tuple[str, str]] = []
+
+        async def track_download(sandbox_path: str, host_path: str) -> bool:
+            download_calls.append((sandbox_path, host_path))
+            return True
+
+        with (
+            patch(
+                "flowstate.engine.acp_client.AcpHarness",
+                side_effect=lambda command, env=None, init_timeout=30.0, session_cwd=None: mock_mgr,
+            ),
+            patch.object(executor._sandbox_mgr, "download_file", side_effect=track_download),
+        ):
+            await executor.execute(flow, {}, "/workspace")
+
+        # Only 'start' node succeeds (entry task before 'work' fails).
+        # 'work' fails so no download for it; 'finish' never runs.
+        assert len(download_calls) == 1  # just the 'start' entry node
+
+    async def test_download_failure_is_silent(self) -> None:
+        """If download_file returns False, the flow still completes normally."""
+        db = _make_db()
+        _events, callback = _collect_events()
+        mock_mgr = _make_sandboxed_mock()
+        executor = FlowExecutor(db, callback, mock_mgr, max_concurrent=4)
+
+        flow = _make_sandbox_flow(sandbox=True)
+
+        with (
+            patch(
+                "flowstate.engine.acp_client.AcpHarness",
+                side_effect=lambda command, env=None, init_timeout=30.0, session_cwd=None: mock_mgr,
+            ),
+            patch.object(
+                executor._sandbox_mgr, "download_file", new_callable=AsyncMock, return_value=False
+            ),
+        ):
+            flow_run_id = await executor.execute(flow, {}, "/workspace")
+
+        # Flow should still complete successfully even when download fails
+        run = db.get_flow_run(flow_run_id)
+        assert run is not None
+        assert run.status == "completed"
