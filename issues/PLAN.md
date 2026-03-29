@@ -392,7 +392,7 @@
 
 | Issue   | Title                                                              | Domain | Priority | Depends On | Status |
 | ------- | ------------------------------------------------------------------ | ------ | -------- | ---------- | ------ |
-| DSL-014 | Add lumon and lumon_config settings to flow and node declarations  | dsl    | P0       | —          | todo   |
+| DSL-014 | Add lumon and lumon_config settings to flow and node declarations  | dsl    | P0       | —          | done |
 
 
 ### Phase 24b — Lumon Engine Integration
