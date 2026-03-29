@@ -96,8 +96,8 @@ A running instance of a node. Each task execution:
 - Is backed by a Claude Code subprocess with its own session (or a resumed session in `session` mode)
 - Runs in the task's **cwd** (from node declaration, or inherited from flow-level `workspace`)
 - Has a **generation** counter (incremented on cycle re-entry)
-- Has a dedicated **task directory** at `~/.flowstate/runs/<run-id>/tasks/<name>-<generation>/`
-- Must write a `SUMMARY.md` to its task directory upon completion
+- Has a dedicated **task execution** record in the database with associated artifacts
+- Must submit a summary artifact via the Flowstate API upon completion
 - Streams output to the web UI in real time
 
 ### 2.5 Routing (Judge vs Self-Report)
@@ -105,7 +105,7 @@ A running instance of a node. Each task execution:
 When a node has conditional outgoing edges, the engine needs a routing decision. Two modes:
 
 **Judge mode** (`judge = true`): A separate Claude Code subprocess evaluates the conditions. The judge:
-1. Reads the completed task's `SUMMARY.md`
+1. Reads the completed task's summary artifact from the database
 2. Optionally inspects the task's cwd
 3. Evaluates the `when` conditions on all outgoing edges
 4. Selects exactly one edge to transition through
@@ -113,7 +113,7 @@ When a node has conditional outgoing edges, the engine needs a routing decision.
 
 Judges have **read-only** access to the task's cwd.
 
-**Self-report mode** (`judge = false`, the default): The task agent itself decides which transition to take by writing a `DECISION.json` file to its task directory. The file contains `{"decision": "<target>", "reasoning": "...", "confidence": 0.9}`. This avoids spawning a separate subprocess for routing and is faster.
+**Self-report mode** (`judge = false`, the default): The task agent itself decides which transition to take by submitting a `decision` artifact to the Flowstate API. The artifact contains `{"decision": "<target>", "reasoning": "...", "confidence": 0.9}`. This avoids spawning a separate subprocess for routing and is faster.
 
 The `judge` attribute can be set at flow level (default for all nodes) or overridden per node.
 
@@ -128,11 +128,11 @@ Each task runs in its own **cwd** (current working directory). This is where the
 
 `workspace` is optional. If omitted, the engine auto-generates an isolated workspace directory per run.
 
-**Worktree isolation** (`worktree = true`, the default): When the resolved workspace is a git repository, the engine creates a git worktree for each flow run. This provides complete file-level isolation between concurrent runs without duplicating the full repo. Worktrees are cleaned up after the run completes (configurable via `worktree_cleanup` in config).
+**Worktree isolation** (`worktree = true`, the default): When the resolved workspace is a git repository, the engine creates a separate git worktree per node. Worktree references flow along edges: linear edges reuse the predecessor's worktree, fork edges create new branches, and join edges merge all branches. This provides complete file-level isolation between parallel tasks. See Section 9.7.
 
 Tasks in the same flow can share a cwd (common for single-repo workflows) or each operate on different directories (multi-repo workflows).
 
-**Parallel safety**: When forked tasks share the same cwd, they should operate on different files. Git worktree isolation helps when `max_parallel > 1`.
+**Parallel safety**: Forked tasks automatically get separate worktrees, so parallel agents cannot conflict on the same files.
 
 ### 2.7 Flowstate Data Directory
 
@@ -140,29 +140,14 @@ All flowstate metadata lives in **`~/.flowstate/`**, completely separated from p
 
 ```
 ~/.flowstate/
-├── flowstate.db                ← SQLite database (flows, runs, tasks, logs)
+├── flowstate.db                ← SQLite database (flows, runs, tasks, artifacts, logs)
 ├── config.toml                 ← global configuration (optional)
-├── workspaces/                 ← auto-generated workspaces (when flow omits workspace)
-│   └── <flow-name>/
-│       └── <run-id>/
-└── runs/
-    └── <run-id>/
-        ├── tasks/
-        │   ├── analyze-1/
-        │   │   ├── INPUT.md        ← assembled prompt (written by engine)
-        │   │   ├── SUMMARY.md      ← required: what the task did and its outcome
-        │   │   ├── DECISION.json   ← self-report routing (when judge=false + conditional edges)
-        │   │   ├── OUTPUT.json     ← structured output (for cross-flow filing)
-        │   │   └── (scratch files)
-        │   ├── implement-1/
-        │   │   └── SUMMARY.md
-        │   └── implement-2/        ← generation 2 (cycle re-entry)
-        │       └── SUMMARY.md
-        └── judge/                   ← judge evaluation data (when judge=true)
-            └── review-1/
-                ├── REQUEST.md       ← judge prompt (written by engine)
-                └── DECISION.json    ← judge decision
+└── workspaces/                 ← auto-generated workspaces (when flow omits workspace)
+    └── <flow-name>/
+        └── <run-id>/
 ```
+
+All task coordination data (prompts, summaries, routing decisions, cross-flow output, judge evaluations) is stored in the database via the artifact API. No per-run directories are created on disk. See Section 9.6.
 
 ### 2.8 Context Mode
 
@@ -170,12 +155,12 @@ Determines how context flows from one task to the next along an edge. Two modes:
 
 | Mode | Session | Context source | Fork-join compatible |
 |------|---------|---------------|---------------------|
-| `handoff` | Fresh session | Previous task's `SUMMARY.md` injected into prompt | Yes |
+| `handoff` | Fresh session | Previous task's summary artifact injected into prompt | Yes |
 | `session` | Resumed session (`--resume`) | Full conversation history from previous task | No (linear/conditional only) |
 
 A third option, `none`, starts a fresh session with no upstream context (only the task's own prompt).
 
-**`handoff`** (recommended default): Each task starts a fresh Claude Code session. The previous task's `SUMMARY.md` is read from `~/.flowstate/runs/<run-id>/tasks/` and injected into the new task's prompt. Clean boundaries, predictable context size, works everywhere — including across different working directories.
+**`handoff`** (recommended default): Each task starts a fresh Claude Code session. The previous task's summary artifact is read from the database and injected into the new task's prompt. Clean boundaries, predictable context size, works everywhere — including across different working directories and sandboxed environments.
 
 **`session`**: The next task resumes the previous task's Claude Code session via `--resume <session_id>`. The agent retains full conversation history. Best for linear flows where deep context continuity is critical. **Not allowed on fork edges** — sessions cannot be cloned into parallel instances. Note: if the next task has a different cwd, the resumed session runs in the new cwd.
 
@@ -278,7 +263,8 @@ Keywords:       flow, entry, task, exit, wait, fence, atomic,
                 when, input, output, budget, workspace, on_error,
                 context, prompt, cwd, judge, worktree, max_parallel,
                 skip_permissions, harness, schedule, on_overlap, delay,
-                files, awaits, after, at, subtasks, sandbox, sandbox_policy
+                files, awaits, after, at, subtasks, sandbox, sandbox_policy,
+                lumon, lumon_config
 Operators:      ->  =  [  ]  {  }  ,  :
 Template vars:  {{identifier}}
 ```
@@ -299,6 +285,8 @@ flow <name> {
     skip_permissions = true | false       // optional — default: false
     sandbox = true | false                // optional — default: false (OpenShell sandbox isolation)
     sandbox_policy = <path>               // optional — path to OpenShell policy YAML
+    lumon = true | false                  // optional — default: false (Lumon language-level security)
+    lumon_config = <path>                 // optional — path to .lumon.json plugin contracts
     schedule = <cron_expression>          // optional — recurring flow
     on_overlap = skip | queue | parallel  // optional — default: skip
 
@@ -314,13 +302,17 @@ flow <name> {
 
 `workspace` is optional — if omitted, the engine auto-generates a workspace per run at `~/.flowstate/workspaces/<flow-name>/<run-id>/`.
 
-`judge` controls the default routing mode for conditional edges. `false` (default) means task agents self-report their routing decision via `DECISION.json`. `true` means a separate judge subprocess evaluates the conditions.
+`judge` controls the default routing mode for conditional edges. `false` (default) means task agents self-report their routing decision via the artifact API. `true` means a separate judge subprocess evaluates the conditions.
 
 `max_parallel` controls how many tasks from the queue can run simultaneously (default 1 = serial).
 
 `harness` sets the default agent runtime for all nodes. `"claude"` (default) uses the native Claude Code CLI. Other values (e.g., `"gemini"`, `"custom"`) use the ACP (Agent Client Protocol) to communicate with the agent subprocess. Harnesses are configured in `flowstate.toml` under `[harnesses.<name>]`. Each node can override the flow-level harness with its own `harness` attribute.
 
 `sandbox` enables OpenShell sandbox isolation for agent subprocesses. When `true`, each task execution runs inside an isolated OpenShell container with filesystem, network, and syscall restrictions. Each task gets its own sandbox (created before execution, destroyed after). Requires `openshell` to be installed and Docker running. `sandbox_policy` specifies the path to an OpenShell policy YAML file for fine-grained control over filesystem paths, network access, and process restrictions. Each node can override the flow-level sandbox settings.
+
+`lumon` enables Lumon language-level security for agent subprocesses (see Section 9.9). When `true`, the engine deploys Lumon's configuration into the task directory before launching the subprocess. The agent is then constrained to operate only through Lumon's safe, type-checked language primitives — it cannot run arbitrary shell commands, edit files outside the sandbox, or bypass the language's restricted vocabulary. Enforcement is layered: a `PreToolUse` hook (`sandbox-guard.py`) blocks disallowed operations at the tool level, and the deployed `CLAUDE.md` provides procedural constraints. `lumon_config` specifies the path to a `.lumon.json` file that controls plugin contracts (which operations are available and with what parameters). Each node can override the flow-level lumon settings. Requires the `lumon` package (installed from `git+https://github.com/trupin/lumon.git`).
+
+**Important**: When using the Claude Agent SDK harness, the engine must explicitly pass the deployed settings file via `ClaudeAgentOptions(settings=<path>)` because the SDK does not automatically load `.claude/settings.json` from the working directory. The ACP harness loads it automatically from `cwd`. This is handled transparently by the engine — flow authors do not need to worry about harness differences.
 
 `context` sets the default context mode for all edges (can be overridden per-edge). Recommended default is `handoff`.
 
@@ -362,6 +354,8 @@ entry <name> {
     subtasks = true | false   // optional — overrides flow-level subtasks setting
     sandbox = true | false    // optional — overrides flow-level sandbox
     sandbox_policy = <path>   // optional — overrides flow-level sandbox_policy
+    lumon = true | false      // optional — overrides flow-level lumon
+    lumon_config = <path>     // optional — overrides flow-level lumon_config
 }
 
 task <name> {
@@ -372,6 +366,8 @@ task <name> {
     subtasks = true | false   // optional — overrides flow-level subtasks setting
     sandbox = true | false    // optional — overrides flow-level sandbox
     sandbox_policy = <path>   // optional — overrides flow-level sandbox_policy
+    lumon = true | false      // optional — overrides flow-level lumon
+    lumon_config = <path>     // optional — overrides flow-level lumon_config
 }
 
 exit <name> {
@@ -380,6 +376,8 @@ exit <name> {
     subtasks = true | false   // optional — overrides flow-level subtasks setting
     sandbox = true | false    // optional — overrides flow-level sandbox
     sandbox_policy = <path>   // optional — overrides flow-level sandbox_policy
+    lumon = true | false      // optional — overrides flow-level lumon
+    lumon_config = <path>     // optional — overrides flow-level lumon_config
 }
 
 wait <name> {
@@ -397,6 +395,8 @@ atomic <name> {
     subtasks = true | false   // optional — overrides flow-level subtasks setting
     sandbox = true | false    // optional — overrides flow-level sandbox
     sandbox_policy = <path>   // optional — overrides flow-level sandbox_policy
+    lumon = true | false      // optional — overrides flow-level lumon
+    lumon_config = <path>     // optional — overrides flow-level lumon_config
 }
 ```
 
@@ -466,7 +466,7 @@ analyze awaits deep_scan
 analyze awaits deep_scan when "complex code detected"
 ```
 
-File and await edges reference target flow names, not node names. The source node's `OUTPUT.json` is mapped to the target flow's declared `input` fields.
+File and await edges reference target flow names, not node names. The source node's `output` artifact is mapped to the target flow's declared `input` fields.
 
 ### 3.6 Context Modes
 
@@ -474,22 +474,22 @@ Each edge can override the flow-level `context` setting. If omitted, the flow's 
 
 | Mode | Session | What the target task receives | Restrictions |
 |------|---------|------------------------------|-------------|
-| `handoff` | Fresh | Previous task's `SUMMARY.md` content injected into the prompt | None — works everywhere |
+| `handoff` | Fresh | Previous task's summary artifact content injected into the prompt | None — works everywhere |
 | `session` | Resumed | Full conversation history (continues previous task's Claude Code session) | Not allowed on fork or join edges |
 | `none` | Fresh | Only the target task's own prompt | None |
 
-**`handoff` details**: The execution engine reads `SUMMARY.md` from the source task's directory (`~/.flowstate/runs/<run-id>/tasks/<name>-<gen>/SUMMARY.md`) and injects it into the target task's prompt as a "Context from previous task" section.
+**`handoff` details**: The execution engine reads the source task's `summary` artifact from the database and injects it into the target task's prompt as a "Context from previous task" section.
 
 **`session` details**: The target task resumes the source task's Claude Code session using `--resume <session_id>`. The new task's prompt is sent as a follow-up message in the existing conversation. Context grows across the session chain.
 
-**At join edges**: Context from all completed fork members is aggregated. Each member's `SUMMARY.md` is injected into the join target's prompt. Session mode is not available at joins (multiple sessions cannot merge).
+**At join edges**: Context from all completed fork members is aggregated. Each member's `summary` artifact is injected into the join target's prompt. Session mode is not available at joins (multiple sessions cannot merge).
 
-**Summary requirement**: Regardless of context mode, every task **must** write a `SUMMARY.md` to its task directory under `~/.flowstate/`. This is enforced by including an instruction in every task prompt. The summary serves as:
+**Summary requirement**: Regardless of context mode, every task **must** submit a `summary` artifact via the Flowstate API. This is enforced by including curl instructions in every task prompt. The summary serves as:
 - Input for the judge agent at conditional edges
 - Context for downstream tasks in `handoff` mode
 - Audit trail for debugging and the web UI
 
-The task prompt tells the agent the absolute path to its task directory (e.g., `~/.flowstate/runs/abc123/tasks/implement-1/`).
+The task prompt includes curl examples for submitting artifacts via the API (see Section 9.6).
 
 ### 3.7 Complete Example
 
@@ -839,7 +839,7 @@ async def execute_flow(flow_ast, params):
                 conditionals = get_conditional_edges(outgoing)
                 decision = await acquire_routing_decision(run, task, conditionals)
                 # acquire_routing_decision: if judge=true, spawns judge subprocess;
-                # if judge=false, reads DECISION.json written by the task agent
+                # if judge=false, reads decision artifact from DB
                 if decision == "__none__":
                     enqueue_task(run, default.target, generation=next_gen(task),
                                 edge=default)  # follow default
@@ -921,13 +921,13 @@ When a flow declares `schedule`:
 
 1. Source task completes at a node with conditional outgoing edges
 2. **If judge mode** (`judge = true`):
-   a. Engine reads the task's `SUMMARY.md` and spawns a **judge** subprocess
+   a. Engine reads the task's `summary` artifact from the database and spawns a **judge** subprocess
    b. Judge evaluates conditions and returns structured decision (target node + reasoning + confidence)
    c. If `confidence < 0.5`: pause flow for human review
 3. **If self-report mode** (`judge = false`, default):
    a. The task prompt includes routing instructions with available transitions
-   b. The task agent writes a `DECISION.json` to its task directory with `{decision, reasoning, confidence}`
-   c. Engine reads `DECISION.json` after the task completes
+   b. The task agent submits a `decision` artifact via the API with `{decision, reasoning, confidence}`
+   c. Engine reads the `decision` artifact from the database after the task completes
 4. If decision is `__none__`: pause flow
 5. Otherwise: create pending task for the chosen target, using the edge's context mode
 
@@ -937,8 +937,7 @@ When a conditional edge targets an already-executed node:
 
 1. Increment the generation counter for that node
 2. Create a new `task_execution` record with the new generation
-3. Create a new task directory: `.flowstate/tasks/<name>-<new_gen>/`
-4. Context depends on the edge's mode:
+3. Context depends on the edge's mode:
    - `handoff` (default): Fresh session. The previous task's summary + judge feedback injected into prompt.
    - `session`: Resume the previous task's session. The new prompt is sent as a follow-up.
    - `none`: Fresh session with only the task's own prompt.
@@ -987,8 +986,8 @@ This ensures only one instance of an atomic node executes at a time across all c
 
 When a node completes and has outgoing `file` or `await` edges:
 
-1. Engine reads `OUTPUT.json` from the completed task's directory
-2. Maps `OUTPUT.json` key-value pairs to the target flow's declared `input` fields
+1. Engine reads the `output` artifact from the database
+2. Maps the output key-value pairs to the target flow's declared `input` fields
 3. Submits a new task to the target flow's queue with the mapped parameters
 
 **File edges** (async): The source flow continues immediately after filing. The child task runs independently.
@@ -1020,7 +1019,7 @@ These logs appear alongside streaming Claude output in the UI log viewer, provid
 
 ## 7. Judge Protocol
 
-> **Note**: This section describes judge mode (`judge = true`). When `judge = false` (the default), the task agent writes `DECISION.json` directly — see Section 9.6 for the file format and Section 6.5 for the execution flow.
+> **Note**: This section describes judge mode (`judge = true`). When `judge = false` (the default), the task agent submits a `decision` artifact via the API — see Section 9.6 for the artifact protocol and Section 6.5 for the execution flow.
 
 ### 7.1 Judge Prompt Template
 
@@ -1036,7 +1035,7 @@ You are a routing judge for the Flowstate orchestration system.
 The following summary was written by the task agent:
 
 ---
-{contents of ~/.flowstate/runs/{run_id}/tasks/{node_name}-{generation}/SUMMARY.md}
+{summary artifact content for task {node_name}-{generation}, read from database}
 ---
 
 ## Task Working Directory
@@ -1176,7 +1175,7 @@ The agent is started from the task's resolved cwd (from node `cwd` attribute, or
 You are executing a task in a Flowstate workflow.
 
 ## Context from previous task
-{contents of ~/.flowstate/runs/<run-id>/tasks/<prev_name>-<prev_gen>/SUMMARY.md}
+{summary artifact content from predecessor task, read from database}
 
 ## Your task
 {Node prompt with {{input_fields}} expanded}
@@ -1184,12 +1183,11 @@ You are executing a task in a Flowstate workflow.
 ## Working directory
 Your working directory is: {resolved_cwd}
 
-## Task directory
-Write your working notes and scratch files to {task_dir}/.
-When you are done, you MUST write a SUMMARY.md to {task_dir}/SUMMARY.md describing:
-- What you did
-- What changed
-- The outcome / current state
+## Task coordination
+When you are done, you MUST submit a summary of your work:
+curl -s -X POST $FLOWSTATE_SERVER_URL/api/runs/$FLOWSTATE_RUN_ID/tasks/$FLOWSTATE_TASK_ID/artifacts/summary \
+  -H "Content-Type: text/markdown" \
+  -d 'Your summary here: what you did, what changed, the outcome'
 ```
 
 **Prompt construction for `session` mode**:
@@ -1198,8 +1196,9 @@ When you are done, you MUST write a SUMMARY.md to {task_dir}/SUMMARY.md describi
 ## Next task: {node_name}
 {Node prompt with {{input_fields}} expanded}
 
-When you are done, write a SUMMARY.md to {task_dir}/SUMMARY.md
-describing what you did and the outcome.
+When you are done, submit a summary:
+curl -s -X POST $FLOWSTATE_SERVER_URL/api/runs/$FLOWSTATE_RUN_ID/tasks/$FLOWSTATE_TASK_ID/artifacts/summary \
+  -H "Content-Type: text/markdown" -d 'Summary of what you did and the outcome'
 ```
 
 (Shorter because the full conversation context is already present in the resumed session.)
@@ -1208,18 +1207,18 @@ describing what you did and the outcome.
 
 ```
 ## Routing Decision
-After completing your task, you must decide which transition to take.
+After completing your task, decide which transition to take.
 
 ### Available Transitions
 - "condition text" → transitions to: target_node
 - "condition text" → transitions to: target_node
 If no condition clearly matches, use "__none__".
 
-### Instructions
-Write a JSON file to {task_dir}/DECISION.json with this format:
-{"decision": "<target_node_name>", "reasoning": "<brief explanation>",
- "confidence": <float 0.0 to 1.0>}
-You MUST write this file before completing your task.
+### Submit your decision
+curl -s -X POST $FLOWSTATE_SERVER_URL/api/runs/$FLOWSTATE_RUN_ID/tasks/$FLOWSTATE_TASK_ID/artifacts/decision \
+  -H "Content-Type: application/json" \
+  -d '{"decision": "<target_node_name>", "reasoning": "<brief explanation>", "confidence": <0.0-1.0>}'
+You MUST submit this decision before completing your task.
 ```
 
 **Prompt construction for join nodes** (`handoff` mode with multiple predecessors):
@@ -1230,15 +1229,15 @@ You are executing a task in a Flowstate workflow.
 ## Context from parallel tasks
 
 ### {fork_member_1_name}
-{contents of ~/.flowstate/runs/<run-id>/tasks/<member1>-<gen>/SUMMARY.md}
+{summary artifact content from member1, read from database}
 
 ### {fork_member_2_name}
-{contents of ~/.flowstate/runs/<run-id>/tasks/<member2>-<gen>/SUMMARY.md}
+{summary artifact content from member2, read from database}
 
 ## Your task
 {Node prompt with {{input_fields}} expanded}
 
-## Working directory and task directory
+## Working directory and task coordination
 [same as above]
 ```
 
@@ -1270,37 +1269,37 @@ The execution engine:
 - **Session chains**: In `session` mode, a chain of tasks (A → B → C) all share one growing conversation. The session ID is A's original session, resumed by B, then by C.
 - **Context window risk**: Long session chains can exceed the model's context window. This is the user's responsibility to manage. The engine does not enforce a session chain length limit.
 
-### 9.5 Task Directory Setup
+### 9.5 Task Setup
 
 Before launching a task subprocess, the execution engine:
 
-1. Creates the run directory if needed: `~/.flowstate/runs/<run-id>/`
-2. Creates the task directory: `~/.flowstate/runs/<run-id>/tasks/<name>-<gen>/`
-3. Resolves the task's cwd (node `cwd` → flow `workspace` → auto-generated workspace)
-4. If `worktree = true` and the workspace is a git repo, creates a git worktree for the run
-5. Writes `INPUT.md` with the assembled prompt to the task directory
-6. The task prompt includes the absolute path to the task directory so the agent can write `SUMMARY.md`
+1. Creates a `task_execution` record in the database
+2. Resolves the task's cwd (node `cwd` → flow `workspace` → auto-generated workspace)
+3. If `worktree = true` and the workspace is a git repo, creates a git worktree for the run
+4. Saves the assembled prompt as an `input` artifact in the database
+5. Injects `FLOWSTATE_SERVER_URL`, `FLOWSTATE_RUN_ID`, `FLOWSTATE_TASK_ID` env vars into the agent subprocess
+6. The task prompt includes curl commands for submitting artifacts via the API
 
-### 9.6 File-Based Communication
+### 9.6 API-Based Artifact Protocol
 
-Task-related files live under `~/.flowstate/runs/<run-id>/`:
+Agents communicate coordination data (summaries, routing decisions, cross-flow output) to the engine via the **artifact API**, not by writing files to disk. This provides a consistent protocol that works for all agents — whether running on the host or inside a sandbox.
 
-```
-~/.flowstate/runs/<run-id>/
-├── tasks/
-│   ├── <node>-<gen>/
-│   │   ├── INPUT.md                # Full assembled prompt (written by engine)
-│   │   ├── SUMMARY.md              # Task output (written by agent)
-│   │   ├── DECISION.json           # Self-report routing decision (when judge=false)
-│   │   ├── OUTPUT.json             # Structured output for cross-flow filing
-│   │   └── (scratch files)
-├── judge/
-│   ├── <source>-<gen>/
-│   │   ├── REQUEST.md              # Judge evaluation request (when judge=true)
-│   │   └── DECISION.json           # Judge decision
-```
+**Environment variables**: The engine injects these into every agent subprocess:
+- `FLOWSTATE_SERVER_URL` — base URL of the Flowstate server (e.g., `http://127.0.0.1:9090` for host agents, `http://host.docker.internal:9090` for sandboxed agents)
+- `FLOWSTATE_RUN_ID` — the current flow run ID
+- `FLOWSTATE_TASK_ID` — the current task execution ID
 
-**`DECISION.json`**: Structured routing decision (written by the task agent in self-report mode, or by the judge in judge mode):
+**Well-known artifacts:**
+
+| Name | Content-Type | Purpose | When Required |
+|------|-------------|---------|---------------|
+| `summary` | `text/markdown` | What the task did, what changed, the outcome | Every task |
+| `decision` | `application/json` | Self-report routing decision | Conditional edges with `judge=false` |
+| `output` | `application/json` | Structured output for cross-flow filing | Nodes with `file`/`await` edges |
+
+**Upload**: Agents submit artifacts via `POST /api/runs/{run_id}/tasks/{task_id}/artifacts/{name}`.
+
+**`decision` artifact schema:**
 ```json
 {
     "decision": "<target_node_name or __none__>",
@@ -1309,18 +1308,60 @@ Task-related files live under `~/.flowstate/runs/<run-id>/`:
 }
 ```
 
-**`OUTPUT.json`**: Structured output for cross-flow filing. When a node has outgoing `file` or `await` edges, the agent writes key-value pairs that are mapped to the target flow's `input` fields.
+**`output` artifact**: Key-value pairs mapped to the target flow's declared `input` fields.
+
+**Engine-written artifacts**: The engine also stores its own data as artifacts on the task execution — no files on disk:
+
+| Name | Content-Type | Purpose | Written by |
+|------|-------------|---------|------------|
+| `input` | `text/markdown` | Assembled task prompt | Engine (at task creation) |
+| `judge_request` | `text/markdown` | Judge evaluation prompt | Engine (when judge=true) |
+| `judge_decision` | `application/json` | Judge's routing decision | Engine (after judge completes) |
+
+**Engine reads**: The engine reads all artifacts from the database, never from the filesystem. Context handoff reads the predecessor's `summary` artifact. Self-report routing reads the `decision` artifact. Cross-flow filing reads the `output` artifact.
+
+**Prompt injection**: The task prompt includes curl examples showing the agent how to submit each required artifact, using `$FLOWSTATE_SERVER_URL`, `$FLOWSTATE_RUN_ID`, and `$FLOWSTATE_TASK_ID` environment variables.
+
+**REST API endpoints:**
+
+| Method | Endpoint | Purpose |
+|--------|----------|---------|
+| `POST` | `/api/runs/:id/tasks/:task_id/artifacts/:name` | Upload artifact content |
+| `GET` | `/api/runs/:id/tasks/:task_id/artifacts/:name` | Download artifact content |
+| `GET` | `/api/runs/:id/tasks/:task_id/artifacts` | List artifacts for a task |
+
+**Database storage**: Artifacts are stored in the `task_artifacts` table with columns: `id`, `task_execution_id`, `name`, `content`, `content_type`, `created_at`. Unique constraint on `(task_execution_id, name)` — upsert semantics on duplicate.
+
+**No per-run directories**: The `~/.flowstate/runs/` directory tree is no longer created. All coordination data lives in the database. The only filesystem directories Flowstate manages are auto-generated workspaces (`~/.flowstate/workspaces/`) and the database itself.
 
 ### 9.7 Worktree Isolation
 
-When `worktree = true` (default) and the resolved workspace is a git repository:
+When `worktree = true` (default) and the workspace is a git repository, each node gets its own git worktree. The worktree reference flows along edges — the graph topology maps directly to git branching and merging:
 
-1. Engine creates a git worktree: `git worktree add <path> --detach`
-2. The worktree path replaces the original workspace for all tasks in the run
-3. On run completion, the worktree is cleaned up (configurable via `worktree_cleanup` in config)
-4. This provides complete file-level isolation between concurrent runs
+| Edge type | Git operation |
+|-----------|--------------|
+| **Entry node** | `git worktree add` from workspace HEAD |
+| **Linear / conditional** | Next node inherits the predecessor's worktree (reuse — no copy) |
+| **Fork (1 → N)** | Each branch gets `git worktree add` branching from predecessor's HEAD |
+| **Join (N → 1)** | `git merge` all branch worktrees into a new worktree; conflicts left as markers for the join agent to resolve |
 
-If the workspace is not a git repo, worktree creation is silently skipped.
+The worktree reference is stored as a `worktree` artifact on each task execution:
+```json
+{"path": "/tmp/flowstate-abc123/", "branch": "flowstate/abc123/analyze-1", "original_workspace": "/path/to/repo"}
+```
+
+**Context mode interaction**:
+- `handoff`: inherits predecessor's worktree (linear) or receives merged worktree (join)
+- `session`: same worktree as predecessor (reuse)
+- `none`: fresh worktree from original workspace HEAD (not predecessor's)
+
+**Auto-created workspaces**: When a flow doesn't declare `workspace`, the auto-created workspace at `~/.flowstate/workspaces/<flow>/<run>/` is initialized as a git repo (`git init` + initial commit) so worktree isolation works automatically.
+
+**Merge conflicts at join**: When merging fork branches produces conflicts, the engine leaves conflict markers in the join worktree and adds a "Merge Conflicts" section to the join agent's prompt. The agent resolves conflicts as part of its work — it has full context from all predecessor summaries.
+
+**Cleanup**: On run completion, all worktrees created during the run are removed and their branches deleted.
+
+If the workspace is not a git repo and `git init` is not available, worktree isolation is silently skipped — all nodes share the raw workspace.
 
 ### 9.8 Agent Harnesses (ACP)
 
@@ -1369,7 +1410,54 @@ flow mixed_pipeline {
 - The `"claude"` harness uses the native CLI protocol, not ACP (Claude Code doesn't support ACP yet)
 - ACP is only used for non-Claude harnesses
 - Judge evaluation always uses the flow's default harness
-- `SUMMARY.md`, `DECISION.json`, and `OUTPUT.json` file conventions are agent-agnostic — they work regardless of harness
+- The artifact API protocol (`summary`, `decision`, `output`) is agent-agnostic — all agents submit artifacts via HTTP POST regardless of harness
+
+### 9.9 Lumon Security Layer
+
+Flowstate supports **Lumon** as a language-level security layer for agent subprocesses. While `sandbox` (Section 9.8 / OpenShell) provides OS-level isolation (filesystem, network, syscall restrictions), Lumon provides **cognitive-level** constraints — the agent can only act within Lumon's safe, type-checked language primitives.
+
+**What is Lumon**: A minimal interpreted language designed for AI agents. Safety by construction — the language provides only elementary, auditable primitives (text, list, map, io, git operations) that compose safely. Agents cannot conceive of actions outside the language's vocabulary. All code is statically type-checked before execution. Plugin contracts further restrict what operations are available and with what parameters.
+
+**Dependency**: Flowstate installs Lumon from GitHub as a Python dependency: `lumon @ git+https://github.com/trupin/lumon.git`.
+
+**Activation**: Set `lumon = true` at the flow level (default for all nodes) or per-node. Resolution: `node.lumon → flow.lumon → false`.
+
+**Mechanism — three enforcement layers**:
+
+1. **Deploy phase**: Before launching the subprocess for a `lumon=true` task, the engine runs `lumon deploy <task-dir>`. This creates:
+   - `<task-dir>/CLAUDE.md` — procedural constraints telling the agent to only use `lumon --working-dir sandbox` commands
+   - `<task-dir>/.claude/settings.json` — hook configuration registering `sandbox-guard.py` as a `PreToolUse` hook
+   - `<task-dir>/.claude/hooks/sandbox-guard.py` — enforcement script that intercepts every tool call
+   - `<task-dir>/.claude/skills/` — Lumon language reference and coding skills
+
+2. **Hook enforcement** (`sandbox-guard.py`): Runs before every Bash, Read, Edit, and Write tool call:
+   - **Bash**: Only allows `lumon --working-dir sandbox ...` commands. Rejects all other shell commands, pipe chains (`&&`, `||`, `;`), backticks, `$()`.
+   - **Edit/Write**: Only allows paths inside `<task-dir>/sandbox/` or `<task-dir>/.claude/`.
+   - **Read**: Only allows paths in the current directory and `~/.claude/`.
+   - All decisions logged to `.claude/hooks/sandbox-guard.log`.
+
+3. **Language constraints**: The agent writes `.lumon` code and runs it through the interpreter. Lumon's type system is checked before execution. Only safe primitives are available (`io.read`, `io.write`, `list.map`, `git.commit`, etc.). Plugin contracts in `.lumon.json` further restrict parameters (e.g., SQL queries must match a whitelist pattern, numeric arguments must be within a range).
+
+**Settings pass-through for SDK harness**: The Claude Agent SDK does not automatically load `.claude/settings.json` from the working directory. When using the SDK harness (`"claude"` default), the engine must explicitly pass `ClaudeAgentOptions(settings=<task-dir>/.claude/settings.json)` so the CLI subprocess loads the hook configuration. The ACP harness discovers settings from `cwd` automatically — no extra handling needed.
+
+**Plugin contracts** (`lumon_config`): An optional `.lumon.json` file controls what plugins are available and their parameter constraints. Resolved relative to the flow file's directory. Copied to `<task-dir>/.lumon.json` at deploy time. Example:
+
+```json
+{
+  "plugins": {
+    "db": {
+      "plugin": "postgres",
+      "contracts": {
+        "query": "SELECT * WHERE id = *",
+        "timeout": [1, 3600]
+      },
+      "expose": ["query"]
+    }
+  }
+}
+```
+
+**Task output directory**: When Lumon is active, the agent operates inside `<task-dir>/sandbox/`. Since artifacts are submitted via the API (Section 9.6), there is no filesystem path difference — the agent POSTs to the same API endpoints regardless of Lumon sandboxing.
 
 ### 9.4 Error Detection
 
@@ -1424,6 +1512,9 @@ Flows are discovered from the filesystem (watched directory), not created manual
 | `POST` | `/api/schedules/:id/resume` | Resume a paused schedule |
 | `POST` | `/api/schedules/:id/trigger` | Manually trigger a scheduled flow |
 | `POST` | `/api/runs/:id/tasks/:task_execution_id/input` | Send user input to a running task's subprocess |
+| `POST` | `/api/runs/:id/tasks/:task_id/artifacts/:name` | Upload a task artifact (decision, summary, output) |
+| `GET` | `/api/runs/:id/tasks/:task_id/artifacts/:name` | Download a task artifact |
+| `GET` | `/api/runs/:id/tasks/:task_id/artifacts` | List artifacts for a task |
 | `POST` | `/api/open` | Open a file/directory in the user's IDE |
 
 ### 10.3 WebSocket Protocol
@@ -1579,9 +1670,9 @@ The sidebar provides navigation across all three sections of the app:
 See `src/flowstate/dsl/grammar.lark` for the authoritative grammar. Key additions beyond the original MVP:
 
 - **`input {}` / `output {}` blocks** replace `param` declarations
-- **`judge = true|false`**, **`worktree = true|false`**, **`skip_permissions = true|false`**, **`max_parallel = N`**, **`harness = "<name>"`**, **`subtasks = true|false`**, **`sandbox = true|false`**, **`sandbox_policy = "<path>"`** flow attributes
+- **`judge = true|false`**, **`worktree = true|false`**, **`skip_permissions = true|false`**, **`max_parallel = N`**, **`harness = "<name>"`**, **`subtasks = true|false`**, **`sandbox = true|false`**, **`sandbox_policy = "<path>"`**, **`lumon = true|false`**, **`lumon_config = "<path>"`** flow attributes
 - **`wait`**, **`fence`**, **`atomic`** node types
-- **`judge = true|false`**, **`harness = "<name>"`**, **`subtasks = true|false`**, **`sandbox = true|false`**, and **`sandbox_policy = "<path>"`** per-node overrides
+- **`judge = true|false`**, **`harness = "<name>"`**, **`subtasks = true|false`**, **`sandbox = true|false`**, **`sandbox_policy = "<path>"`**, **`lumon = true|false`**, and **`lumon_config = "<path>"`** per-node overrides
 - **`files`** and **`awaits`** edge types with timing variants (`after`, `at`)
 - **`BOOL_LIT`** token for boolean attributes
 
@@ -1594,10 +1685,10 @@ See `src/flowstate/dsl/ast.py` for the authoritative definitions. All dataclasse
 - **`ContextMode`**: HANDOFF, SESSION, NONE
 - **`ErrorPolicy`**: PAUSE, ABORT, SKIP
 - **`TaskTypeField`**: Represents a single field in `input {}` or `output {}` (name, type, optional default)
-- **`Node`**: name, node_type, prompt, cwd, judge (per-node override), harness (per-node override), subtasks (per-node override), sandbox (per-node override), sandbox_policy (per-node override), wait_delay_seconds, wait_until_cron
+- **`Node`**: name, node_type, prompt, cwd, judge (per-node override), harness (per-node override), subtasks (per-node override), sandbox (per-node override), sandbox_policy (per-node override), lumon (per-node override), lumon_config (per-node override), wait_delay_seconds, wait_until_cron
 - **`EdgeConfig`**: context override, delay_seconds, schedule (cron)
 - **`Edge`**: edge_type, source, target, fork_targets (tuple), join_sources (tuple), condition, config
-- **`Flow`**: name, budget_seconds, on_error, context, workspace, schedule, on_overlap, skip_permissions, judge (default False), harness (default "claude"), subtasks (default False), sandbox (default False), sandbox_policy (default None), worktree (default True), input_fields (tuple of TaskTypeField), output_fields, max_parallel (default 1), nodes (dict), edges (tuple)
+- **`Flow`**: name, budget_seconds, on_error, context, workspace, schedule, on_overlap, skip_permissions, judge (default False), harness (default "claude"), subtasks (default False), sandbox (default False), sandbox_policy (default None), lumon (default False), lumon_config (default None), worktree (default True), input_fields (tuple of TaskTypeField), output_fields, max_parallel (default 1), nodes (dict), edges (tuple)
 
 ---
 
@@ -1760,7 +1851,7 @@ When `subtasks` is enabled for a node, the engine appends a "Task Management" se
 
 ### 14.6 Context Passing
 
-Subtask data is **not** included in SUMMARY.md or passed automatically to successor nodes. Instead, the handoff prompt includes the predecessor's `task_execution_id`, allowing downstream agents to query the predecessor's subtasks via the API if needed.
+Subtask data is **not** included in the summary artifact or passed automatically to successor nodes. Instead, the handoff prompt includes the predecessor's `task_execution_id`, allowing downstream agents to query the predecessor's subtasks via the API if needed.
 
 ### 14.7 WebSocket Events
 
@@ -1772,7 +1863,7 @@ A `SUBTASK_UPDATED` event is emitted when a subtask is created or updated. Paylo
 
 ### Appendix A: Example Flows
 
-> All examples below use self-report routing (`judge = false`, the default). The task agent at each conditional node writes `DECISION.json` to choose the next transition. Add `judge = true` to the flow declaration to use a separate judge subprocess instead.
+> All examples below use self-report routing (`judge = false`, the default). The task agent at each conditional node submits a `decision` artifact via the API to choose the next transition. Add `judge = true` to the flow declaration to use a separate judge subprocess instead.
 
 #### A.1 Simple Linear Flow
 
@@ -2055,11 +2146,11 @@ flow weekly_audit {
 | Budget tracking drift during pauses | Low | Only track active execution time, not paused time |
 | Infinite cycle despite budget | Low | Budget guard checks after every task completion |
 | Context window growth in `session` mode | Medium | Use `handoff` mode for cycles; `session` mode chains grow unboundedly |
-| Agent doesn't write SUMMARY.md | Medium | Prompt engineering: instruction is injected into every task prompt. Engine warns if missing on completion. |
+| Agent doesn't submit summary artifact | Medium | Prompt engineering: curl instruction is injected into every task prompt. Engine warns if missing on completion. |
 | Worktree creation fails (not a git repo) | Low | Engine silently skips worktree creation; tasks run in the original workspace. Logged as warning. |
 | Task queue starvation (disabled flow with queued tasks) | Low | UI shows disabled status clearly. Tasks remain queued and resume when flow is re-enabled. |
 | Cross-flow circular filing (A files B files A) | Medium | Depth counter on tasks prevents unbounded recursion. Engine should enforce a max depth limit. |
-| Self-report agent writes wrong DECISION.json | Medium | Same mitigation as judge: confidence threshold + user review on low confidence. |
+| Self-report agent submits wrong decision | Medium | Same mitigation as judge: confidence threshold + user review on low confidence. |
 
 ### Appendix C: Future Enhancements (Post-MVP)
 

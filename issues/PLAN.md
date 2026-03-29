@@ -414,6 +414,44 @@
 | UI-065     | Show lumon security indicator in flow detail panel           | ui     | P1       | SERVER-021  | todo   |
 
 
+### Phase 25a — Task Artifact API
+
+
+| Issue      | Title                                                        | Domain | Priority | Depends On  | Status |
+| ---------- | ------------------------------------------------------------ | ------ | -------- | ----------- | ------ |
+| STATE-011  | Task artifact storage table and repository CRUD              | state  | P0       | —           | done   |
+| SERVER-022 | Artifact upload/download REST endpoints                      | server | P0       | STATE-011   | done   |
+
+
+### Phase 25b — Engine Artifact Integration
+
+
+| Issue      | Title                                                        | Domain | Priority | Depends On  | Status |
+| ---------- | ------------------------------------------------------------ | ------ | -------- | ----------- | ------ |
+| SERVER-023 | CLI `flowstate run` assumes running server for artifact API  | server | P1       | SERVER-022  | done   |
+| ENGINE-067 | Inject API coordinates into all agent environments + artifact upload instructions | engine | P0 | SERVER-022 | done |
+| ENGINE-068 | Move all artifact I/O to DB; eliminate ~/.flowstate/runs/ directory tree           | engine | P0 | ENGINE-067  | done |
+
+
+### Phase 25c — Artifact UI + E2E
+
+
+| Issue      | Title                                                        | Domain | Priority | Depends On  | Status |
+| ---------- | ------------------------------------------------------------ | ------ | -------- | ----------- | ------ |
+| UI-066     | Show decision and summary artifacts in node detail view      | ui     | P1       | SERVER-022  | done   |
+| E2E-015    | Real sandbox E2E test suite (no mocking)                     | e2e    | P1       | ENGINE-068  | todo   |
+
+
+### Phase 26 — Per-Node Worktree Isolation
+
+
+| Issue      | Title                                                        | Domain | Priority | Depends On         | Status |
+| ---------- | ------------------------------------------------------------ | ------ | -------- | ------------------ | ------ |
+| ENGINE-069 | Initialize auto-created workspaces as git repos              | engine | P1       | —                  | done   |
+| ENGINE-070 | Per-node worktree isolation with handoff along edges         | engine | P1       | ENGINE-069, STATE-011, ENGINE-068 | done   |
+| ENGINE-071 | Remove per-run worktree logic and clean up executor          | engine | P2       | ENGINE-070         | done   |
+
+
 ---
 
 ## Cross-Domain Coordination
