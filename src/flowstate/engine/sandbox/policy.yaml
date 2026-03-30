@@ -1,0 +1,40 @@
+version: 1
+network_policies:
+  flowstate_api:
+    name: flowstate-api
+    endpoints:
+      - host: host.docker.internal
+        port: 9090
+        allowed_ips:
+          - "192.168.65.0/24"
+          - "172.16.0.0/12"
+    binaries:
+      - path: "/**"
+  claude_services:
+    name: claude-services
+    endpoints:
+      - host: api.anthropic.com
+        port: 443
+      - host: auth.anthropic.com
+        port: 443
+      - host: platform.claude.com
+        port: 443
+      - host: claude.ai
+        port: 443
+      - host: statsig.anthropic.com
+        port: 443
+      - host: sentry.io
+        port: 443
+      - host: "*.anthropic.com"
+        port: 443
+      - host: "*.claude.ai"
+        port: 443
+    binaries:
+      - path: "/**"
+  npm_registry:
+    name: npm-registry
+    endpoints:
+      - host: registry.npmjs.org
+        port: 443
+    binaries:
+      - path: "/**"

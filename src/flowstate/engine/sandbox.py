@@ -54,10 +54,18 @@ class SandboxManager:
             "version": 1,
             "network_policies": {
                 "flowstate_api": {
+                    "name": "flowstate-api",
                     "endpoints": [
-                        {"host": "host.docker.internal", "port": server_port},
+                        {
+                            "host": "host.docker.internal",
+                            "port": server_port,
+                            "allowed_ips": [
+                                "192.168.65.0/24",
+                                "172.16.0.0/12",
+                            ],
+                        },
                     ],
-                    "binaries": [{"path": "**"}],
+                    "binaries": [{"path": "/**"}],
                 },
             },
         }

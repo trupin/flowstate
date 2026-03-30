@@ -367,7 +367,9 @@ def get_task_dir(run_data: dict, node_name: str) -> str | None:
 @pytest.fixture(scope="module")
 def server_url(tmp_path_factory):
     """Start a real Flowstate server (no mock harness) with sandbox support."""
-    port = _find_free_port()
+    # Use port 9090 and bind to 0.0.0.0 so the sandbox can reach us
+    # via host.docker.internal:9090 (allowed by the sandbox network policy)
+    port = 9090
     data_dir = tmp_path_factory.mktemp("sandbox_e2e_data")
     watch_dir = tmp_path_factory.mktemp("sandbox_e2e_flows")
 
@@ -384,7 +386,7 @@ def server_url(tmp_path_factory):
 
     uv_config = uvicorn.Config(
         app,
-        host="127.0.0.1",
+        host="0.0.0.0",
         port=port,
         log_level="info",
     )
