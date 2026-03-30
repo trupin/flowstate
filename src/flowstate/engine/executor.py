@@ -990,7 +990,12 @@ class FlowExecutor:
             )
 
             try:
-                return await self._judge.evaluate(judge_context)
+                # Resolve sandbox for judge: use sandbox if the source task was
+                # sandboxed, so the judge runs in the same environment with the
+                # same auth (ENGINE-074).
+                use_sandbox = node.sandbox if node.sandbox is not None else flow.sandbox
+                judge = self._make_sandbox_judge(flow, node) if use_sandbox else self._judge
+                return await judge.evaluate(judge_context)
             except JudgePauseError as e:
                 self._pause_flow(flow_run_id, f"Judge failed: {e.reason}")
                 return None
@@ -1001,6 +1006,29 @@ class FlowExecutor:
             except (FileNotFoundError, ValueError) as e:
                 self._pause_flow(flow_run_id, f"Task self-report failed: {e}")
                 return None
+
+    def _make_sandbox_judge(self, flow: Flow, node: Node) -> JudgeProtocol:
+        """Create a JudgeProtocol that runs inside the sandbox.
+
+        Wraps the harness command through the sandbox connect-wrapper so the
+        judge subprocess executes with sandbox auth and environment, matching
+        how the task itself was executed (ENGINE-074).
+        """
+        from flowstate.engine.acp_client import AcpHarness
+
+        harness_name = node.harness or flow.harness
+        harness = self._harness_mgr.get(harness_name)
+        harness_command: list[str] = getattr(harness, "command", [])
+        harness_env: dict[str, str] | None = getattr(harness, "env", None)
+
+        wrapped_cmd = self._sandbox_mgr.wrap_command(harness_command)
+        sandbox_harness = AcpHarness(
+            command=wrapped_cmd,
+            env=harness_env,
+            init_timeout=120.0,
+            session_cwd="/sandbox",
+        )
+        return JudgeProtocol(sandbox_harness)
 
     async def _read_decision_artifact(
         self, task_execution_id: str, flow_run_id: str

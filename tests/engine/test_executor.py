@@ -7520,6 +7520,207 @@ class TestSandboxNewHarnessInstance:
 
 
 # ---------------------------------------------------------------------------
+# Sandbox + Judge (ENGINE-074)
+# ---------------------------------------------------------------------------
+
+
+def _make_sandbox_conditional_flow(
+    sandbox: bool = True,
+    judge: bool = True,
+    node_sandbox: bool | None = None,
+) -> Flow:
+    """Build a conditional flow with sandbox + judge settings.
+
+    start -> implement -> review --(approved)--> done
+                                 --(needs work)--> implement (cycle)
+    """
+    nodes: dict[str, Node] = {
+        "start": Node(name="start", node_type=NodeType.ENTRY, prompt="Do the start step"),
+        "implement": Node(
+            name="implement",
+            node_type=NodeType.TASK,
+            prompt="Do the implement step",
+        ),
+        "review": Node(
+            name="review",
+            node_type=NodeType.TASK,
+            prompt="Do the review step",
+            sandbox=node_sandbox,
+        ),
+        "done": Node(name="done", node_type=NodeType.EXIT, prompt="Do the done step"),
+    }
+
+    edges = [
+        Edge(edge_type=EdgeType.UNCONDITIONAL, source="start", target="implement"),
+        Edge(edge_type=EdgeType.UNCONDITIONAL, source="implement", target="review"),
+        Edge(
+            edge_type=EdgeType.CONDITIONAL,
+            source="review",
+            target="done",
+            condition="approved",
+        ),
+        Edge(
+            edge_type=EdgeType.CONDITIONAL,
+            source="review",
+            target="implement",
+            condition="needs work",
+        ),
+    ]
+
+    return Flow(
+        name="sandbox-cond-flow",
+        budget_seconds=3600,
+        on_error=ErrorPolicy.PAUSE,
+        context=ContextMode.HANDOFF,
+        workspace="/workspace",
+        judge=judge,
+        sandbox=sandbox,
+        nodes=nodes,
+        edges=tuple(edges),
+    )
+
+
+class TestSandboxJudgeIntegration:
+    """ENGINE-074: Judge subprocess uses sandbox-wrapped harness when sandbox=true."""
+
+    async def test_judge_uses_sandbox_harness(self) -> None:
+        """When sandbox=true + judge=true, the judge creates a sandbox-wrapped AcpHarness."""
+        db = _make_db()
+        _events, callback = _collect_events()
+        mock_mgr = _make_sandboxed_mock()
+
+        mock_judge = MockJudgeProtocol()
+        mock_judge.add_decision(JudgeDecision(target="done", reasoning="Approved", confidence=0.95))
+
+        executor = FlowExecutor(db, callback, mock_mgr, judge=mock_judge, max_concurrent=4)
+        flow = _make_sandbox_conditional_flow(sandbox=True, judge=True)
+
+        # Track AcpHarness construction for the judge
+        judge_harness_calls: list[dict[str, Any]] = []
+
+        def mock_acp_harness(
+            command: list[str],
+            env: Any = None,
+            init_timeout: float = 30.0,
+            session_cwd: str | None = None,
+        ) -> MockSubprocessManager:
+            judge_harness_calls.append(
+                {
+                    "command": command,
+                    "env": env,
+                    "init_timeout": init_timeout,
+                    "session_cwd": session_cwd,
+                }
+            )
+            # Return a mock that satisfies the Harness protocol
+            return mock_mgr
+
+        # Track JudgeProtocol construction to verify it gets the sandbox harness
+        judge_construction_calls: list[Any] = []
+        original_judge_init = JudgeProtocol.__init__
+
+        def mock_judge_init(self_judge: Any, harness: Any) -> None:
+            judge_construction_calls.append(harness)
+            original_judge_init(self_judge, harness)
+
+        # We also need to make the sandbox judge's evaluate return a decision.
+        # Patch JudgeProtocol.evaluate to return the mock decision.
+        async def mock_evaluate(self_judge: Any, context: JudgeContext) -> JudgeDecision:
+            return JudgeDecision(target="done", reasoning="Approved", confidence=0.95)
+
+        with (
+            patch("flowstate.engine.acp_client.AcpHarness", side_effect=mock_acp_harness),
+            patch.object(JudgeProtocol, "__init__", mock_judge_init),
+            patch.object(JudgeProtocol, "evaluate", mock_evaluate),
+        ):
+            await executor.execute(flow, {}, "/workspace")
+
+        # The judge should have created at least one sandbox-wrapped AcpHarness
+        # (one for each task that needed sandbox wrapping, plus one for the judge)
+        sandbox_judge_calls = [c for c in judge_harness_calls if c.get("session_cwd") == "/sandbox"]
+        assert (
+            len(sandbox_judge_calls) >= 1
+        ), f"Expected at least 1 sandbox judge harness, got {len(sandbox_judge_calls)}"
+
+        # Verify the judge harness command uses connect-wrapper
+        for call in sandbox_judge_calls:
+            assert call["command"][0].endswith("connect-wrapper.sh")
+            assert call["command"][1] == "flowstate-claude"
+            assert call["init_timeout"] == 120.0
+            assert call["session_cwd"] == "/sandbox"
+
+        # Verify a JudgeProtocol was constructed with a sandbox harness
+        assert len(judge_construction_calls) >= 1
+
+    async def test_judge_no_sandbox_uses_default(self) -> None:
+        """When sandbox=false + judge=true, the default judge is used (no wrapping)."""
+        db = _make_db()
+        events, callback = _collect_events()
+        mock_mgr = MockSubprocessManager()
+
+        mock_judge = MockJudgeProtocol()
+        mock_judge.add_decision(JudgeDecision(target="done", reasoning="Approved", confidence=0.95))
+
+        executor = FlowExecutor(db, callback, mock_mgr, judge=mock_judge, max_concurrent=4)
+        flow = _make_sandbox_conditional_flow(sandbox=False, judge=True)
+
+        await executor.execute(flow, {}, "/workspace")
+
+        # The default mock judge should have been called
+        assert mock_judge._call_count == 1
+
+        # Verify judge events emitted
+        judge_started = [e for e in events if e.type == EventType.JUDGE_STARTED]
+        assert len(judge_started) == 1
+        judge_decided = [e for e in events if e.type == EventType.JUDGE_DECIDED]
+        assert len(judge_decided) == 1
+        assert judge_decided[0].payload["to_node"] == "done"
+
+    async def test_judge_sandbox_node_override(self) -> None:
+        """Node-level sandbox=false overrides flow sandbox=true for judge."""
+        db = _make_db()
+        events, callback = _collect_events()
+        mock_mgr = _make_sandboxed_mock()
+
+        mock_judge = MockJudgeProtocol()
+        mock_judge.add_decision(JudgeDecision(target="done", reasoning="Approved", confidence=0.95))
+
+        executor = FlowExecutor(db, callback, mock_mgr, judge=mock_judge, max_concurrent=4)
+        # Flow sandbox=true, but review node (which has the conditional edges) has sandbox=false
+        flow = _make_sandbox_conditional_flow(sandbox=True, judge=True, node_sandbox=False)
+
+        # Track JudgeProtocol constructions to verify no sandbox judge is created
+        judge_construction_count = 0
+        original_judge_init = JudgeProtocol.__init__
+
+        def tracking_judge_init(self_judge: Any, harness: Any) -> None:
+            nonlocal judge_construction_count
+            judge_construction_count += 1
+            original_judge_init(self_judge, harness)
+
+        with (
+            patch(
+                "flowstate.engine.acp_client.AcpHarness",
+                side_effect=lambda **kw: mock_mgr,
+            ),
+            patch.object(JudgeProtocol, "__init__", tracking_judge_init),
+        ):
+            await executor.execute(flow, {}, "/workspace")
+
+        # The default mock judge should have been called (node sandbox=false),
+        # meaning _make_sandbox_judge was NOT invoked for the review node.
+        assert mock_judge._call_count == 1
+
+        # No new JudgeProtocol should have been constructed (the sandbox judge
+        # path was not taken because the review node has sandbox=false).
+        assert judge_construction_count == 0
+
+        judge_decided = [e for e in events if e.type == EventType.JUDGE_DECIDED]
+        assert len(judge_decided) == 1
+        assert judge_decided[0].payload["to_node"] == "done"
+
+
+# ---------------------------------------------------------------------------
 # Sandbox DECISION.json download removed (ENGINE-068)
 # ---------------------------------------------------------------------------
 # The download_file mechanism was removed in ENGINE-068. Sandbox agents now
