@@ -447,8 +447,9 @@
 
 | Issue      | Title                                                        | Domain | Priority | Depends On  | Status |
 | ---------- | ------------------------------------------------------------ | ------ | -------- | ----------- | ------ |
-| ENGINE-072 | Replace connect-wrapper with ssh -T for clean ACP stdio      | engine | P0       | —           | todo   |
-| ENGINE-073 | Add network policy for sandbox-to-host API access            | engine | P0       | —           | todo   |
+| ENGINE-072 | Replace connect-wrapper with ssh -T for clean ACP stdio      | engine | P0       | —           | done   |
+| ENGINE-073 | Add network policy for sandbox-to-host API access            | engine | P0       | —           | done   |
+| ENGINE-074 | Judge subprocess fails for sandboxed flows                    | engine | P1       | ENGINE-072  | todo   |
 
 
 ### Phase 26 — Per-Node Worktree Isolation
