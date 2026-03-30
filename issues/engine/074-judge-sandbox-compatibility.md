@@ -72,9 +72,7 @@ The real issue is likely **host-side auth**. The `claude-agent-acp` on the host 
 
 ### Recommended approach
 
-Option A is simplest and correct: the judge runs on the host, so the host needs auth. Add a clear error message when judge fails with "Authentication required" for sandboxed flows, pointing the user to run `claude login` on the host.
-
-If users prefer API key auth, Option C works: ensure `ANTHROPIC_API_KEY` is in `_REQUIRED_ENV_VARS` in `acp_client.py` (already done — it's inherited from host env).
+**Option B**: Run the judge through the sandbox when the source task was sandboxed. The judge is evaluating work done inside the sandbox — it should run there too, with the same auth and environment. In `_acquire_routing_decision()`, when `use_sandbox=true`, wrap the judge harness the same way the task harness is wrapped (via `SandboxManager.wrap_command()` + `AcpHarness` with sandbox env).
 
 ## Testing Strategy
 - E2E: `uv run pytest tests/e2e/test_sandbox.py::TestSandboxConditional -v`
