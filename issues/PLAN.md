@@ -439,7 +439,16 @@
 | Issue      | Title                                                        | Domain | Priority | Depends On  | Status |
 | ---------- | ------------------------------------------------------------ | ------ | -------- | ----------- | ------ |
 | UI-066     | Show decision and summary artifacts in node detail view      | ui     | P1       | SERVER-022  | done   |
-| E2E-015    | Real sandbox E2E test suite (no mocking)                     | e2e    | P1       | ENGINE-068  | todo   |
+| E2E-015    | Real sandbox E2E test suite (no mocking)                     | e2e    | P1       | ENGINE-072, ENGINE-073 | blocked |
+
+
+### Phase 25d — Sandbox Infrastructure Fixes
+
+
+| Issue      | Title                                                        | Domain | Priority | Depends On  | Status |
+| ---------- | ------------------------------------------------------------ | ------ | -------- | ----------- | ------ |
+| ENGINE-072 | Replace connect-wrapper with ssh -T for clean ACP stdio      | engine | P0       | —           | todo   |
+| ENGINE-073 | Add network policy for sandbox-to-host API access            | engine | P0       | —           | todo   |
 
 
 ### Phase 26 — Per-Node Worktree Isolation

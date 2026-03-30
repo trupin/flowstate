@@ -285,15 +285,17 @@ def _get_harness_mgr(request: Request) -> Any:
 
 
 async def _check_sandbox_requirements(
-    flow_ast: Any, sandbox_name: str = "flowstate-claude"
+    flow_ast: Any, sandbox_name: str = "flowstate-claude", server_port: int = 9090
 ) -> None:
     """Raise FlowstateError(400) if the flow needs a sandbox but requirements are not met.
 
     Checks both the flow-level ``sandbox`` flag and each node's ``sandbox`` field.
-    If any of them is ``True``, verifies that ``openshell`` is on PATH and
-    that the named persistent sandbox exists and is Ready.
+    If any of them is ``True``, verifies that ``openshell`` is on PATH,
+    that the named persistent sandbox exists and is Ready, and applies
+    a network policy allowing the sandbox to reach the host API.
     """
     from flowstate.dsl.ast import Flow
+    from flowstate.engine.sandbox import SandboxManager
 
     if not isinstance(flow_ast, Flow):
         return
@@ -341,6 +343,10 @@ async def _check_sandbox_requirements(
             status_code=400,
         ) from exc
 
+    # Apply network policy so sandbox agents can reach the host API
+    mgr = SandboxManager(sandbox_name=sandbox_name)
+    await mgr.apply_network_policy(server_port)
+
 
 @router.post("/flows/{flow_id}/runs", status_code=202)
 async def start_run(
@@ -375,7 +381,7 @@ async def start_run(
     config = request.app.state.config
 
     # Pre-flight: verify openshell is available if sandbox is enabled
-    await _check_sandbox_requirements(flow_ast, config.sandbox_name)
+    await _check_sandbox_requirements(flow_ast, config.sandbox_name, config.server_port)
     harness = request.app.state.harness
     ws_hub = request.app.state.ws_hub
     harness_mgr = _get_harness_mgr(request)
@@ -801,7 +807,7 @@ async def _restart_from_task(
 
     # Pre-flight: verify openshell is available if sandbox is enabled
     config = request.app.state.config
-    await _check_sandbox_requirements(flow_ast, config.sandbox_name)
+    await _check_sandbox_requirements(flow_ast, config.sandbox_name, config.server_port)
 
     executor = _create_restart_executor(request)
     run_manager = _get_run_manager(request)
@@ -1127,7 +1133,7 @@ async def trigger_schedule(request: Request, schedule_id: str) -> dict[str, str]
     config = request.app.state.config
 
     # Pre-flight: verify openshell is available if sandbox is enabled
-    await _check_sandbox_requirements(flow_ast, config.sandbox_name)
+    await _check_sandbox_requirements(flow_ast, config.sandbox_name, config.server_port)
     harness = request.app.state.harness
     ws_hub = request.app.state.ws_hub
     harness_mgr = _get_harness_mgr(request)
