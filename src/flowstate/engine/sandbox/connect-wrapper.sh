@@ -1,20 +1,21 @@
 #!/usr/bin/env bash
-# connect-wrapper.sh -- run a command inside an existing OpenShell sandbox.
+# connect-wrapper.sh -- pipe a command into an existing OpenShell sandbox.
 #
 # Usage: connect-wrapper.sh <sandbox-name> <agent-command>
 #
-# Uses ssh -T (no TTY allocation) with openshell ssh-proxy as the
-# ProxyCommand to get a clean binary stdio channel.  This avoids the
-# terminal escape code contamination that openshell sandbox connect
-# produces (bracketed paste mode, command echo, stty artifacts).
+# Sends the agent command through ``openshell sandbox connect`` so that
+# the command runs inside the named persistent sandbox with provider auth.
+# Remaining stdin is forwarded to the connected session (for ACP messages).
 #
-# FLOWSTATE_* env vars are forwarded to the remote command via explicit
-# export statements, since SSH does not forward environment variables.
-# The command runs via a login shell (bash -l) so that the sandbox user's
-# stored credentials (e.g., claude login) are available.
+# FLOWSTATE_* env vars are forwarded via explicit export statements
+# prepended to the command, since the sandbox doesn't inherit host env.
 #
-# The single Landlock warning line at connection start is auto-skipped
-# by the ACP library's JSON parser (logs and continues).
+# Terminal escape codes from the sandbox connection (Landlock warnings,
+# bracketed paste mode) are handled by the ACP library which auto-skips
+# non-JSON lines in the JSON-RPC stream.
+#
+# NOTE: We use `openshell sandbox connect` (not ssh -T) because it
+# provides provider auth routing that ssh doesn't get.
 set -euo pipefail
 
 SANDBOX_NAME="$1"
@@ -29,11 +30,8 @@ for var in FLOWSTATE_SERVER_URL FLOWSTATE_RUN_ID FLOWSTATE_TASK_ID; do
   fi
 done
 
-exec ssh -T \
-  -o StrictHostKeyChecking=no \
-  -o UserKnownHostsFile=/dev/null \
-  -o GlobalKnownHostsFile=/dev/null \
-  -o LogLevel=ERROR \
-  -o "ProxyCommand=openshell ssh-proxy --gateway-name openshell --name ${SANDBOX_NAME}" \
-  "sandbox@openshell-${SANDBOX_NAME}" \
-  "bash -l -c '${ENV_EXPORTS}exec ${AGENT_CMD}'"
+{
+  printf 'stty raw -echo 2>/dev/null; %sexec %s\n' "$ENV_EXPORTS" "$AGENT_CMD"
+  sleep 2  # Wait for stty + exec to take effect
+  cat      # Forward remaining stdin (ACP messages)
+} | exec openshell sandbox connect "$SANDBOX_NAME"

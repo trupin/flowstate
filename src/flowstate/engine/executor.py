@@ -1026,6 +1026,7 @@ class FlowExecutor:
             command=wrapped_cmd,
             env=harness_env,
             init_timeout=120.0,
+            session_timeout=60.0,
             session_cwd="/sandbox",
         )
         return JudgeProtocol(sandbox_harness)
@@ -2592,6 +2593,7 @@ class FlowExecutor:
                     command=wrapped_cmd,
                     env=merged_env,
                     init_timeout=120.0,
+                    session_timeout=60.0,
                     session_cwd="/sandbox",
                 )
                 # openshell runs on the host, so cwd must be a valid host path.

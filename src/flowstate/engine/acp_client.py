@@ -471,11 +471,13 @@ class AcpHarness:
         command: list[str],
         env: dict[str, str] | None = None,
         init_timeout: float = _ACP_INIT_TIMEOUT,
+        session_timeout: float = _ACP_SESSION_TIMEOUT,
         session_cwd: str | None = None,
     ) -> None:
         self._command = command
         self._env = env
         self._init_timeout = init_timeout
+        self._session_timeout = session_timeout
         self._session_cwd = session_cwd
         # Track active sessions for prompt/cancel/kill
         self._sessions: dict[str, _AcpSession] = {}
@@ -556,11 +558,11 @@ class AcpHarness:
             try:
                 new_resp = await asyncio.wait_for(
                     conn.new_session(cwd=self._session_cwd or workspace),
-                    timeout=_ACP_SESSION_TIMEOUT,
+                    timeout=self._session_timeout,
                 )
             except TimeoutError:
                 raise AcpSessionError(
-                    f"ACP new_session timed out after {_ACP_SESSION_TIMEOUT}s"
+                    f"ACP new_session timed out after {self._session_timeout}s"
                 ) from None
             acp_session_id = new_resp.session_id
 
@@ -916,7 +918,7 @@ class AcpHarness:
                                 conn.load_session(
                                     cwd=self._session_cwd or workspace, session_id=resume_acp_id
                                 ),
-                                timeout=_ACP_SESSION_TIMEOUT,
+                                timeout=self._session_timeout,
                             )
                             # load_session may return None on some agents
                             if resp is not None:
@@ -925,7 +927,7 @@ class AcpHarness:
                                 # Agent returned None -- fall back to new session
                                 new_resp = await asyncio.wait_for(
                                     conn.new_session(cwd=self._session_cwd or workspace),
-                                    timeout=_ACP_SESSION_TIMEOUT,
+                                    timeout=self._session_timeout,
                                 )
                                 acp_session_id = new_resp.session_id
                         except RequestError as e:
@@ -937,24 +939,24 @@ class AcpHarness:
                                 )
                                 new_resp = await asyncio.wait_for(
                                     conn.new_session(cwd=self._session_cwd or workspace),
-                                    timeout=_ACP_SESSION_TIMEOUT,
+                                    timeout=self._session_timeout,
                                 )
                                 acp_session_id = new_resp.session_id
                             else:
                                 raise
                         except TimeoutError:
                             raise AcpSessionError(
-                                f"ACP session load/create timed out after {_ACP_SESSION_TIMEOUT}s"
+                                f"ACP session load/create timed out after {self._session_timeout}s"
                             ) from None
                     else:
                         try:
                             new_resp = await asyncio.wait_for(
                                 conn.new_session(cwd=self._session_cwd or workspace),
-                                timeout=_ACP_SESSION_TIMEOUT,
+                                timeout=self._session_timeout,
                             )
                         except TimeoutError:
                             raise AcpSessionError(
-                                f"ACP new_session timed out after {_ACP_SESSION_TIMEOUT}s"
+                                f"ACP new_session timed out after {self._session_timeout}s"
                             ) from None
                         acp_session_id = new_resp.session_id
                         # Remember the mapping so run_task_resume() can find it
