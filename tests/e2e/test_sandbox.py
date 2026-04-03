@@ -650,7 +650,7 @@ flow sandbox_self_report {
     }
 
     entry check {
-        prompt = "Write a JSON file called DECISION.json. It must contain keys: decision (set to pass), target (set to ship), confidence (set to 0.95), reasoning (set to All checks passed). Then say: DECISION written."
+        prompt = "Analyze the current state and determine if all checks pass. Report your findings briefly."
     }
 
     task retry {
