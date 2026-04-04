@@ -65,7 +65,13 @@ class SandboxManager:
                             ],
                         },
                     ],
-                    "binaries": [{"path": "/**"}],
+                    "binaries": [
+                        {"path": "/usr/bin/node"},
+                        {"path": "/usr/local/bin/node"},
+                        {"path": "/usr/local/bin/claude"},
+                        {"path": "/usr/bin/curl"},
+                        {"path": "/usr/bin/python3"},
+                    ],
                 },
             },
         }
