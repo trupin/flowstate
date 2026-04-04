@@ -35,7 +35,6 @@ class FlowstateConfig:
     watch_dir: str = "./flows"
     log_level: str = "info"
     worktree_cleanup: bool = True
-    sandbox_name: str = "flowstate-claude"
     harnesses: dict[str, HarnessConfigEntry] = field(default_factory=dict)
 
 
@@ -103,10 +102,6 @@ def _parse_toml(path: Path) -> FlowstateConfig:
     logging_section = data.get("logging", {})
     if "level" in logging_section:
         kwargs["log_level"] = logging_section["level"]
-
-    sandbox_section = data.get("sandbox", {})
-    if "name" in sandbox_section:
-        kwargs["sandbox_name"] = sandbox_section["name"]
 
     harnesses_raw = data.get("harnesses", {})
     if harnesses_raw:

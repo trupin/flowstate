@@ -462,6 +462,15 @@
 | ENGINE-071 | Remove per-run worktree logic and clean up executor          | engine | P2       | ENGINE-070         | done   |
 
 
+### Phase 27 — Remove OpenShell Sandbox
+
+
+| Issue      | Title                                                        | Domain | Priority | Depends On  | Status |
+| ---------- | ------------------------------------------------------------ | ------ | -------- | ----------- | ------ |
+| ENGINE-075 | Remove SandboxManager and all OpenShell sandbox logic from engine | engine | P0 | —           | todo   |
+| SERVER-024 | Remove sandbox preflight checks, config, and server-side sandbox code | server | P0 | ENGINE-075 | todo   |
+
+
 ---
 
 ## Cross-Domain Coordination

@@ -45,7 +45,6 @@ from flowstate.engine.context import (
 from flowstate.engine.events import EventType, FlowEvent
 from flowstate.engine.harness import DEFAULT_HARNESS, HarnessManager
 from flowstate.engine.judge import JudgeContext, JudgeDecision, JudgePauseError, JudgeProtocol
-from flowstate.engine.sandbox import SandboxManager
 from flowstate.engine.subprocess_mgr import StreamEvent, StreamEventType
 from flowstate.engine.worktree import (
     WorktreeInfo,
@@ -236,7 +235,6 @@ class FlowExecutor:
         worktree_cleanup: bool = True,
         harness_mgr: HarnessManager | None = None,
         server_base_url: str | None = None,
-        sandbox_name: str = "flowstate-claude",
     ) -> None:
         self._db = db
         self._raw_callback = event_callback
@@ -271,27 +269,6 @@ class FlowExecutor:
         self._interrupted_tasks: set[str] = set()
         # Map task_execution_id -> session_id for interrupt dispatch
         self._task_session: dict[str, str] = {}
-        # Sandbox lifecycle management (ENGINE-059, ENGINE-065)
-        self._sandbox_mgr = SandboxManager(sandbox_name=sandbox_name)
-
-    def _resolve_server_url(self, use_sandbox: bool) -> str:
-        """Resolve the server URL for artifact API calls.
-
-        For host agents, returns the server base URL as-is.
-        For sandboxed agents, replaces the hostname with ``host.docker.internal``
-        so the sandbox container can reach the host server.
-        """
-        base = self._server_base_url or "http://127.0.0.1:9090"
-        if use_sandbox:
-            from urllib.parse import urlparse, urlunparse
-
-            parsed = urlparse(base)
-            # urlparse stores hostname separately; _replace on netloc preserves port
-            host_port = (
-                f"host.docker.internal:{parsed.port}" if parsed.port else "host.docker.internal"
-            )
-            return urlunparse(parsed._replace(netloc=host_port))
-        return base
 
     def _emit(self, event: FlowEvent) -> None:
         """Emit an event via the callback, catching any callback exceptions."""
@@ -990,12 +967,7 @@ class FlowExecutor:
             )
 
             try:
-                # Resolve sandbox for judge: use sandbox if the source task was
-                # sandboxed, so the judge runs in the same environment with the
-                # same auth (ENGINE-074).
-                use_sandbox = node.sandbox if node.sandbox is not None else flow.sandbox
-                judge = self._make_sandbox_judge(flow, node) if use_sandbox else self._judge
-                return await judge.evaluate(judge_context)
+                return await self._judge.evaluate(judge_context)
             except JudgePauseError as e:
                 self._pause_flow(flow_run_id, f"Judge failed: {e.reason}")
                 return None
@@ -1006,30 +978,6 @@ class FlowExecutor:
             except (FileNotFoundError, ValueError) as e:
                 self._pause_flow(flow_run_id, f"Task self-report failed: {e}")
                 return None
-
-    def _make_sandbox_judge(self, flow: Flow, node: Node) -> JudgeProtocol:
-        """Create a JudgeProtocol that runs inside the sandbox.
-
-        Wraps the harness command through the sandbox connect-wrapper so the
-        judge subprocess executes with sandbox auth and environment, matching
-        how the task itself was executed (ENGINE-074).
-        """
-        from flowstate.engine.acp_client import AcpHarness
-
-        harness_name = node.harness or flow.harness
-        harness = self._harness_mgr.get(harness_name)
-        harness_command: list[str] = getattr(harness, "command", [])
-        harness_env: dict[str, str] | None = getattr(harness, "env", None)
-
-        wrapped_cmd = self._sandbox_mgr.wrap_command(harness_command)
-        sandbox_harness = AcpHarness(
-            command=wrapped_cmd,
-            env=harness_env,
-            init_timeout=120.0,
-            session_timeout=60.0,
-            session_cwd="/sandbox",
-        )
-        return JudgeProtocol(sandbox_harness)
 
     async def _read_decision_artifact(
         self, task_execution_id: str, flow_run_id: str
@@ -1336,12 +1284,8 @@ class FlowExecutor:
         workspace = flow.workspace or cwd
 
         # Per-node worktree isolation (ENGINE-070)
-        use_sandbox = target_node.sandbox if target_node.sandbox is not None else flow.sandbox
         worktree_enabled = (
-            flow.worktree
-            and not use_sandbox
-            and is_git_repo(workspace)
-            and not is_existing_worktree(workspace)
+            flow.worktree and is_git_repo(workspace) and not is_existing_worktree(workspace)
         )
 
         worktree_info: WorktreeInfo | None = None
@@ -2565,47 +2509,19 @@ class FlowExecutor:
             # Track task -> session for interrupt dispatch
             self._task_session[task_execution_id] = session_id
 
-            # Resolve sandbox settings: node-level overrides flow-level (ENGINE-059)
-            use_sandbox = node.sandbox if node.sandbox is not None else flow.sandbox
-
             # Build artifact API env vars for the agent subprocess (ENGINE-067)
             artifact_env = {
-                "FLOWSTATE_SERVER_URL": self._resolve_server_url(use_sandbox),
+                "FLOWSTATE_SERVER_URL": self._server_base_url or "http://127.0.0.1:9090",
                 "FLOWSTATE_RUN_ID": flow_run_id,
                 "FLOWSTATE_TASK_ID": task_execution_id,
             }
 
-            if use_sandbox:
-                from flowstate.engine.acp_client import AcpHarness
-
-                # Read command/env from the harness (available on AcpHarness)
-                harness_command: list[str] = getattr(harness, "command", [])
-                harness_env: dict[str, str] | None = getattr(harness, "env", None)
-
-                # Merge artifact env into harness env
-                merged_env = {**(harness_env or {}), **artifact_env}
-
-                wrapped_cmd = self._sandbox_mgr.wrap_command(harness_command)
-                # Sandbox connect takes a few seconds; use a longer timeout.
-                # session_cwd="/sandbox" ensures the agent creates sessions
-                # inside the sandbox filesystem, not the host path.
-                harness = AcpHarness(
-                    command=wrapped_cmd,
-                    env=merged_env,
-                    init_timeout=120.0,
-                    session_timeout=60.0,
-                    session_cwd="/sandbox",
-                )
-                # openshell runs on the host, so cwd must be a valid host path.
-                # The agent inside the sandbox works in /sandbox automatically.
-                task_exec.cwd = str(Path.cwd())
-            else:
-                # Inject artifact env vars into process environment (ENGINE-067).
-                # For non-sandbox harnesses the env dict is already set at
-                # construction time, so we inject into os.environ which the
-                # ACP subprocess inherits.  This is safe in asyncio because
-                # no await occurs between the update and the run_task call.
-                os.environ.update(artifact_env)
+            # Inject artifact env vars into process environment (ENGINE-067).
+            # The env dict is already set at construction time, so we inject
+            # into os.environ which the ACP subprocess inherits.  This is safe
+            # in asyncio because no await occurs between the update and the
+            # run_task call.
+            os.environ.update(artifact_env)
 
             # Determine if this is a session resume or fresh task
             if task_exec.context_mode == ContextMode.SESSION.value and task_exec.claude_session_id:
@@ -2871,12 +2787,8 @@ class FlowExecutor:
         # Per-node worktree isolation (ENGINE-070)
         worktree_info: WorktreeInfo | None = worktree_override
         if worktree_info is None:
-            use_sandbox = node.sandbox if node.sandbox is not None else flow.sandbox
             worktree_enabled = (
-                flow.worktree
-                and not use_sandbox
-                and is_git_repo(workspace)
-                and not is_existing_worktree(workspace)
+                flow.worktree and is_git_repo(workspace) and not is_existing_worktree(workspace)
             )
 
             if worktree_enabled and predecessor_task_id is not None:
