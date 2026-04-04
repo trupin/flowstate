@@ -467,8 +467,8 @@
 
 | Issue      | Title                                                        | Domain | Priority | Depends On  | Status |
 | ---------- | ------------------------------------------------------------ | ------ | -------- | ----------- | ------ |
-| ENGINE-075 | Remove SandboxManager and all OpenShell sandbox logic from engine | engine | P0 | —           | todo   |
-| SERVER-024 | Remove sandbox preflight checks, config, and server-side sandbox code | server | P0 | ENGINE-075 | todo   |
+| ENGINE-075 | Remove SandboxManager and all OpenShell sandbox logic from engine | engine | P0 | —           | done   |
+| SERVER-024 | Remove sandbox preflight checks, config, and server-side sandbox code | server | P0 | ENGINE-075 | done   |
 
 
 ---
