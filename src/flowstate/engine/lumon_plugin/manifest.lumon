@@ -1,0 +1,23 @@
+define flowstate.guide
+  "Return usage guidelines for the flowstate plugin — read this before submitting artifacts"
+  returns: text "Best practices for artifact submission"
+
+define flowstate.submit_summary
+  "Submit a task summary to the Flowstate API"
+  takes:
+    content: text "Markdown summary of what you did, what changed, the outcome"
+  returns: :ok(text) | :error(text) "Success message or error"
+
+define flowstate.submit_decision
+  "Submit a routing decision to the Flowstate API"
+  takes:
+    target: text "Target node name for the transition"
+    reasoning: text "Brief explanation of why this transition was chosen"
+    confidence: number "Confidence score from 0.0 to 1.0"
+  returns: :ok(text) | :error(text) "Success message or error"
+
+define flowstate.submit_output
+  "Submit structured output for cross-flow filing"
+  takes:
+    data: text "JSON string of key-value pairs for target flow input"
+  returns: :ok(text) | :error(text) "Success message or error"

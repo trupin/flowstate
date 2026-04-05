@@ -15,6 +15,7 @@ from flowstate.engine.context import (
     build_routing_instructions,
     expand_templates,
     get_context_mode,
+    lumon_plugin_dir,
     resolve_cwd,
 )
 
@@ -368,3 +369,139 @@ class TestBuildCrossFlowInstructions:
         result = build_cross_flow_instructions(["target_flow"])
         assert "OUTPUT.json file" not in result
         assert "task coordination directory" not in result
+
+
+# ---------------------------------------------------------------------------
+# Tests: Lumon-aware prompt builders
+# ---------------------------------------------------------------------------
+
+
+class TestLumonPromptHandoff:
+    def test_lumon_handoff_uses_plugin_submit(self) -> None:
+        """Handoff prompt with lumon=True uses flowstate.submit_summary() instead of curl."""
+        node = _make_node(prompt="Implement the feature")
+        prompt = build_prompt_handoff(
+            node=node,
+            cwd="/project",
+            predecessor_summary="Previous task analyzed the codebase.",
+            lumon=True,
+        )
+        assert "flowstate.submit_summary" in prompt
+        assert "curl" not in prompt
+        assert "$FLOWSTATE_SERVER_URL" not in prompt
+        # Core content is still present
+        assert "Context from previous task" in prompt
+        assert "Previous task analyzed the codebase." in prompt
+        assert "Your task" in prompt
+        assert "Working directory" in prompt
+
+    def test_lumon_false_handoff_unchanged(self) -> None:
+        """Handoff prompt with lumon=False still uses curl (backwards compatible)."""
+        node = _make_node(prompt="Do stuff")
+        prompt = build_prompt_handoff(
+            node=node, cwd="/project", predecessor_summary="prev", lumon=False
+        )
+        assert "curl" in prompt
+        assert "flowstate.submit_summary" not in prompt
+
+
+class TestLumonPromptSession:
+    def test_lumon_session_uses_plugin_submit(self) -> None:
+        """Session prompt with lumon=True uses flowstate.submit_summary() instead of curl."""
+        node = _make_node(name="review", prompt="Review the implementation")
+        prompt = build_prompt_session(node=node, lumon=True)
+        assert "flowstate.submit_summary" in prompt
+        assert "curl" not in prompt
+        assert "Next task: review" in prompt
+
+    def test_lumon_false_session_unchanged(self) -> None:
+        """Session prompt with lumon=False still uses curl."""
+        node = _make_node(name="review", prompt="Review")
+        prompt = build_prompt_session(node=node, lumon=False)
+        assert "curl" in prompt
+        assert "flowstate.submit_summary" not in prompt
+
+
+class TestLumonPromptNone:
+    def test_lumon_none_uses_plugin_submit(self) -> None:
+        """None-mode prompt with lumon=True uses flowstate.submit_summary()."""
+        node = _make_node(prompt="Initialize")
+        prompt = build_prompt_none(node=node, cwd="/project", lumon=True)
+        assert "flowstate.submit_summary" in prompt
+        assert "curl" not in prompt
+        assert "Your task" in prompt
+        assert "Working directory" in prompt
+
+
+class TestLumonPromptJoin:
+    def test_lumon_join_uses_plugin_submit(self) -> None:
+        """Join prompt with lumon=True uses flowstate.submit_summary()."""
+        node = _make_node(name="merge", prompt="Merge the results")
+        prompt = build_prompt_join(
+            node=node,
+            cwd="/project",
+            member_summaries={"worker_a": "Done", "worker_b": "Also done"},
+            lumon=True,
+        )
+        assert "flowstate.submit_summary" in prompt
+        assert "curl" not in prompt
+        assert "Context from parallel tasks" in prompt
+        assert "### worker_a" in prompt
+
+
+class TestLumonRoutingInstructions:
+    def test_lumon_routing_uses_plugin_submit(self) -> None:
+        """Routing instructions with lumon=True use flowstate.submit_decision()."""
+        result = build_routing_instructions(
+            [("tests_pass", "deploy"), ("tests_fail", "fix")],
+            lumon=True,
+        )
+        assert "flowstate.submit_decision" in result
+        assert "curl" not in result
+        assert "Routing Decision" in result
+        assert '"tests_pass"' in result
+        assert "deploy" in result
+        assert "__none__" in result
+
+    def test_lumon_false_routing_unchanged(self) -> None:
+        """Routing instructions with lumon=False still use curl."""
+        result = build_routing_instructions([("done", "next")], lumon=False)
+        assert "curl" in result
+        assert "flowstate.submit_decision" not in result
+
+
+class TestLumonCrossFlowInstructions:
+    def test_lumon_cross_flow_uses_plugin_submit(self) -> None:
+        """Cross-flow instructions with lumon=True use flowstate.submit_output()."""
+        result = build_cross_flow_instructions(
+            ["deploy_flow", "notify_flow"],
+            lumon=True,
+        )
+        assert "flowstate.submit_output" in result
+        assert "curl" not in result
+        assert "Cross-flow output" in result
+        assert "deploy_flow" in result
+
+    def test_lumon_false_cross_flow_unchanged(self) -> None:
+        """Cross-flow instructions with lumon=False still use curl."""
+        result = build_cross_flow_instructions(["target_flow"], lumon=False)
+        assert "curl" in result
+        assert "flowstate.submit_output" not in result
+
+
+class TestLumonPluginDir:
+    def test_lumon_plugin_dir_exists(self) -> None:
+        """lumon_plugin_dir() returns a path containing the plugin files."""
+        import os
+
+        plugin_dir = lumon_plugin_dir()
+        assert os.path.isdir(plugin_dir)
+        assert os.path.isfile(os.path.join(plugin_dir, "manifest.lumon"))
+        assert os.path.isfile(os.path.join(plugin_dir, "impl.lumon"))
+        assert os.path.isfile(os.path.join(plugin_dir, "flowstate_plugin.py"))
+
+    def test_lumon_plugin_dir_is_absolute(self) -> None:
+        """lumon_plugin_dir() returns an absolute path."""
+        import os
+
+        assert os.path.isabs(lumon_plugin_dir())

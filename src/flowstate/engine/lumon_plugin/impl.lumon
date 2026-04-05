@@ -1,0 +1,47 @@
+implement flowstate.guide
+  let guide = """
+    === Flowstate Plugin Usage Guide ===
+
+    This plugin lets you submit artifacts to the Flowstate orchestrator.
+    Use these functions instead of raw curl commands.
+
+    REQUIRED: Submit a summary before you finish your task.
+
+    Available functions:
+
+      flowstate.submit_summary(content)
+        Submit a markdown summary of your work.
+        content: what you did, what changed, the outcome.
+        Example: flowstate.submit_summary("Implemented the login feature. Added JWT auth.")
+
+      flowstate.submit_decision(target, reasoning, confidence)
+        Submit a routing decision (when self-reporting is enabled).
+        target: the node name to transition to.
+        reasoning: brief explanation of why.
+        confidence: 0.0 to 1.0.
+        Example: flowstate.submit_decision("deploy", "All tests pass", 0.95)
+
+      flowstate.submit_output(data)
+        Submit structured output for cross-flow filing.
+        data: JSON string of key-value pairs.
+        Example: flowstate.submit_output('{"repo": "my-app", "branch": "main"}')
+
+    WORKFLOW:
+      1. Do your work
+      2. flowstate.submit_summary("...") — ALWAYS do this
+      3. flowstate.submit_decision(...) — only if routing instructions say to
+      4. flowstate.submit_output(...) — only if cross-flow output is needed
+    """
+  return guide
+
+implement flowstate.submit_summary
+  let result = plugin.exec("python3 flowstate_plugin.py submit_summary", {content: content})
+  return result
+
+implement flowstate.submit_decision
+  let result = plugin.exec("python3 flowstate_plugin.py submit_decision", {target: target, reasoning: reasoning, confidence: confidence})
+  return result
+
+implement flowstate.submit_output
+  let result = plugin.exec("python3 flowstate_plugin.py submit_output", {data: data})
+  return result

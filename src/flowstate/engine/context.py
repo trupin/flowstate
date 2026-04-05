@@ -8,6 +8,7 @@ Prepares everything needed before launching a Claude Code subprocess:
 
 from __future__ import annotations
 
+import os
 import re
 from typing import TYPE_CHECKING
 
@@ -19,8 +20,26 @@ class CwdResolutionError(Exception):
     """Raised when neither node nor flow specifies a working directory."""
 
 
-def _build_directory_sections(cwd: str) -> str:
-    """Build the shared 'Working directory' and 'Task coordination' prompt sections."""
+def _build_directory_sections(cwd: str, *, lumon: bool = False) -> str:
+    """Build the shared 'Working directory' and 'Task coordination' prompt sections.
+
+    When lumon=True, uses flowstate.submit_summary() instead of curl commands.
+    """
+    if lumon:
+        return (
+            "## Working directory\n"
+            f"Your working directory is: {cwd}\n"
+            "Make all code changes and deliverable output in this directory.\n"
+            "\n"
+            "## Task coordination\n"
+            "When you are done, you MUST submit a summary of your work using "
+            "the flowstate plugin:\n"
+            "```\n"
+            'flowstate.submit_summary("Your summary here: what you did, what changed, '
+            'the outcome")\n'
+            "```\n"
+            "Describe: what you did, what changed, the outcome / current state."
+        )
     return (
         "## Working directory\n"
         f"Your working directory is: {cwd}\n"
@@ -42,10 +61,13 @@ def build_prompt_handoff(
     node: Node,
     cwd: str,
     predecessor_summary: str | None,
+    *,
+    lumon: bool = False,
 ) -> str:
     """Build the full prompt for handoff mode (fresh session with predecessor context).
 
     If predecessor_summary is None, a fallback message is included instead.
+    When lumon=True, artifact submission instructions use flowstate.submit_*() calls.
     """
     if predecessor_summary is None:
         context_section = "(No summary available from predecessor task)"
@@ -61,16 +83,29 @@ def build_prompt_handoff(
         "\n"
         "## Your task\n"
         f"{node.prompt}\n"
-        "\n" + _build_directory_sections(cwd)
+        "\n" + _build_directory_sections(cwd, lumon=lumon)
     )
 
 
-def build_prompt_session(node: Node) -> str:
+def build_prompt_session(node: Node, *, lumon: bool = False) -> str:
     """Build the shorter session-mode prompt (resumed session).
 
     Does not include context or working directory sections since the full
     conversation context is already present in the resumed session.
+    When lumon=True, artifact submission instructions use flowstate.submit_*() calls.
     """
+    if lumon:
+        return (
+            f"[flowstate:node={node.name}]\n"
+            f"## Next task: {node.name}\n"
+            f"{node.prompt}\n"
+            "\n"
+            "When you are done, submit a summary of your work:\n"
+            "```\n"
+            'flowstate.submit_summary("Your summary here: what you did, what changed, '
+            'the outcome")\n'
+            "```"
+        )
     return (
         f"[flowstate:node={node.name}]\n"
         f"## Next task: {node.name}\n"
@@ -86,15 +121,18 @@ def build_prompt_session(node: Node) -> str:
     )
 
 
-def build_prompt_none(node: Node, cwd: str) -> str:
-    """Build prompt with no upstream context (fresh session, self-contained task)."""
+def build_prompt_none(node: Node, cwd: str, *, lumon: bool = False) -> str:
+    """Build prompt with no upstream context (fresh session, self-contained task).
+
+    When lumon=True, artifact submission instructions use flowstate.submit_*() calls.
+    """
     return (
         "You are executing a task in a Flowstate workflow.\n"
         f"[flowstate:node={node.name}]\n"
         "\n"
         "## Your task\n"
         f"{node.prompt}\n"
-        "\n" + _build_directory_sections(cwd)
+        "\n" + _build_directory_sections(cwd, lumon=lumon)
     )
 
 
@@ -102,11 +140,14 @@ def build_prompt_join(
     node: Node,
     cwd: str,
     member_summaries: dict[str, str | None],
+    *,
+    lumon: bool = False,
 ) -> str:
     """Build prompt for join nodes with aggregated fork member summaries.
 
     member_summaries maps member node names to their SUMMARY.md contents
     (or None if the summary is missing).
+    When lumon=True, artifact submission instructions use flowstate.submit_*() calls.
     """
     members_section_parts: list[str] = []
     for member_name, summary in member_summaries.items():
@@ -125,7 +166,7 @@ def build_prompt_join(
         "\n"
         "## Your task\n"
         f"{node.prompt}\n"
-        "\n" + _build_directory_sections(cwd)
+        "\n" + _build_directory_sections(cwd, lumon=lumon)
     )
 
 
@@ -242,17 +283,35 @@ def build_task_management_instructions(
     return "\n".join(lines)
 
 
-def build_cross_flow_instructions(target_flow_names: list[str]) -> str:
+def build_cross_flow_instructions(
+    target_flow_names: list[str],
+    *,
+    lumon: bool = False,
+) -> str:
     """Build prompt section instructing the agent to produce cross-flow output.
 
     When a node has outgoing FILE or AWAIT edges, the agent should POST an
     OUTPUT.json to the Flowstate API so its output can be forwarded to the target flows.
 
+    When lumon=True, uses flowstate.submit_output() instead of curl commands.
+
     Args:
         target_flow_names: Names of the target flows referenced by FILE/AWAIT edges.
+        lumon: Whether to use Lumon plugin instructions instead of curl.
     """
     targets = ", ".join(target_flow_names)
     bullets = "\n".join(f"- {name}" for name in target_flow_names)
+    if lumon:
+        return (
+            "\n\n## Cross-flow output\n"
+            f"This task will file tasks to other flows: {targets}.\n"
+            f"{bullets}\n"
+            "Submit your structured output using the flowstate plugin:\n"
+            "```\n"
+            """flowstate.submit_output('{"key": "value", ...}')\n"""
+            "```\n"
+            "These values will be passed as input parameters to the target flow(s)."
+        )
     return (
         "\n\n## Cross-flow output\n"
         f"This task will file tasks to other flows: {targets}.\n"
@@ -270,18 +329,40 @@ def build_cross_flow_instructions(target_flow_names: list[str]) -> str:
 
 def build_routing_instructions(
     outgoing_edges: list[tuple[str, str]],
+    *,
+    lumon: bool = False,
 ) -> str:
     """Build self-report routing instructions to append to a task prompt.
 
     When the judge is disabled, the task agent itself decides which transition
     to take by POSTing a DECISION.json to the Flowstate API.
 
+    When lumon=True, uses flowstate.submit_decision() instead of curl commands.
+
     Args:
         outgoing_edges: List of (condition, target_node_name) pairs.
+        lumon: Whether to use Lumon plugin instructions instead of curl.
     """
     transitions = "\n".join(
         f'- "{condition}" → transitions to: {target}' for condition, target in outgoing_edges
     )
+
+    if lumon:
+        return (
+            "\n\n## Routing Decision\n"
+            "After completing your task, decide which transition to take.\n"
+            "\n"
+            "### Available Transitions\n"
+            f"{transitions}\n"
+            '\nIf no condition clearly matches, use "__none__".\n'
+            "\n"
+            "### Submit your decision\n"
+            "```\n"
+            'flowstate.submit_decision("<target_node_name>", '
+            '"<brief explanation>", <0.0-1.0>)\n'
+            "```\n"
+            "You MUST submit this decision before completing your task."
+        )
 
     return (
         "\n\n## Routing Decision\n"
@@ -302,3 +383,13 @@ def build_routing_instructions(
         "```\n"
         "You MUST submit this decision before completing your task."
     )
+
+
+def lumon_plugin_dir() -> str:
+    """Return the absolute path to the bundled flowstate Lumon plugin directory.
+
+    This directory contains manifest.lumon, impl.lumon, and flowstate_plugin.py.
+    It should be symlinked or copied into the Lumon plugins directory when
+    setting up a Lumon-enabled task.
+    """
+    return os.path.join(os.path.dirname(__file__), "lumon_plugin")
