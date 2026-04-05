@@ -533,6 +533,9 @@ async def get_run(request: Request, run_id: str) -> dict[str, Any]:
 # ---------------------------------------------------------------------------
 
 _RUN_TERMINAL_STATUSES = frozenset({"completed", "failed", "cancelled", "budget_exceeded"})
+_RUN_RESTARTABLE_STATUSES = frozenset(
+    {"cancelled", "failed", "budget_exceeded", "paused", "running"}
+)
 
 # Maximum depth for recursive file listing in non-git workspaces.
 _MAX_FILE_LIST_DEPTH = 4
@@ -779,7 +782,7 @@ async def _restart_from_task(
     run = db.get_flow_run(run_id)
     if not run:
         raise FlowstateError(f"Run '{run_id}' not found", status_code=404)
-    if run.status not in ("cancelled", "failed", "budget_exceeded", "paused", "running"):
+    if run.status not in _RUN_RESTARTABLE_STATUSES:
         raise FlowstateError(
             f"Run '{run_id}' is not in a restartable state (status: {run.status})",
             status_code=409,
