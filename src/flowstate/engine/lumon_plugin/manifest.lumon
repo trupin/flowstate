@@ -21,3 +21,20 @@ define flowstate.submit_output
   takes:
     data: text "JSON string of key-value pairs for target flow input"
   returns: :ok(text) | :error(text) "Success message or error"
+
+define flowstate.create_subtask
+  "Create a new subtask to track progress"
+  takes:
+    title: text "Short description of the subtask"
+  returns: :ok(text) | :error(text) "Subtask ID or error"
+
+define flowstate.update_subtask
+  "Update a subtask's status"
+  takes:
+    subtask_id: text "The subtask ID returned by create_subtask"
+    status: text "New status: in_progress or done"
+  returns: :ok(text) | :error(text) "Success message or error"
+
+define flowstate.list_subtasks
+  "List all subtasks for the current task"
+  returns: :ok(text) | :error(text) "JSON array of subtasks or error"

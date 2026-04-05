@@ -217,23 +217,21 @@ def build_task_management_instructions(
     run_id: str,
     task_execution_id: str,
     predecessor_task_execution_id: str | None = None,
+    *,
+    lumon: bool = False,
 ) -> str:
-    """Build prompt section with subtask management API instructions.
+    """Build prompt section with subtask management instructions.
 
-    Provides the agent with curl examples for creating, listing, and updating
-    subtasks via the Flowstate REST API. When a predecessor task execution ID
-    is provided (handoff mode), includes instructions to query the predecessor's
-    subtasks for context.
+    When lumon=True, uses flowstate.create_subtask() etc. instead of curl.
+    When lumon=False, provides curl examples for the REST API.
 
     Args:
         server_base_url: The base URL of the Flowstate server (e.g. "http://127.0.0.1:8080").
         run_id: The current flow run ID.
         task_execution_id: The current task execution ID.
         predecessor_task_execution_id: Optional predecessor task execution ID for handoff mode.
+        lumon: If True, use Lumon flowstate plugin commands instead of curl.
     """
-    base = server_base_url.rstrip("/")
-    task_url = f"{base}/api/runs/{run_id}/tasks/{task_execution_id}/subtasks"
-
     lines = [
         "\n\n## Task Management",
         "You have a subtask management system. Break your work into subtasks "
@@ -243,22 +241,53 @@ def build_task_management_instructions(
         "1. **Create** it before you start the work.",
         "2. **Mark it `in_progress`** when you begin working on it.",
         "3. **Mark it `done`** when the work is complete.",
-        "",
-        "### Create a subtask",
-        f"curl -s -X POST {task_url} \\",
-        '  -H "Content-Type: application/json" \\',
-        """  -d '{"title": "your subtask title"}'""",
-        "",
-        "### Update a subtask",
-        f"curl -s -X PATCH {task_url}/{{subtask_id}} \\",
-        '  -H "Content-Type: application/json" \\',
-        """  -d '{"status": "in_progress"}'  # or "done\"""",
-        "",
-        "### List your subtasks",
-        f"curl -s {task_url}",
     ]
 
-    if predecessor_task_execution_id is not None:
+    if lumon:
+        lines.extend(
+            [
+                "",
+                "### Create a subtask",
+                "```",
+                "lumon --working-dir sandbox 'return flowstate.create_subtask(\"your subtask title\")'",
+                "```",
+                "This returns the subtask ID.",
+                "",
+                "### Update a subtask",
+                "```",
+                'lumon --working-dir sandbox \'return flowstate.update_subtask("SUBTASK_ID", "in_progress")\'',
+                "```",
+                "Use `in_progress` when starting, `done` when complete.",
+                "",
+                "### List your subtasks",
+                "```",
+                "lumon --working-dir sandbox 'return flowstate.list_subtasks()'",
+                "```",
+            ]
+        )
+    else:
+        base = server_base_url.rstrip("/")
+        task_url = f"{base}/api/runs/{run_id}/tasks/{task_execution_id}/subtasks"
+        lines.extend(
+            [
+                "",
+                "### Create a subtask",
+                f"curl -s -X POST {task_url} \\",
+                '  -H "Content-Type: application/json" \\',
+                """  -d '{"title": "your subtask title"}'""",
+                "",
+                "### Update a subtask",
+                f"curl -s -X PATCH {task_url}/{{subtask_id}} \\",
+                '  -H "Content-Type: application/json" \\',
+                """  -d '{"status": "in_progress"}'  # or "done\"""",
+                "",
+                "### List your subtasks",
+                f"curl -s {task_url}",
+            ]
+        )
+
+    if predecessor_task_execution_id is not None and not lumon:
+        base = server_base_url.rstrip("/")
         pred_url = f"{base}/api/runs/{run_id}/tasks/{predecessor_task_execution_id}/subtasks"
         lines.extend(
             [

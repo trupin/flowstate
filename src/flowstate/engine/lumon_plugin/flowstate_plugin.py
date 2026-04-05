@@ -105,10 +105,73 @@ def handle_submit_output(args: dict) -> dict[str, str]:
     return submit_artifact("output", data, "application/json")
 
 
+def _api_request(
+    method: str, path: str, body: str | None = None, content_type: str = "application/json"
+) -> dict[str, str]:
+    """Make an HTTP request to the Flowstate API."""
+    env_err = _check_env()
+    if env_err:
+        return {"tag": "error", "value": env_err}
+
+    url = f"{SERVER_URL}{path}"
+    data = body.encode("utf-8") if body else None
+    req = urllib.request.Request(url, data=data, method=method)
+    if body:
+        req.add_header("Content-Type", content_type)
+    try:
+        with urllib.request.urlopen(req, timeout=30) as resp:
+            resp_body = resp.read().decode("utf-8", errors="replace")
+            return {"tag": "ok", "value": resp_body}
+    except urllib.error.HTTPError as e:
+        body_text = ""
+        with contextlib.suppress(Exception):
+            body_text = e.read().decode("utf-8", errors="replace")[:500]
+        return {"tag": "error", "value": f"HTTP {e.code}: {body_text}"}
+    except Exception as e:
+        return {"tag": "error", "value": str(e)}
+
+
+def handle_create_subtask(args: dict) -> dict[str, str]:
+    """Create a new subtask."""
+    title = args.get("title", "")
+    if not title:
+        return {"tag": "error", "value": "title is required"}
+    path = f"/api/runs/{RUN_ID}/tasks/{TASK_ID}/subtasks"
+    result = _api_request("POST", path, json.dumps({"title": title}))
+    if result["tag"] == "ok":
+        try:
+            data = json.loads(result["value"])
+            return {"tag": "ok", "value": data.get("id", result["value"])}
+        except (json.JSONDecodeError, TypeError):
+            pass
+    return result
+
+
+def handle_update_subtask(args: dict) -> dict[str, str]:
+    """Update a subtask's status."""
+    subtask_id = args.get("subtask_id", "")
+    status = args.get("status", "")
+    if not subtask_id:
+        return {"tag": "error", "value": "subtask_id is required"}
+    if status not in ("in_progress", "done"):
+        return {"tag": "error", "value": "status must be 'in_progress' or 'done'"}
+    path = f"/api/runs/{RUN_ID}/tasks/{TASK_ID}/subtasks/{subtask_id}"
+    return _api_request("PATCH", path, json.dumps({"status": status}))
+
+
+def handle_list_subtasks(args: dict) -> dict[str, str]:
+    """List all subtasks for the current task."""
+    path = f"/api/runs/{RUN_ID}/tasks/{TASK_ID}/subtasks"
+    return _api_request("GET", path)
+
+
 HANDLERS = {
     "submit_summary": handle_submit_summary,
     "submit_decision": handle_submit_decision,
     "submit_output": handle_submit_output,
+    "create_subtask": handle_create_subtask,
+    "update_subtask": handle_update_subtask,
+    "list_subtasks": handle_list_subtasks,
 }
 
 

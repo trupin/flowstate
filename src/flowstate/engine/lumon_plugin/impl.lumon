@@ -26,11 +26,24 @@ implement flowstate.guide
         data: JSON string of key-value pairs.
         Example: flowstate.submit_output('{"repo": "my-app", "branch": "main"}')
 
+      flowstate.create_subtask(title)
+        Create a subtask to track progress. Returns the subtask ID.
+        Example: flowstate.create_subtask("Implement login endpoint")
+
+      flowstate.update_subtask(subtask_id, status)
+        Update a subtask status to "in_progress" or "done".
+        Example: flowstate.update_subtask("abc-123", "done")
+
+      flowstate.list_subtasks()
+        List all subtasks for the current task.
+
     WORKFLOW:
-      1. Do your work
-      2. flowstate.submit_summary("...") — ALWAYS do this
-      3. flowstate.submit_decision(...) — only if routing instructions say to
-      4. flowstate.submit_output(...) — only if cross-flow output is needed
+      1. Create subtasks for your work plan
+      2. Mark each subtask in_progress, then done as you complete it
+      3. Do your work
+      4. flowstate.submit_summary("...") — ALWAYS do this
+      5. flowstate.submit_decision(...) — only if routing instructions say to
+      6. flowstate.submit_output(...) — only if cross-flow output is needed
     """
   return guide
 
@@ -44,4 +57,16 @@ implement flowstate.submit_decision
 
 implement flowstate.submit_output
   let result = plugin.exec("python3 flowstate_plugin.py submit_output", {data: data})
+  return result
+
+implement flowstate.create_subtask
+  let result = plugin.exec("python3 flowstate_plugin.py create_subtask", {title: title})
+  return result
+
+implement flowstate.update_subtask
+  let result = plugin.exec("python3 flowstate_plugin.py update_subtask", {subtask_id: subtask_id, status: status})
+  return result
+
+implement flowstate.list_subtasks
+  let result = plugin.exec("python3 flowstate_plugin.py list_subtasks", {})
   return result

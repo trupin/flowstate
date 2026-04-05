@@ -2929,6 +2929,7 @@ class FlowExecutor:
             run_id=flow_run_id,
             task_execution_id=task_id,
             predecessor_task_execution_id=predecessor_task_id,
+            lumon=_use_lumon(flow, node),
         )
         self._db._execute(  # type: ignore[attr-defined]
             "UPDATE task_executions SET prompt_text = ? WHERE id = ?",
