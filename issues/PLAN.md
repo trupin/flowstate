@@ -401,8 +401,8 @@
 
 | Issue      | Title                                                        | Domain | Priority | Depends On  | Status |
 | ---------- | ------------------------------------------------------------ | ------ | -------- | ----------- | ------ |
-| ENGINE-061 | Add lumon dependency and integrate deploy into task setup    | engine | P0       | DSL-014     | todo   |
-| ENGINE-062 | Adapt task output reading for lumon sandbox directory         | engine | P1       | ENGINE-061  | todo   |
+| ENGINE-061 | Add lumon dependency and integrate deploy into task setup    | engine | P0       | DSL-014     | superseded (ENGINE-076/077) |
+| ENGINE-062 | Adapt task output reading for lumon sandbox directory         | engine | P1       | ENGINE-061  | superseded (ENGINE-077) |
 
 
 ### Phase 24c — Lumon Server & UI
@@ -410,8 +410,8 @@
 
 | Issue      | Title                                                        | Domain | Priority | Depends On  | Status |
 | ---------- | ------------------------------------------------------------ | ------ | -------- | ----------- | ------ |
-| SERVER-021 | Expose lumon settings in flow and node API responses         | server | P1       | DSL-014     | todo   |
-| UI-065     | Show lumon security indicator in flow detail panel           | ui     | P1       | SERVER-021  | todo   |
+| SERVER-021 | Expose lumon settings in flow and node API responses         | server | P1       | DSL-014     | superseded (SERVER-025) |
+| UI-065     | Show lumon security indicator in flow detail panel           | ui     | P1       | SERVER-021  | superseded (UI-067) |
 
 
 ### Phase 25a — Task Artifact API
@@ -469,6 +469,24 @@
 | ---------- | ------------------------------------------------------------ | ------ | -------- | ----------- | ------ |
 | ENGINE-075 | Remove SandboxManager and all OpenShell sandbox logic from engine | engine | P0 | —           | done   |
 | SERVER-024 | Remove sandbox preflight checks, config, and server-side sandbox code | server | P0 | ENGINE-075 | done   |
+
+
+### Phase 28a — Lumon Engine Core
+
+
+| Issue      | Title                                                        | Domain | Priority | Depends On  | Status |
+| ---------- | ------------------------------------------------------------ | ------ | -------- | ----------- | ------ |
+| ENGINE-076 | Create flowstate Lumon plugin for artifact submission         | engine | P0       | —           | todo   |
+| ENGINE-077 | Lumon deploy integration with plugin management              | engine | P0       | ENGINE-076  | todo   |
+
+
+### Phase 28b — Lumon Server & UI
+
+
+| Issue      | Title                                                        | Domain | Priority | Depends On  | Status |
+| ---------- | ------------------------------------------------------------ | ------ | -------- | ----------- | ------ |
+| SERVER-025 | Expose lumon/sandbox settings in flow API responses           | server | P1       | —           | todo   |
+| UI-067     | Show Lumon security indicator in flow detail panel            | ui     | P1       | SERVER-025  | todo   |
 
 
 ---

@@ -4,7 +4,7 @@
 server
 
 ## Status
-todo
+superseded (by SERVER-025)
 
 ## Priority
 P1 (important)

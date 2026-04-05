@@ -4,7 +4,7 @@
 engine
 
 ## Status
-todo
+superseded (by ENGINE-076, ENGINE-077)
 
 ## Priority
 P0 (critical path)

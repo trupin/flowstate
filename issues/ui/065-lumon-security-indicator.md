@@ -4,7 +4,7 @@
 ui
 
 ## Status
-todo
+superseded (by UI-067)
 
 ## Priority
 P1 (important)

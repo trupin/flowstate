@@ -4,7 +4,7 @@
 engine
 
 ## Status
-todo
+superseded (by ENGINE-077)
 
 ## Priority
 P1 (important)
