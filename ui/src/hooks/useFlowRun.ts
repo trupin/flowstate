@@ -339,6 +339,38 @@ export function useFlowRun(runId: string): UseFlowRunReturn {
   const [logs, setLogs] = useState<Map<string, LogEntry[]>>(new Map());
   const [subtaskVersion, setSubtaskVersion] = useState(0);
 
+  // Fallback timer ref: when a cancel/abort action is sent, we start a 3-second
+  // timeout. If the flow status hasn't become terminal by then, we re-fetch from
+  // the REST API to ensure the UI reflects the actual state. This handles the
+  // case where the WebSocket status_changed event is lost or never emitted.
+  const cancelFallbackTimer = useRef<ReturnType<typeof setTimeout> | null>(
+    null,
+  );
+
+  // Clear fallback timer when status becomes terminal
+  useEffect(() => {
+    if (
+      run &&
+      ['completed', 'failed', 'cancelled', 'budget_exceeded'].includes(
+        run.status,
+      )
+    ) {
+      if (cancelFallbackTimer.current !== null) {
+        clearTimeout(cancelFallbackTimer.current);
+        cancelFallbackTimer.current = null;
+      }
+    }
+  }, [run]);
+
+  // Cleanup fallback timer on unmount
+  useEffect(() => {
+    return () => {
+      if (cancelFallbackTimer.current !== null) {
+        clearTimeout(cancelFallbackTimer.current);
+      }
+    };
+  }, []);
+
   // Auto-select the first running task (alphabetically) when not manually selecting
   const autoSelectedTask: string | null = useMemo(() => {
     if (isManualSelection) return null;
@@ -506,6 +538,31 @@ export function useFlowRun(runId: string): UseFlowRunReturn {
     });
   }, []);
 
+  // Wrap send to detect cancel/abort actions and start a fallback timer.
+  // If the backend status_changed event doesn't arrive within 3 seconds,
+  // re-fetch from the REST API to ensure the UI reflects cancellation.
+  const wrappedSend = useCallback(
+    (data: unknown) => {
+      send(data);
+      const msg = data as Record<string, unknown> | null;
+      if (
+        msg &&
+        typeof msg === 'object' &&
+        (msg.action === 'cancel' || msg.action === 'abort')
+      ) {
+        // Clear any existing timer before starting a new one
+        if (cancelFallbackTimer.current !== null) {
+          clearTimeout(cancelFallbackTimer.current);
+        }
+        cancelFallbackTimer.current = setTimeout(() => {
+          cancelFallbackTimer.current = null;
+          fetchRunDetail();
+        }, 3000);
+      }
+    },
+    [send, fetchRunDetail],
+  );
+
   return {
     run,
     tasks,
@@ -520,7 +577,7 @@ export function useFlowRun(runId: string): UseFlowRunReturn {
     logs,
     clearLogs,
     isConnected,
-    send,
+    send: wrappedSend,
     subtaskVersion,
   };
 }

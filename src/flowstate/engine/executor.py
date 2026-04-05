@@ -1636,52 +1636,57 @@ class FlowExecutor:
         for resume_event in self._task_resume_events.values():
             resume_event.set()
 
-        # Kill all running subprocesses via their respective harnesses.
-        # Use _task_session (set by _execute_single_task) because the DB's
-        # claude_session_id is only populated on task completion -- it will be
-        # None for tasks that are still running.
-        for task_id in list(self._running_tasks):
-            sid = self._task_session.get(task_id)
-            if sid is None:
-                # Fallback to DB in case _task_session was not populated
-                task_exec = self._db.get_task_execution(task_id)
-                if task_exec:
-                    sid = task_exec.claude_session_id
-            if sid:
-                harness_name = self._session_harness.get(sid, DEFAULT_HARNESS)
-                harness = self._harness_mgr.get(harness_name)
-                await harness.kill(sid)
-            atask = self._running_tasks.get(task_id)
-            if atask:
-                atask.cancel()
+        try:
+            # Kill all running subprocesses via their respective harnesses.
+            # Use _task_session (set by _execute_single_task) because the DB's
+            # claude_session_id is only populated on task completion -- it will be
+            # None for tasks that are still running.
+            for task_id in list(self._running_tasks):
+                sid = self._task_session.get(task_id)
+                if sid is None:
+                    # Fallback to DB in case _task_session was not populated
+                    task_exec = self._db.get_task_execution(task_id)
+                    if task_exec:
+                        sid = task_exec.claude_session_id
+                if sid:
+                    harness_name = self._session_harness.get(sid, DEFAULT_HARNESS)
+                    harness = self._harness_mgr.get(harness_name)
+                    await harness.kill(sid)
+                atask = self._running_tasks.get(task_id)
+                if atask:
+                    atask.cancel()
 
-        # Wait for all tasks to finish cancellation
-        if self._running_tasks:
-            await asyncio.gather(*self._running_tasks.values(), return_exceptions=True)
-        self._running_tasks.clear()
+            # Wait for all tasks to finish cancellation
+            if self._running_tasks:
+                await asyncio.gather(*self._running_tasks.values(), return_exceptions=True)
+            self._running_tasks.clear()
 
-        # Mark all still-active tasks as failed (due to cancellation).
-        # The DB schema only allows 'failed'/'skipped' for terminal error states.
-        # Include "interrupted" status (ENGINE-036) since interrupted tasks are
-        # still logically active.
-        tasks = self._db.list_task_executions(flow_run_id)
-        for task in tasks:
-            if task.status in ("running", "pending", "waiting", "interrupted"):
-                self._db.update_task_status(task.id, "failed", error_message="Flow cancelled")
+            # Mark all still-active tasks as failed (due to cancellation).
+            # The DB schema only allows 'failed'/'skipped' for terminal error states.
+            # Include "interrupted" status (ENGINE-036) since interrupted tasks are
+            # still logically active.
+            tasks = self._db.list_task_executions(flow_run_id)
+            for task in tasks:
+                if task.status in ("running", "pending", "waiting", "interrupted"):
+                    self._db.update_task_status(task.id, "failed", error_message="Flow cancelled")
 
-        # Update fork groups
-        groups = self._db.get_active_fork_groups(flow_run_id)
-        for group in groups:
-            self._db.update_fork_group_status(group.id, "cancelled")
+            # Update fork groups
+            groups = self._db.get_active_fork_groups(flow_run_id)
+            for group in groups:
+                self._db.update_fork_group_status(group.id, "cancelled")
 
-        # Cleanup per-node worktrees
-        await self._cleanup_all_worktrees(flow_run_id)
+            # Cleanup per-node worktrees
+            await self._cleanup_all_worktrees(flow_run_id)
 
-        # Mark the queue task as cancelled
-        queue_task_id = self._task_id
-        if queue_task_id:
-            self._db.update_task_queue_status(queue_task_id, "cancelled")
+            # Mark the queue task as cancelled
+            queue_task_id = self._task_id
+            if queue_task_id:
+                self._db.update_task_queue_status(queue_task_id, "cancelled")
+        except Exception:
+            logger.exception("Error during cancel cleanup for flow run %s", flow_run_id)
 
+        # Always update status and emit event, even if cleanup partially failed.
+        # This guarantees the UI receives the status_changed event.
         self._db.update_flow_run_status(flow_run_id, "cancelled")
         self._emit(
             FlowEvent(

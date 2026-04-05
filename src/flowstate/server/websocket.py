@@ -246,7 +246,13 @@ class WebSocketHub:
             self._client_subs[websocket].discard(flow_run_id)
 
     async def _handle_control(self, action: str, flow_run_id: str) -> None:
-        """Delegate pause/cancel/abort to the FlowExecutor."""
+        """Delegate pause/cancel/abort to the FlowExecutor.
+
+        Wraps the executor call in try/except so that if the executor raises
+        during cleanup, the client still receives a status_changed event.
+        Without this, an exception in cancel() would silently swallow the
+        status change, leaving the UI stuck showing the pre-cancel state.
+        """
         if not self._run_manager:
             return
         executor = self._run_manager.get_executor(flow_run_id)
@@ -255,13 +261,30 @@ class WebSocketHub:
         # Use the executor's internal flow_run_id (the DB-generated ID) when
         # available, matching the REST endpoint behavior.
         actual_run_id = getattr(executor, "_flow_run_id", None) or flow_run_id
-        if action == "pause":
-            await executor.pause(actual_run_id)
-        elif action == "cancel":
-            await executor.cancel(actual_run_id)
-        elif action == "abort":
-            # abort maps to cancel -- there is no separate abort method on FlowExecutor
-            await executor.cancel(actual_run_id)
+        try:
+            if action == "pause":
+                await executor.pause(actual_run_id)
+            elif action == "cancel":
+                await executor.cancel(actual_run_id)
+            elif action == "abort":
+                # abort maps to cancel -- there is no separate abort method on FlowExecutor
+                await executor.cancel(actual_run_id)
+        except Exception:
+            logger.exception("Control action '%s' failed for run %s", action, flow_run_id)
+            # Broadcast a status_changed event as a fallback so the UI updates
+            # even if the executor raised partway through.
+            target_status = "cancelled" if action in ("cancel", "abort") else "paused"
+            fallback_event: dict[str, Any] = {
+                "type": "flow.status_changed",
+                "flow_run_id": actual_run_id,
+                "timestamp": "",
+                "payload": {
+                    "old_status": "running",
+                    "new_status": target_status,
+                    "reason": f"Control action '{action}' completed with errors",
+                },
+            }
+            await self.broadcast_event(fallback_event)
 
     async def _handle_task_control(
         self,
