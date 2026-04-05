@@ -729,6 +729,13 @@ async def cancel_run(request: Request, run_id: str) -> dict[str, str]:
 
     # Orphaned run — update DB directly
     db.update_flow_run_status(run_id, "cancelled")
+
+    # Also mark any running/pending tasks as failed
+    tasks = db.list_task_executions(run_id)
+    for task in tasks:
+        if task.status in ("running", "pending", "waiting"):
+            db.update_task_status(task.id, "failed", error_message="Flow cancelled")
+
     return {"status": "cancelled"}
 
 
