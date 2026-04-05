@@ -45,6 +45,7 @@ from flowstate.engine.context import (
 from flowstate.engine.events import EventType, FlowEvent
 from flowstate.engine.harness import DEFAULT_HARNESS, HarnessManager
 from flowstate.engine.judge import JudgeContext, JudgeDecision, JudgePauseError, JudgeProtocol
+from flowstate.engine.lumon import _use_lumon, setup_lumon
 from flowstate.engine.subprocess_mgr import StreamEvent, StreamEventType
 from flowstate.engine.worktree import (
     WorktreeInfo,
@@ -113,13 +114,13 @@ def _is_conditional(edges: list[Edge]) -> bool:
     return any(e.edge_type == EdgeType.CONDITIONAL for e in edges)
 
 
-def _maybe_append_routing(prompt: str, flow: Flow, node: Node) -> str:
+def _maybe_append_routing(prompt: str, flow: Flow, node: Node, *, lumon: bool = False) -> str:
     """Append self-report routing instructions if judge is disabled and node has conditionals."""
     if _use_judge(flow, node):
         return prompt
     cond_edges = _conditional_edge_pairs(_get_outgoing_edges(flow, node.name))
     if cond_edges:
-        return prompt + build_routing_instructions(cond_edges)
+        return prompt + build_routing_instructions(cond_edges, lumon=lumon)
     return prompt
 
 
@@ -235,11 +236,13 @@ class FlowExecutor:
         worktree_cleanup: bool = True,
         harness_mgr: HarnessManager | None = None,
         server_base_url: str | None = None,
+        flow_file_dir: str | None = None,
     ) -> None:
         self._db = db
         self._raw_callback = event_callback
         self._harness_mgr = harness_mgr or HarnessManager(default_harness=harness)
         self._server_base_url = server_base_url
+        self._flow_file_dir = flow_file_dir
         self._judge = judge or JudgeProtocol(harness)
         self._semaphore = asyncio.Semaphore(max_concurrent)
         self._max_concurrent = max_concurrent
@@ -846,7 +849,8 @@ class FlowExecutor:
         if join_wt is not None:
             cwd = map_cwd_to_worktree(cwd, join_wt.original_workspace, join_wt.worktree_path)
 
-        prompt = build_prompt_join(join_node, cwd, member_summaries)
+        lumon = _use_lumon(flow, join_node)
+        prompt = build_prompt_join(join_node, cwd, member_summaries, lumon=lumon)
         prompt += merge_conflict_msg
 
         # Expand template if needed
@@ -854,7 +858,7 @@ class FlowExecutor:
         if expanded != join_node.prompt:
             prompt = prompt.replace(join_node.prompt, expanded)
 
-        prompt = _maybe_append_routing(prompt, flow, join_node)
+        prompt = _maybe_append_routing(prompt, flow, join_node, lumon=lumon)
 
         join_task_id = self._db.create_task_execution(
             flow_run_id=flow_run_id,
@@ -1313,6 +1317,7 @@ class FlowExecutor:
             )
 
         claude_session_id: str | None = None
+        lumon = _use_lumon(flow, target_node)
 
         if is_cycle and context_mode == ContextMode.HANDOFF:
             # For cycle re-entry with handoff: include source task's summary
@@ -1326,32 +1331,32 @@ class FlowExecutor:
                 f"You are re-entering this task (generation {generation}) "
                 f"to address the feedback."
             )
-            prompt = build_prompt_handoff(target_node, cwd, cycle_context)
+            prompt = build_prompt_handoff(target_node, cwd, cycle_context, lumon=lumon)
 
         elif is_cycle and context_mode == ContextMode.SESSION:
             # Resume the SOURCE task's session (the reviewer), not the
             # target's previous session
-            prompt = build_prompt_session(target_node)
+            prompt = build_prompt_session(target_node, lumon=lumon)
             claude_session_id = source_task.claude_session_id
 
         elif context_mode == ContextMode.HANDOFF:
             # Normal (non-cycle) conditional transition
             artifact = self._db.get_artifact(source_task.id, "summary")
             source_summary = artifact.content if artifact else None
-            prompt = build_prompt_handoff(target_node, cwd, source_summary)
+            prompt = build_prompt_handoff(target_node, cwd, source_summary, lumon=lumon)
 
         elif context_mode == ContextMode.SESSION:
-            prompt = build_prompt_session(target_node)
+            prompt = build_prompt_session(target_node, lumon=lumon)
             claude_session_id = source_task.claude_session_id
 
         else:  # none
-            prompt = build_prompt_none(target_node, cwd)
+            prompt = build_prompt_none(target_node, cwd, lumon=lumon)
 
         # Expand template if needed
         if expanded_prompt != target_node.prompt:
             prompt = prompt.replace(target_node.prompt, expanded_prompt)
 
-        prompt = _maybe_append_routing(prompt, flow, target_node)
+        prompt = _maybe_append_routing(prompt, flow, target_node, lumon=lumon)
 
         # Inject task queue context if executing on behalf of a task
         prompt = self._inject_task_context(prompt)
@@ -2523,6 +2528,17 @@ class FlowExecutor:
             # run_task call.
             os.environ.update(artifact_env)
 
+            # Set up Lumon sandboxing if active for this node (ENGINE-077)
+            lumon_active = _use_lumon(flow, node)
+            if lumon_active:
+                await setup_lumon(task_exec.cwd, flow, node, flow_file_dir=self._flow_file_dir)
+
+            # When Lumon is active, pass the deployed settings.json to the harness
+            # so SDK-based harnesses can feed it to ClaudeAgentOptions (ENGINE-077).
+            lumon_settings: str | None = None
+            if lumon_active:
+                lumon_settings = str(Path(task_exec.cwd) / ".claude" / "settings.json")
+
             # Determine if this is a session resume or fresh task
             if task_exec.context_mode == ContextMode.SESSION.value and task_exec.claude_session_id:
                 stream = harness.run_task_resume(
@@ -2530,6 +2546,7 @@ class FlowExecutor:
                     task_exec.cwd,
                     task_exec.claude_session_id,
                     skip_permissions=skip_perms,
+                    settings=lumon_settings,
                 )
             else:
                 stream = harness.run_task(
@@ -2537,6 +2554,7 @@ class FlowExecutor:
                     task_exec.cwd,
                     session_id,
                     skip_permissions=skip_perms,
+                    settings=lumon_settings,
                 )
 
             # Stream events from the initial prompt
@@ -2830,21 +2848,22 @@ class FlowExecutor:
             )
 
         # Build the full prompt based on context mode
+        lumon = _use_lumon(flow, node)
         if context_mode == ContextMode.HANDOFF and predecessor_task_id:
             artifact = self._db.get_artifact(predecessor_task_id, "summary")
             summary = artifact.content if artifact else None
-            prompt = build_prompt_handoff(node, cwd, summary)
+            prompt = build_prompt_handoff(node, cwd, summary, lumon=lumon)
         elif context_mode == ContextMode.SESSION:
-            prompt = build_prompt_session(node)
+            prompt = build_prompt_session(node, lumon=lumon)
         else:
-            prompt = build_prompt_none(node, cwd)
+            prompt = build_prompt_none(node, cwd, lumon=lumon)
 
         # Use expanded prompt in the prompt text (replace the node.prompt with expanded version)
         # The prompt builders use node.prompt, so we need to substitute
         if expanded_prompt != node.prompt:
             prompt = prompt.replace(node.prompt, expanded_prompt)
 
-        prompt = _maybe_append_routing(prompt, flow, node)
+        prompt = _maybe_append_routing(prompt, flow, node, lumon=lumon)
 
         # Append cross-flow output instructions if this node has FILE/AWAIT edges (ENGINE-029)
         cross_flow_targets = [
@@ -2853,7 +2872,7 @@ class FlowExecutor:
             if e.source == node.name and e.edge_type in (EdgeType.FILE, EdgeType.AWAIT) and e.target
         ]
         if cross_flow_targets:
-            prompt += build_cross_flow_instructions(cross_flow_targets)
+            prompt += build_cross_flow_instructions(cross_flow_targets, lumon=lumon)
 
         # Inject task queue context if executing on behalf of a task
         prompt = self._inject_task_context(prompt)

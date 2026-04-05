@@ -675,11 +675,15 @@ class AcpHarness:
         session_id: str,
         *,
         skip_permissions: bool = False,
+        settings: str | None = None,
     ) -> AsyncGenerator[StreamEvent, None]:
         """Spawn agent, create session, send prompt, and stream events.
 
         Convenience wrapper: ``start_session()`` + ``prompt()``.
         The caller is responsible for calling ``kill()`` when done.
+
+        The *settings* parameter is accepted for Harness protocol compatibility
+        but ignored — ACP agents discover settings from cwd.
         """
         async for event in self._run_acp_session(
             prompt=prompt,
@@ -696,10 +700,14 @@ class AcpHarness:
         resume_session_id: str,
         *,
         skip_permissions: bool = False,
+        settings: str | None = None,
     ) -> AsyncGenerator[StreamEvent, None]:
         """Resume a previous session if supported, otherwise start fresh.
 
         Convenience wrapper for backward compatibility.
+
+        The *settings* parameter is accepted for Harness protocol compatibility
+        but ignored — ACP agents discover settings from cwd.
         """
         async for event in self._run_acp_session(
             prompt=prompt,

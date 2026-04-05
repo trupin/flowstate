@@ -86,10 +86,14 @@ class SubprocessManager:
         session_id: str,
         *,
         skip_permissions: bool = False,
+        settings: str | None = None,
     ) -> AsyncGenerator[StreamEvent, None]:
         """Launch a fresh Claude Code task session and stream events.
 
         Constructs: claude -p "<prompt>" --output-format stream-json --verbose
+
+        The *settings* parameter is accepted for Harness protocol compatibility
+        but ignored — the CLI subprocess discovers settings from cwd.
         """
         cmd = ["claude", "-p", prompt, "--output-format", "stream-json", "--verbose"]
         if skip_permissions:
@@ -139,10 +143,14 @@ class SubprocessManager:
         resume_session_id: str,
         *,
         skip_permissions: bool = False,
+        settings: str | None = None,
     ) -> AsyncGenerator[StreamEvent, None]:
         """Resume a previous Claude Code session and stream events.
 
         Constructs: claude -p "<prompt>" --output-format stream-json --verbose --resume <session_id>
+
+        The *settings* parameter is accepted for Harness protocol compatibility
+        but ignored — the CLI subprocess discovers settings from cwd.
         """
         cmd = [
             "claude",

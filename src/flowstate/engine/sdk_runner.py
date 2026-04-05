@@ -189,13 +189,21 @@ class SDKRunner:
         session_id: str,
         *,
         skip_permissions: bool = False,
+        settings: str | None = None,
     ) -> AsyncGenerator[StreamEvent, None]:
-        """Launch a fresh task session via SDK and stream events."""
+        """Launch a fresh task session via SDK and stream events.
+
+        When *settings* is provided, it is passed as the settings path to
+        ClaudeAgentOptions (e.g. ``<worktree>/.claude/settings.json`` for
+        Lumon-deployed tasks).
+        """
         from claude_agent_sdk import ClaudeAgentOptions
 
         options = ClaudeAgentOptions(cwd=workspace)
         if skip_permissions:
             options.permission_mode = "acceptEdits"
+        if settings:
+            options.settings = settings
 
         async for event in self._run_query(prompt, options):
             yield event
@@ -207,13 +215,21 @@ class SDKRunner:
         resume_session_id: str,
         *,
         skip_permissions: bool = False,
+        settings: str | None = None,
     ) -> AsyncGenerator[StreamEvent, None]:
-        """Resume a previous session via SDK and stream events."""
+        """Resume a previous session via SDK and stream events.
+
+        When *settings* is provided, it is passed as the settings path to
+        ClaudeAgentOptions (e.g. ``<worktree>/.claude/settings.json`` for
+        Lumon-deployed tasks).
+        """
         from claude_agent_sdk import ClaudeAgentOptions
 
         options = ClaudeAgentOptions(cwd=workspace, resume=resume_session_id)
         if skip_permissions:
             options.permission_mode = "acceptEdits"
+        if settings:
+            options.settings = settings
 
         async for event in self._run_query(prompt, options):
             yield event

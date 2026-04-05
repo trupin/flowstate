@@ -341,6 +341,13 @@ async def start_run(
     ws_hub = request.app.state.ws_hub
     harness_mgr = _get_harness_mgr(request)
 
+    # Resolve flow file directory for Lumon plugin resolution (ENGINE-077)
+    flow_file_dir: str | None = None
+    if flow.file_path:
+        from pathlib import Path as _Path
+
+        flow_file_dir = str(_Path(flow.file_path).resolve().parent)
+
     executor = FlowExecutor(
         db=db,
         event_callback=ws_hub.on_flow_event,
@@ -349,6 +356,7 @@ async def start_run(
         worktree_cleanup=config.worktree_cleanup,
         harness_mgr=harness_mgr,
         server_base_url=f"http://{config.server_host}:{config.server_port}",
+        flow_file_dir=flow_file_dir,
     )
 
     # Register and start as background task with a single shared run_id
@@ -1093,6 +1101,7 @@ async def trigger_schedule(request: Request, schedule_id: str) -> dict[str, str]
         worktree_cleanup=config.worktree_cleanup,
         harness_mgr=harness_mgr,
         server_base_url=f"http://{config.server_host}:{config.server_port}",
+        # flow_file_dir not available for scheduled flows (no DiscoveredFlow)
     )
 
     run_manager = _get_run_manager(request)

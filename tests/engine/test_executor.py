@@ -85,6 +85,7 @@ class MockSubprocessManager:
         session_id: str,
         *,
         skip_permissions: bool = False,
+        settings: str | None = None,
     ) -> AsyncGenerator[StreamEvent, None]:
         self.calls.append((prompt, workspace, session_id))
         exit_code, extra_events = self._find_response(prompt)
@@ -118,6 +119,7 @@ class MockSubprocessManager:
         resume_session_id: str,
         *,
         skip_permissions: bool = False,
+        settings: str | None = None,
     ) -> AsyncGenerator[StreamEvent, None]:
         self.resume_calls.append((prompt, workspace, resume_session_id))
         exit_code, extra_events = self._find_response(prompt)
@@ -1538,6 +1540,7 @@ class TestUnconditionalEdgeCycleGeneration:
                 session_id: str,
                 *,
                 skip_permissions: bool = False,
+                settings: str | None = None,
             ) -> AsyncGenerator[StreamEvent, None]:
                 if "Do the alpha step" in prompt:
                     call_counts["alpha"] = call_counts.get("alpha", 0) + 1
@@ -5003,6 +5006,7 @@ class InterruptableMockManager:
         session_id: str,
         *,
         skip_permissions: bool = False,
+        settings: str | None = None,
     ) -> AsyncGenerator[StreamEvent, None]:
         self.calls.append((prompt, workspace, session_id))
         # Ensure an interrupt event exists for this session
@@ -5047,6 +5051,7 @@ class InterruptableMockManager:
         resume_session_id: str,
         *,
         skip_permissions: bool = False,
+        settings: str | None = None,
     ) -> AsyncGenerator[StreamEvent, None]:
         self.resume_calls.append((prompt, workspace, resume_session_id))
         exit_code, extra_events = self._find_response(prompt)

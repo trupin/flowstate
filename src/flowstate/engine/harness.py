@@ -56,6 +56,7 @@ class Harness(Protocol):
         session_id: str,
         *,
         skip_permissions: bool = False,
+        settings: str | None = None,
     ) -> AsyncGenerator[StreamEvent, None]: ...
 
     def run_task_resume(
@@ -65,6 +66,7 @@ class Harness(Protocol):
         resume_session_id: str,
         *,
         skip_permissions: bool = False,
+        settings: str | None = None,
     ) -> AsyncGenerator[StreamEvent, None]: ...
 
     async def run_judge(

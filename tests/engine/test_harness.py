@@ -47,6 +47,7 @@ class FakeHarness:
         session_id: str,
         *,
         skip_permissions: bool = False,
+        settings: str | None = None,
     ) -> AsyncGenerator[StreamEvent, None]:
         self.calls.append((prompt, workspace, session_id))
         yield StreamEvent(
@@ -62,6 +63,7 @@ class FakeHarness:
         resume_session_id: str,
         *,
         skip_permissions: bool = False,
+        settings: str | None = None,
     ) -> AsyncGenerator[StreamEvent, None]:
         yield StreamEvent(
             type=StreamEventType.SYSTEM,
