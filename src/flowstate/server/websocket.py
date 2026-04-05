@@ -358,7 +358,13 @@ class WebSocketHub:
             return False
 
         run = self._db.get_flow_run(flow_run_id)
-        if not run or run.status not in ("cancelled", "failed", "budget_exceeded"):
+        if not run or run.status not in (
+            "cancelled",
+            "failed",
+            "budget_exceeded",
+            "paused",
+            "running",
+        ):
             return False
 
         flow_def = self._db.get_flow_definition(run.flow_definition_id)

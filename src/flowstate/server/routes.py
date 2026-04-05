@@ -770,7 +770,7 @@ async def _restart_from_task(
     run = db.get_flow_run(run_id)
     if not run:
         raise FlowstateError(f"Run '{run_id}' not found", status_code=404)
-    if run.status not in ("cancelled", "failed", "budget_exceeded"):
+    if run.status not in ("cancelled", "failed", "budget_exceeded", "paused", "running"):
         raise FlowstateError(
             f"Run '{run_id}' is not in a restartable state (status: {run.status})",
             status_code=409,
