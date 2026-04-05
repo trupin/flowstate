@@ -1734,42 +1734,38 @@ class FlowExecutor:
             prompt_text=new_prompt,
         )
 
-        # Forward worktree artifact to the retried task (ENGINE-070)
+        # Create a fresh worktree for the retried task. Even if the old worktree
+        # path still exists on disk, its state may be stale (Lumon hooks cleaned
+        # up during cancel, sandbox dir removed, etc.). A fresh worktree ensures
+        # a clean slate for the retry.
         old_wt_artifact = self._db.get_artifact(task_execution_id, "worktree")
         if old_wt_artifact is not None:
             old_wt = worktree_artifact_from_json(old_wt_artifact.content)
-            if Path(old_wt.worktree_path).exists():
-                # Worktree path still valid -- reuse it
-                self._db.save_artifact(
-                    new_task_id, "worktree", old_wt_artifact.content, "application/json"
+            try:
+                fresh_wt = await create_node_worktree(
+                    old_wt.original_workspace, flow_run_id, old_task.node_name, new_gen
                 )
-            else:
-                # Worktree was cleaned up -- create fresh from workspace HEAD
-                try:
-                    fresh_wt = await create_node_worktree(
-                        old_wt.original_workspace, flow_run_id, old_task.node_name, new_gen
-                    )
-                    self._db.save_artifact(
-                        new_task_id,
-                        "worktree",
-                        worktree_artifact_to_json(fresh_wt),
-                        "application/json",
-                    )
-                    # Update cwd on the new task
-                    new_cwd = map_cwd_to_worktree(
-                        old_task.cwd, fresh_wt.original_workspace, fresh_wt.worktree_path
-                    )
-                    self._db._execute(  # type: ignore[attr-defined]
-                        "UPDATE task_executions SET cwd = ? WHERE id = ?",
-                        (new_cwd, new_task_id),
-                    )
-                    self._db._commit()  # type: ignore[attr-defined]
-                except Exception:
-                    logger.warning(
-                        "Failed to create fresh worktree for retried task %s",
-                        old_task.node_name,
-                        exc_info=True,
-                    )
+                self._db.save_artifact(
+                    new_task_id,
+                    "worktree",
+                    worktree_artifact_to_json(fresh_wt),
+                    "application/json",
+                )
+                # Use the fresh worktree path directly as the cwd.
+                # map_cwd_to_worktree won't work here because old_task.cwd
+                # is a temp dir path, not under original_workspace.
+                new_cwd = fresh_wt.worktree_path
+                self._db._execute(  # type: ignore[attr-defined]
+                    "UPDATE task_executions SET cwd = ? WHERE id = ?",
+                    (new_cwd, new_task_id),
+                )
+                self._db._commit()  # type: ignore[attr-defined]
+            except Exception:
+                logger.warning(
+                    "Failed to create fresh worktree for retried task %s",
+                    old_task.node_name,
+                    exc_info=True,
+                )
 
         # Update task management URLs to reference the new task_execution_id (ENGINE-040)
         if task_execution_id in new_prompt:
