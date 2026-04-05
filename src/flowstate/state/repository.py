@@ -150,6 +150,15 @@ class FlowstateDB:
         self._commit()
         return id
 
+    def update_flow_definition_source(self, id: str, source_dsl: str) -> None:
+        """Update the source_dsl of an existing flow definition."""
+        now = datetime.now(UTC).isoformat()
+        self._execute(
+            "UPDATE flow_definitions SET source_dsl = ?, updated_at = ? WHERE id = ?",
+            (source_dsl, now, id),
+        )
+        self._commit()
+
     def get_flow_definition(self, id: str) -> FlowDefinitionRow | None:
         """Retrieve a flow definition by ID, or None if not found."""
         row = self._fetchone("SELECT * FROM flow_definitions WHERE id = ?", (id,))

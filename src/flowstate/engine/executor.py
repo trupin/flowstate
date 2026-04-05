@@ -309,6 +309,7 @@ class FlowExecutor:
         workspace: str,
         flow_run_id: str | None = None,
         task_id: str | None = None,
+        source_dsl: str = "",
     ) -> str:
         """Execute a flow and return the flow_run_id.
 
@@ -326,9 +327,14 @@ class FlowExecutor:
         flow_def = self._db.get_flow_definition_by_name(flow.name)
         if flow_def is not None:
             flow_definition_id = flow_def.id
+            # Update source_dsl if it was previously empty
+            if source_dsl and not flow_def.source_dsl:
+                self._db.update_flow_definition_source(flow_def.id, source_dsl)
         else:
             flow_definition_id = self._db.create_flow_definition(
-                name=flow.name, source_dsl="", ast_json=json.dumps({"name": flow.name})
+                name=flow.name,
+                source_dsl=source_dsl,
+                ast_json=json.dumps({"name": flow.name}),
             )
 
         # 2. Create flow run record (data_dir="" for backwards compat)

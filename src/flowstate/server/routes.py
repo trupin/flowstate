@@ -366,7 +366,9 @@ async def start_run(
     workspace = await _resolve_workspace(flow_ast.name, flow_ast.workspace, run_id)
 
     # Pass run_id to execute so DB uses the same key as RunManager
-    execute_coro = executor.execute(flow_ast, body.params, workspace, flow_run_id=run_id)
+    execute_coro = executor.execute(
+        flow_ast, body.params, workspace, flow_run_id=run_id, source_dsl=flow.source_dsl
+    )
     await run_manager.start_run(run_id, executor, execute_coro)
 
     return StartRunResponse(flow_run_id=run_id)
@@ -1133,7 +1135,9 @@ async def trigger_schedule(request: Request, schedule_id: str) -> dict[str, str]
     run_id = str(uuid.uuid4())
 
     workspace = await _resolve_workspace(flow_ast.name, flow_ast.workspace, run_id)
-    execute_coro = executor.execute(flow_ast, {}, workspace, flow_run_id=run_id)
+    execute_coro = executor.execute(
+        flow_ast, {}, workspace, flow_run_id=run_id, source_dsl=flow_def.source_dsl
+    )
     await run_manager.start_run(run_id, executor, execute_coro)
 
     return {"flow_run_id": run_id}

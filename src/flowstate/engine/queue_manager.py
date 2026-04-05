@@ -188,6 +188,7 @@ class QueueManager:
             workspace,
             flow_run_id=run_id,
             task_id=task.id,
+            source_dsl=flow.source_dsl,
         )
         await self._run_manager.start_run(run_id, executor, execute_coro)
 
