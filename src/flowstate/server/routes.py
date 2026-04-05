@@ -695,13 +695,38 @@ async def resume_run(request: Request, run_id: str) -> dict[str, str]:
 
 @router.post("/runs/{run_id}/cancel")
 async def cancel_run(request: Request, run_id: str) -> dict[str, str]:
-    """Cancel a running or paused flow."""
-    executor = _get_executor_or_error(request, run_id)
-    flow_run_id = getattr(executor, "_flow_run_id", None) or run_id
-    try:
-        await executor.cancel(flow_run_id)
-    except InvalidStateError as e:
-        raise FlowstateError(str(e), status_code=409) from e
+    """Cancel a running or paused flow.
+
+    If the run has an active executor, delegates to executor.cancel().
+    If the run is orphaned (no executor but non-terminal status), updates
+    the DB directly so the UI can reflect the cancellation.
+    """
+    run_manager = _get_run_manager(request)
+    executor = run_manager.get_executor(run_id)
+
+    if executor is not None:
+        flow_run_id = getattr(executor, "_flow_run_id", None) or run_id
+        try:
+            await executor.cancel(flow_run_id)
+        except InvalidStateError as e:
+            raise FlowstateError(str(e), status_code=409) from e
+        return {"status": "cancelled"}
+
+    # No active executor — check if the run exists and is non-terminal
+    db = _get_db(request)
+    run = db.get_flow_run(run_id)
+    if not run:
+        raise FlowstateError(f"Run '{run_id}' not found", status_code=404)
+
+    terminal = {"completed", "failed", "cancelled", "budget_exceeded"}
+    if run.status in terminal:
+        raise FlowstateError(
+            f"Run '{run_id}' is already in terminal status: {run.status}",
+            status_code=409,
+        )
+
+    # Orphaned run — update DB directly
+    db.update_flow_run_status(run_id, "cancelled")
     return {"status": "cancelled"}
 
 
