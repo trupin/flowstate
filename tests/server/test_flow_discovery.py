@@ -703,3 +703,133 @@ class TestFlowHarnessFieldInResponse:
         assert response.status_code == 200
         body = response.json()
         assert body[0]["harness"] == "claude"
+
+
+# ---------------------------------------------------------------------------
+# Lumon/sandbox fields in flow API response (SERVER-025)
+# ---------------------------------------------------------------------------
+
+SAMPLE_FLOW_LUMON = DiscoveredFlow(
+    id="secure_flow",
+    name="secure_flow",
+    file_path="/flows/secure_flow.flow",
+    source_dsl="...",
+    status="valid",
+    errors=[],
+    ast_json={
+        "name": "secure_flow",
+        "harness": "claude",
+        "lumon": True,
+        "lumon_config": "strict",
+        "sandbox": True,
+        "sandbox_policy": "network-none",
+        "nodes": {
+            "start": {
+                "name": "start",
+                "node_type": "entry",
+                "prompt": "go",
+                "cwd": None,
+                "sandbox": True,
+                "sandbox_policy": "network-none",
+                "lumon": True,
+                "lumon_config": "strict",
+            },
+            "done": {
+                "name": "done",
+                "node_type": "exit",
+                "prompt": "bye",
+                "cwd": None,
+                "sandbox": None,
+                "sandbox_policy": None,
+                "lumon": None,
+                "lumon_config": None,
+            },
+        },
+        "edges": [],
+    },
+    params=[],
+)
+
+
+class TestFlowLumonSandboxFields:
+    def test_flow_list_includes_lumon_and_sandbox_booleans(self) -> None:
+        """GET /api/flows response includes 'lumon' and 'sandbox' booleans."""
+        client = _make_test_app({"secure_flow": SAMPLE_FLOW_LUMON})
+        response = client.get("/api/flows")
+        assert response.status_code == 200
+        body = response.json()
+        assert len(body) == 1
+        assert body[0]["lumon"] is True
+        assert body[0]["sandbox"] is True
+
+    def test_flow_list_lumon_sandbox_default_false(self) -> None:
+        """Flows without lumon/sandbox in AST default to False."""
+        client = _make_test_app({"code_review": SAMPLE_FLOW})
+        response = client.get("/api/flows")
+        assert response.status_code == 200
+        body = response.json()
+        assert body[0]["lumon"] is False
+        assert body[0]["sandbox"] is False
+
+    def test_flow_list_error_flow_lumon_sandbox_false(self) -> None:
+        """Error flows (no AST) have lumon=False and sandbox=False."""
+        client = _make_test_app({"broken": SAMPLE_FLOW_ERROR})
+        response = client.get("/api/flows")
+        assert response.status_code == 200
+        body = response.json()
+        assert body[0]["lumon"] is False
+        assert body[0]["sandbox"] is False
+
+    def test_flow_detail_includes_all_lumon_sandbox_fields(self) -> None:
+        """GET /api/flows/:id includes lumon, lumon_config, sandbox, sandbox_policy."""
+        client = _make_test_app({"secure_flow": SAMPLE_FLOW_LUMON})
+        response = client.get("/api/flows/secure_flow")
+        assert response.status_code == 200
+        body = response.json()
+        assert body["lumon"] is True
+        assert body["lumon_config"] == "strict"
+        assert body["sandbox"] is True
+        assert body["sandbox_policy"] == "network-none"
+
+    def test_flow_detail_lumon_config_absent_when_not_set(self) -> None:
+        """Flow detail without lumon_config/sandbox_policy returns None."""
+        client = _make_test_app({"code_review": SAMPLE_FLOW})
+        response = client.get("/api/flows/code_review")
+        assert response.status_code == 200
+        body = response.json()
+        assert body["lumon"] is False
+        assert body["lumon_config"] is None
+        assert body["sandbox"] is False
+        assert body["sandbox_policy"] is None
+
+    def test_flow_list_does_not_include_config_details(self) -> None:
+        """List endpoint should not include lumon_config or sandbox_policy."""
+        client = _make_test_app({"secure_flow": SAMPLE_FLOW_LUMON})
+        response = client.get("/api/flows")
+        assert response.status_code == 200
+        body = response.json()
+        assert "lumon_config" not in body[0]
+        assert "sandbox_policy" not in body[0]
+
+    def test_per_node_lumon_sandbox_fields(self) -> None:
+        """Nodes in the response include lumon/sandbox per-node settings."""
+        client = _make_test_app({"secure_flow": SAMPLE_FLOW_LUMON})
+        response = client.get("/api/flows/secure_flow")
+        assert response.status_code == 200
+        body = response.json()
+        nodes = body["nodes"]
+        assert len(nodes) == 2
+
+        # Find the "start" node which has lumon/sandbox set
+        start_node = next(n for n in nodes if n["name"] == "start")
+        assert start_node["sandbox"] is True
+        assert start_node["sandbox_policy"] == "network-none"
+        assert start_node["lumon"] is True
+        assert start_node["lumon_config"] == "strict"
+
+        # The "done" node has None for all
+        done_node = next(n for n in nodes if n["name"] == "done")
+        assert done_node["sandbox"] is None
+        assert done_node["sandbox_policy"] is None
+        assert done_node["lumon"] is None
+        assert done_node["lumon_config"] is None

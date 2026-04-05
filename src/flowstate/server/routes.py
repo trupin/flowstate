@@ -132,6 +132,10 @@ def _flow_to_frontend(f: DiscoveredFlow, include_detail: bool = False) -> dict[s
                         "type": n.get("node_type", "task"),
                         "prompt": n.get("prompt", ""),
                         "cwd": n.get("cwd"),
+                        "sandbox": n.get("sandbox"),
+                        "sandbox_policy": n.get("sandbox_policy"),
+                        "lumon": n.get("lumon"),
+                        "lumon_config": n.get("lumon_config"),
                     }
                 )
         elif isinstance(raw_nodes, list):
@@ -142,6 +146,10 @@ def _flow_to_frontend(f: DiscoveredFlow, include_detail: bool = False) -> dict[s
                         "type": n.get("node_type", "task"),
                         "prompt": n.get("prompt", ""),
                         "cwd": n.get("cwd"),
+                        "sandbox": n.get("sandbox"),
+                        "sandbox_policy": n.get("sandbox_policy"),
+                        "lumon": n.get("lumon"),
+                        "lumon_config": n.get("lumon_config"),
                     }
                 )
         for e in f.ast_json.get("edges", []):
@@ -171,6 +179,17 @@ def _flow_to_frontend(f: DiscoveredFlow, include_detail: bool = False) -> dict[s
     if f.ast_json:
         harness = f.ast_json.get("harness", "claude")
 
+    # Extract lumon/sandbox settings from the AST JSON (SERVER-025)
+    lumon = False
+    sandbox = False
+    lumon_config: str | None = None
+    sandbox_policy: str | None = None
+    if f.ast_json:
+        lumon = bool(f.ast_json.get("lumon", False))
+        sandbox = bool(f.ast_json.get("sandbox", False))
+        lumon_config = f.ast_json.get("lumon_config")
+        sandbox_policy = f.ast_json.get("sandbox_policy")
+
     result: dict[str, Any] = {
         "id": f.id,
         "name": f.name,
@@ -182,12 +201,16 @@ def _flow_to_frontend(f: DiscoveredFlow, include_detail: bool = False) -> dict[s
         "edges": edges_out,
         "last_modified": last_modified,
         "harness": harness,
+        "lumon": lumon,
+        "sandbox": sandbox,
         # Keep "status" for backward compat with API-only consumers
         "status": f.status,
     }
     if include_detail:
         result["source_dsl"] = f.source_dsl
         result["ast_json"] = f.ast_json
+        result["lumon_config"] = lumon_config
+        result["sandbox_policy"] = sandbox_policy
     return result
 
 
