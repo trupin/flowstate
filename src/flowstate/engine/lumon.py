@@ -12,8 +12,8 @@ Handles Lumon sandbox setup for task execution:
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
-import shutil
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -123,14 +123,25 @@ async def setup_lumon(
         if not target.exists():
             target.symlink_to(builtin)
 
-    # 2. Copy .lumon.json if config specified
+    # 2. Build .lumon.json — merge user config with built-in flowstate plugin
     config_path = _lumon_config(flow, node)
+    lumon_config: dict = {"plugins": {}}
+
+    # Load user config if specified
     if config_path and flow_file_dir:
         src = Path(flow_file_dir) / config_path
         if src.exists():
-            shutil.copy2(str(src), str(wt / ".lumon.json"))
+            lumon_config = json.loads(src.read_text())
         else:
-            logger.warning("Lumon config '%s' not found at '%s', skipping", config_path, src)
+            logger.warning("Lumon config '%s' not found at '%s', using defaults", config_path, src)
+
+    # Always register the built-in flowstate plugin
+    plugins = lumon_config.setdefault("plugins", {})
+    if "flowstate" not in plugins:
+        plugins["flowstate"] = {}
+
+    # Write merged config
+    (wt / ".lumon.json").write_text(json.dumps(lumon_config, indent=2))
 
     # 3. Run lumon deploy
     try:

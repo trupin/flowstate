@@ -6,6 +6,7 @@ All tests mock subprocess calls so no real `lumon` binary is needed.
 from __future__ import annotations
 
 import asyncio
+import json
 from typing import TYPE_CHECKING
 from unittest.mock import AsyncMock, patch
 
@@ -377,24 +378,30 @@ class TestSetupLumon:
         assert (plugins_dir / "flowstate").is_symlink()
         assert (plugins_dir / "flowstate").resolve() == _builtin_plugin_dir().resolve()
 
-    async def test_copies_lumon_config(self, worktree: Path, flow_dir: Path) -> None:
-        """setup_lumon copies .lumon.json from resolved config path."""
+    async def test_copies_lumon_config_merged_with_flowstate(
+        self, worktree: Path, flow_dir: Path
+    ) -> None:
+        """setup_lumon merges user config with built-in flowstate plugin."""
         flow = _make_flow(lumon=True, lumon_config="custom.lumon.json")
         node = _make_node()
 
-        # Create the config file
+        # Create user config with a custom plugin
         config_file = flow_dir / "custom.lumon.json"
-        config_file.write_text('{"sandbox": true}')
+        config_file.write_text('{"plugins": {"browser": {"expose": ["navigate"]}}}')
 
         with patch("flowstate.engine.lumon.asyncio.create_subprocess_exec") as mock_exec:
             mock_exec.return_value = _mock_successful_deploy()
             await setup_lumon(str(worktree), flow, node, flow_file_dir=str(flow_dir))
 
         assert (worktree / ".lumon.json").exists()
-        assert (worktree / ".lumon.json").read_text() == '{"sandbox": true}'
+        config = json.loads((worktree / ".lumon.json").read_text())
+        # User plugin preserved
+        assert "browser" in config["plugins"]
+        # Built-in flowstate plugin auto-added
+        assert "flowstate" in config["plugins"]
 
-    async def test_no_config_copy_when_no_config(self, worktree: Path) -> None:
-        """setup_lumon skips config copy when no config specified."""
+    async def test_default_config_includes_flowstate_plugin(self, worktree: Path) -> None:
+        """setup_lumon creates .lumon.json with flowstate plugin when no config specified."""
         flow = _make_flow(lumon=True)
         node = _make_node()
 
@@ -402,10 +409,12 @@ class TestSetupLumon:
             mock_exec.return_value = _mock_successful_deploy()
             await setup_lumon(str(worktree), flow, node)
 
-        assert not (worktree / ".lumon.json").exists()
+        assert (worktree / ".lumon.json").exists()
+        config = json.loads((worktree / ".lumon.json").read_text())
+        assert "flowstate" in config["plugins"]
 
-    async def test_no_config_copy_when_no_flow_file_dir(self, worktree: Path) -> None:
-        """setup_lumon skips config copy when flow_file_dir is None."""
+    async def test_default_config_when_no_flow_file_dir(self, worktree: Path) -> None:
+        """setup_lumon creates default .lumon.json when flow_file_dir is None."""
         flow = _make_flow(lumon=True, lumon_config="config.json")
         node = _make_node()
 
@@ -413,12 +422,14 @@ class TestSetupLumon:
             mock_exec.return_value = _mock_successful_deploy()
             await setup_lumon(str(worktree), flow, node, flow_file_dir=None)
 
-        assert not (worktree / ".lumon.json").exists()
+        assert (worktree / ".lumon.json").exists()
+        config = json.loads((worktree / ".lumon.json").read_text())
+        assert "flowstate" in config["plugins"]
 
     async def test_missing_config_file_logs_warning(
         self, worktree: Path, flow_dir: Path, caplog: pytest.LogCaptureFixture
     ) -> None:
-        """setup_lumon warns when config file doesn't exist."""
+        """setup_lumon warns when config file doesn't exist but still creates default."""
         flow = _make_flow(lumon=True, lumon_config="missing.json")
         node = _make_node()
 
@@ -426,7 +437,10 @@ class TestSetupLumon:
             mock_exec.return_value = _mock_successful_deploy()
             await setup_lumon(str(worktree), flow, node, flow_file_dir=str(flow_dir))
 
-        assert not (worktree / ".lumon.json").exists()
+        # Default config still created with flowstate plugin
+        assert (worktree / ".lumon.json").exists()
+        config = json.loads((worktree / ".lumon.json").read_text())
+        assert "flowstate" in config["plugins"]
         assert "not found" in caplog.text
 
     async def test_skips_nondir_items_in_plugins(self, worktree: Path, tmp_path: Path) -> None:
