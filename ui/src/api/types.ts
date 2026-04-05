@@ -70,6 +70,8 @@ export interface FlowAstJson {
   harness: string;
   sandbox?: boolean;
   sandbox_policy?: string | null;
+  lumon?: boolean;
+  lumon_config?: string | null;
   max_parallel: number;
   params: Array<{ name: string; type: string; default: unknown }>;
   nodes: Record<
@@ -80,6 +82,10 @@ export interface FlowAstJson {
       prompt: string;
       cwd?: string;
       harness?: string | null;
+      sandbox?: boolean | null;
+      sandbox_policy?: string | null;
+      lumon?: boolean | null;
+      lumon_config?: string | null;
     }
   >;
   edges: Array<{
@@ -105,6 +111,10 @@ export interface DiscoveredFlow {
   last_modified: string; // ISO 8601 timestamp
   ast_json?: FlowAstJson; // included by GET /api/flows/:id
   enabled?: boolean; // runtime state: whether the flow's queue is active
+  lumon?: boolean; // flow-level Lumon sandboxing flag
+  sandbox?: boolean; // flow-level sandbox flag
+  lumon_config?: string | null; // Lumon config path (detail only)
+  sandbox_policy?: string | null; // sandbox policy path (detail only)
 }
 
 export interface FlowRun {

@@ -118,6 +118,19 @@ export function FlowDetailPanel({ flow, isEnabled }: FlowDetailPanelProps) {
     return overrides;
   }, [ast]);
 
+  // Detect per-node Lumon overrides (nodes whose lumon setting differs from the flow default)
+  const nodeLumonOverrides = useMemo(() => {
+    if (!ast) return new Map<string, boolean>();
+    const flowLumon = ast.lumon ?? false;
+    const overrides = new Map<string, boolean>();
+    for (const [nodeName, node] of Object.entries(ast.nodes)) {
+      if (node.lumon != null && node.lumon !== flowLumon) {
+        overrides.set(nodeName, node.lumon);
+      }
+    }
+    return overrides;
+  }, [ast]);
+
   // Node summary
   const nodesByType = {
     entry: [] as string[],
@@ -273,6 +286,30 @@ export function FlowDetailPanel({ flow, isEnabled }: FlowDetailPanelProps) {
               </>
             )}
 
+            {(ast.lumon || ast.sandbox) && (
+              <>
+                <span className="flow-settings-key">Lumon</span>
+                <span className="flow-settings-value">
+                  <span
+                    className="flow-lumon-badge"
+                    title={
+                      ast.lumon_config
+                        ? `Lumon sandboxing (config: ${ast.lumon_config})`
+                        : 'Lumon sandboxing enabled'
+                    }
+                  >
+                    Lumon
+                  </span>
+                  {(ast.lumon_config ?? ast.sandbox_policy) && (
+                    <span className="flow-lumon-config">
+                      {' '}
+                      ({ast.lumon_config ?? ast.sandbox_policy})
+                    </span>
+                  )}
+                </span>
+              </>
+            )}
+
             {ast.max_parallel > 1 && (
               <>
                 <span className="flow-settings-key">Max Parallel</span>
@@ -302,6 +339,16 @@ export function FlowDetailPanel({ flow, isEnabled }: FlowDetailPanelProps) {
                         <span className="flow-node-harness-override">
                           {' '}
                           (harness: {nodeHarnessOverrides.get(name)})
+                        </span>
+                      )}
+                      {nodeLumonOverrides.has(name) && (
+                        <span className="flow-node-lumon-override">
+                          {' '}
+                          (
+                          {nodeLumonOverrides.get(name)
+                            ? 'Lumon enabled'
+                            : 'Lumon disabled'}
+                          )
                         </span>
                       )}
                     </span>
