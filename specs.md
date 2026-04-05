@@ -747,16 +747,19 @@ Created ──► Running ┼──► Failed
                 │   └──► Budget Exceeded
                 │
                 ▼
-             Paused ──► Cancelled
+             Pausing ──► Paused ──► Cancelled
+                │           │
+                │           └──────► Running (resumed)
                 │
-                └──────► Running (resumed)
+                └──────► Running (pause cancelled)
 ```
 
 | Status | Meaning |
 |--------|---------|
 | `created` | Flow run record exists, not yet started |
 | `running` | At least one task is pending or executing |
-| `paused` | Execution suspended (user action, error, or budget) |
+| `pausing` | User requested pause; waiting for current task(s) to finish. No new tasks are started. Resuming from this state cancels the pause. |
+| `paused` | Execution fully suspended (all tasks complete, no work in flight) |
 | `completed` | An exit node finished successfully |
 | `failed` | Unrecoverable error (or user chose abort) |
 | `cancelled` | User cancelled via UI |
@@ -1616,7 +1619,7 @@ Flows are discovered from the filesystem (watched directory), not created manual
 |--------|---------|--------|
 | `subscribe` | `{flow_run_id, last_event_timestamp?}` | Subscribe to a run's events. Replays missed events if timestamp provided. |
 | `unsubscribe` | `{flow_run_id}` | Stop receiving events |
-| `pause` | `{}` | Pause after current task(s) complete |
+| `pause` | `{}` | Immediately transition to `pausing`; current task(s) finish but no new ones start. Transitions to `paused` once all tasks complete. |
 | `cancel` | `{}` | Cancel the flow run |
 | `retry_task` | `{task_execution_id}` | Retry a failed task |
 | `skip_task` | `{task_execution_id}` | Skip and continue |

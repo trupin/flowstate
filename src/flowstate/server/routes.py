@@ -534,7 +534,7 @@ async def get_run(request: Request, run_id: str) -> dict[str, Any]:
 
 _RUN_TERMINAL_STATUSES = frozenset({"completed", "failed", "cancelled", "budget_exceeded"})
 _RUN_RESTARTABLE_STATUSES = frozenset(
-    {"cancelled", "failed", "budget_exceeded", "paused", "running"}
+    {"cancelled", "failed", "budget_exceeded", "pausing", "paused", "running"}
 )
 
 # Maximum depth for recursive file listing in non-git workspaces.
@@ -683,7 +683,7 @@ async def pause_run(request: Request, run_id: str) -> dict[str, str]:
         await executor.pause(flow_run_id)
     except InvalidStateError as e:
         raise FlowstateError(str(e), status_code=409) from e
-    return {"status": "paused"}
+    return {"status": "pausing"}
 
 
 @router.post("/runs/{run_id}/resume")

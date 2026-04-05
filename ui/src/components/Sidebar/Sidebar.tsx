@@ -98,9 +98,15 @@ export function Sidebar() {
       api.runs
         .list()
         .then((allRuns) => {
-          setActiveRuns(allRuns.filter((r) => r.status === 'running'));
+          setActiveRuns(
+            allRuns.filter(
+              (r) => r.status === 'running' || r.status === 'pausing',
+            ),
+          );
           setRecentRuns(
-            allRuns.filter((r) => r.status !== 'running').slice(0, 10),
+            allRuns
+              .filter((r) => r.status !== 'running' && r.status !== 'pausing')
+              .slice(0, 10),
           );
         })
         .catch(() => {

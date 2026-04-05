@@ -403,7 +403,11 @@ export function RunDetail() {
           {showOrchestrator ? (
             <OrchestratorConsole
               runId={id!}
-              isActive={run.status === 'running' || run.status === 'paused'}
+              isActive={
+                run.status === 'running' ||
+                run.status === 'pausing' ||
+                run.status === 'paused'
+              }
             />
           ) : (
             <LogViewer

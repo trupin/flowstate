@@ -427,8 +427,24 @@ class FlowExecutor:
             if self._cancelled:
                 break
 
-            # If paused, wait for resume (or cancel) before continuing.
-            if self._paused:
+            # Two-phase pause: if _paused and no running tasks, finalize
+            # the transition from 'pausing' to 'paused' and wait.
+            if self._paused and not self._running_tasks:
+                run = self._db.get_flow_run(flow_run_id)
+                if run and run.status == "pausing":
+                    self._db.update_flow_run_status(flow_run_id, "paused")
+                    self._emit(
+                        FlowEvent(
+                            type=EventType.FLOW_STATUS_CHANGED,
+                            flow_run_id=flow_run_id,
+                            timestamp=_now_iso(),
+                            payload={
+                                "old_status": "pausing",
+                                "new_status": "paused",
+                                "reason": "All running tasks finished",
+                            },
+                        )
+                    )
                 await self._resume_event.wait()
                 self._resume_event.clear()
                 # After waking, re-check cancel (cancel signals the event too).
@@ -458,8 +474,8 @@ class FlowExecutor:
             if self._cancelled:
                 break
 
-            # If paused after the for loop (with no running tasks), go back
-            # to the top of the while loop where the pause-wait logic handles it.
+            # If paused after launching (with no running tasks), go back to
+            # the top where the pausing->paused transition handles it.
             if self._paused and not self._running_tasks:
                 continue
 
@@ -1576,20 +1592,21 @@ class FlowExecutor:
     # ------------------------------------------------------------------ #
 
     async def pause(self, flow_run_id: str) -> None:
-        """Pause the flow. Let running tasks finish, don't start new ones."""
+        """Pause the flow. Returns immediately with status 'pausing'.
+
+        Sets the ``_paused`` flag so no new tasks are launched. The main loop
+        will transition from 'pausing' to 'paused' once all running tasks
+        finish. If there are no running tasks, the main loop will transition
+        immediately on its next iteration.
+        """
         if self._paused:
             return  # idempotent
 
         self._paused = True
 
-        # Wait for currently running tasks to finish
-        if self._running_tasks:
-            await asyncio.gather(*self._running_tasks.values(), return_exceptions=True)
-        self._running_tasks.clear()
-
         run = self._db.get_flow_run(flow_run_id)
         old_status = run.status if run else "unknown"
-        self._db.update_flow_run_status(flow_run_id, "paused")
+        self._db.update_flow_run_status(flow_run_id, "pausing")
         self._emit(
             FlowEvent(
                 type=EventType.FLOW_STATUS_CHANGED,
@@ -1597,15 +1614,48 @@ class FlowExecutor:
                 timestamp=_now_iso(),
                 payload={
                     "old_status": old_status,
-                    "new_status": "paused",
+                    "new_status": "pausing",
                     "reason": "User paused",
                 },
             )
         )
 
     async def resume(self, flow_run_id: str) -> None:
-        """Resume a paused flow. Pick up from where we left off."""
+        """Resume a paused or pausing flow.
+
+        If the flow is in ``pausing`` state (tasks still running), this cancels
+        the pause: clears the flag and sets status back to ``running``. The main
+        loop will continue launching new tasks.
+
+        If the flow is in ``paused`` state (all tasks finished), this
+        repopulates pending tasks and signals the main loop to continue.
+        """
+        run = self._db.get_flow_run(flow_run_id)
+        current_status = run.status if run else "paused"
+
         self._paused = False
+
+        if current_status == "pausing":
+            # Cancel the pending pause -- tasks are still running, just go
+            # back to running and let the main loop continue normally.
+            self._db.update_flow_run_status(flow_run_id, "running")
+            self._emit(
+                FlowEvent(
+                    type=EventType.FLOW_STATUS_CHANGED,
+                    flow_run_id=flow_run_id,
+                    timestamp=_now_iso(),
+                    payload={
+                        "old_status": "pausing",
+                        "new_status": "running",
+                        "reason": "User resumed (cancelled pause)",
+                    },
+                )
+            )
+            # No need to signal _resume_event -- the main loop is not blocked
+            # when in pausing state (tasks are still running).
+            return
+
+        # Paused state: normal resume path.
         self._db.update_flow_run_status(flow_run_id, "running")
         self._emit(
             FlowEvent(
@@ -1779,9 +1829,11 @@ class FlowExecutor:
         # Add to pending set so it gets picked up
         self._pending_tasks.add(new_task_id)
 
-        # If the flow is paused (e.g., on_error=pause), resume it so the main
-        # loop wakes up and executes the retried task.
+        # If the flow is paused/pausing (e.g., on_error=pause), resume it so
+        # the main loop wakes up and executes the retried task.
         if self._paused:
+            run = self._db.get_flow_run(flow_run_id)
+            old_status = run.status if run else "paused"
             self._paused = False
             self._db.update_flow_run_status(flow_run_id, "running")
             self._emit(
@@ -1790,7 +1842,7 @@ class FlowExecutor:
                     flow_run_id=flow_run_id,
                     timestamp=_now_iso(),
                     payload={
-                        "old_status": "paused",
+                        "old_status": old_status,
                         "new_status": "running",
                         "reason": "Task retried",
                     },
@@ -1839,9 +1891,11 @@ class FlowExecutor:
                 self._pending_tasks,
             )
 
-        # If the flow is paused (e.g., on_error=pause), resume it so the main
-        # loop wakes up and processes the next task(s).
+        # If the flow is paused/pausing (e.g., on_error=pause), resume it so
+        # the main loop wakes up and processes the next task(s).
         if self._paused:
+            run = self._db.get_flow_run(flow_run_id)
+            old_status = run.status if run else "paused"
             self._paused = False
             self._db.update_flow_run_status(flow_run_id, "running")
             self._emit(
@@ -1850,7 +1904,7 @@ class FlowExecutor:
                     flow_run_id=flow_run_id,
                     timestamp=_now_iso(),
                     payload={
-                        "old_status": "paused",
+                        "old_status": old_status,
                         "new_status": "running",
                         "reason": "Task skipped",
                     },
@@ -1952,7 +2006,23 @@ class FlowExecutor:
             if self._cancelled:
                 break
 
-            if self._paused:
+            # Two-phase pause: finalize pausing -> paused when no tasks running
+            if self._paused and not self._running_tasks:
+                run_state = self._db.get_flow_run(flow_run_id)
+                if run_state and run_state.status == "pausing":
+                    self._db.update_flow_run_status(flow_run_id, "paused")
+                    self._emit(
+                        FlowEvent(
+                            type=EventType.FLOW_STATUS_CHANGED,
+                            flow_run_id=flow_run_id,
+                            timestamp=_now_iso(),
+                            payload={
+                                "old_status": "pausing",
+                                "new_status": "paused",
+                                "reason": "All running tasks finished",
+                            },
+                        )
+                    )
                 await self._resume_event.wait()
                 self._resume_event.clear()
                 if self._cancelled:

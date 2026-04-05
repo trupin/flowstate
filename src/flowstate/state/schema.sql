@@ -13,7 +13,7 @@ CREATE TABLE IF NOT EXISTS flow_runs (
     id TEXT PRIMARY KEY,
     flow_definition_id TEXT NOT NULL REFERENCES flow_definitions(id),
     status TEXT NOT NULL CHECK(status IN (
-        'created', 'running', 'paused', 'completed',
+        'created', 'running', 'pausing', 'paused', 'completed',
         'failed', 'cancelled', 'budget_exceeded'
     )),
     default_workspace TEXT,

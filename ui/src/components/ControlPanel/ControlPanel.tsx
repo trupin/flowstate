@@ -40,7 +40,10 @@ export function ControlPanel({
   const [pending, setPending] = useState<string | null>(null);
 
   const isRunning = flowStatus === 'running';
-  const isPaused = flowStatus === 'paused' || flowStatus === 'budget_exceeded';
+  const isPaused =
+    flowStatus === 'pausing' ||
+    flowStatus === 'paused' ||
+    flowStatus === 'budget_exceeded';
   const isActive = isRunning || isPaused;
   const hasFailedTask = selectedTaskStatus === 'failed' && selectedTaskId;
 

@@ -3,6 +3,7 @@
 export type FlowRunStatus =
   | 'created'
   | 'running'
+  | 'pausing'
   | 'paused'
   | 'completed'
   | 'failed'

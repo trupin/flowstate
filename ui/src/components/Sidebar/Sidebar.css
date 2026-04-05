@@ -128,6 +128,21 @@
   background-color: var(--status-running);
 }
 
+.status-dot.status-pausing {
+  background-color: var(--status-paused);
+  animation: status-dot-pulse 1.5s ease-in-out infinite;
+}
+
+@keyframes status-dot-pulse {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.4;
+  }
+}
+
 .status-dot.status-paused {
   background-color: var(--status-paused);
 }

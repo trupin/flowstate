@@ -2718,10 +2718,19 @@ class TestUserPauseResume:
         runs = db.list_flow_runs()
         assert runs
 
-        # Pause the flow (waits for "work" to finish)
+        # Pause the flow (returns immediately with "pausing")
         await executor.pause(runs[0].id)
 
         run = db.get_flow_run(runs[0].id)
+        assert run is not None
+        assert run.status == "pausing"
+
+        # Wait for "work" to finish -- main loop transitions to "paused"
+        for _ in range(200):
+            await asyncio.sleep(0.01)
+            run = db.get_flow_run(runs[0].id)
+            if run and run.status == "paused":
+                break
         assert run is not None
         assert run.status == "paused"
 
@@ -2838,6 +2847,283 @@ class TestResumeMainLoopStaysAlive:
         # Clean up
         await executor.cancel(flow_run_id)
         await execute_task
+
+
+# ---------------------------------------------------------------------------
+# Two-phase pause tests (ENGINE-078)
+# ---------------------------------------------------------------------------
+
+
+class TestTwoPhasePause:
+    """Two-phase pause: pause() returns immediately with 'pausing', main loop
+    transitions to 'paused' once all running tasks finish."""
+
+    async def test_pause_returns_immediately(self) -> None:
+        """pause() sets status to 'pausing' without waiting for tasks."""
+        db = _make_db()
+        events, callback = _collect_events()
+        mock_mgr = MockSubprocessManager()
+        # Delay so the task is still running when we pause
+        mock_mgr.task_delays["work"] = 1.0
+        executor = FlowExecutor(db, callback, mock_mgr)
+
+        flow = _make_linear_flow(node_names=["start", "work", "finish"])
+        execute_task = asyncio.create_task(executor.execute(flow, {}, "/workspace"))
+
+        # Wait for "work" to start
+        await asyncio.sleep(0.1)
+        runs = db.list_flow_runs()
+        assert runs
+
+        # pause() should return immediately (well before the 1.0s delay)
+        t0 = time.monotonic()
+        await executor.pause(runs[0].id)
+        elapsed = time.monotonic() - t0
+        assert elapsed < 0.5, f"pause() took {elapsed:.2f}s, should return immediately"
+
+        # Status is 'pausing' (not 'paused') because "work" is still running
+        run = db.get_flow_run(runs[0].id)
+        assert run is not None
+        assert run.status == "pausing"
+
+        # Verify the status_changed event was emitted with 'pausing'
+        pause_events = [
+            e
+            for e in events
+            if e.type == EventType.FLOW_STATUS_CHANGED and e.payload.get("new_status") == "pausing"
+        ]
+        assert len(pause_events) == 1
+        assert pause_events[0].payload["old_status"] == "running"
+
+        # Clean up
+        await executor.cancel(runs[0].id)
+        await execute_task
+
+    async def test_pausing_transitions_to_paused(self) -> None:
+        """When tasks finish while pausing, status goes to 'paused'."""
+        db = _make_db()
+        events, callback = _collect_events()
+        mock_mgr = MockSubprocessManager()
+        mock_mgr.task_delays["work"] = 0.3
+        executor = FlowExecutor(db, callback, mock_mgr)
+
+        flow = _make_linear_flow(node_names=["start", "work", "finish"])
+        execute_task = asyncio.create_task(executor.execute(flow, {}, "/workspace"))
+
+        # Wait for "work" to start, then pause
+        await asyncio.sleep(0.1)
+        runs = db.list_flow_runs()
+        assert runs
+        await executor.pause(runs[0].id)
+
+        # Status should be 'pausing' immediately
+        run = db.get_flow_run(runs[0].id)
+        assert run is not None
+        assert run.status == "pausing"
+
+        # Wait for "work" to complete and main loop to transition to 'paused'
+        for _ in range(200):
+            await asyncio.sleep(0.01)
+            run = db.get_flow_run(runs[0].id)
+            if run and run.status == "paused":
+                break
+
+        assert run is not None
+        assert run.status == "paused"
+
+        # Verify we got both status_changed events: running->pausing, pausing->paused
+        status_events = [e for e in events if e.type == EventType.FLOW_STATUS_CHANGED]
+        pausing_event = [e for e in status_events if e.payload.get("new_status") == "pausing"]
+        paused_event = [
+            e
+            for e in status_events
+            if e.payload.get("old_status") == "pausing" and e.payload.get("new_status") == "paused"
+        ]
+        assert len(pausing_event) == 1
+        assert len(paused_event) == 1
+
+        # Clean up
+        await executor.cancel(runs[0].id)
+        await execute_task
+
+    async def test_resume_from_pausing_cancels_pause(self) -> None:
+        """Resume while 'pausing' clears the flag and goes back to 'running'."""
+        db = _make_db()
+        events, callback = _collect_events()
+        mock_mgr = MockSubprocessManager()
+        # Long delay so task is still running when we resume
+        mock_mgr.task_delays["work"] = 2.0
+        executor = FlowExecutor(db, callback, mock_mgr)
+
+        flow = _make_linear_flow(node_names=["start", "work", "finish"])
+        execute_task = asyncio.create_task(executor.execute(flow, {}, "/workspace"))
+
+        # Wait for "work" to start
+        await asyncio.sleep(0.1)
+        runs = db.list_flow_runs()
+        assert runs
+        flow_run_id = runs[0].id
+
+        # Pause (returns immediately with 'pausing')
+        await executor.pause(flow_run_id)
+        run = db.get_flow_run(flow_run_id)
+        assert run is not None
+        assert run.status == "pausing"
+
+        # Resume while still 'pausing'
+        await executor.resume(flow_run_id)
+
+        run = db.get_flow_run(flow_run_id)
+        assert run is not None
+        assert run.status == "running"
+
+        # Verify the cancel-pause event
+        resume_events = [
+            e
+            for e in events
+            if e.type == EventType.FLOW_STATUS_CHANGED
+            and e.payload.get("old_status") == "pausing"
+            and e.payload.get("new_status") == "running"
+        ]
+        assert len(resume_events) == 1
+
+        # Flow should eventually complete (resume cancelled the pause)
+        await execute_task
+
+        run = db.get_flow_run(flow_run_id)
+        assert run is not None
+        assert run.status == "completed"
+
+    async def test_resume_from_paused_starts_next_task(self) -> None:
+        """Resume from 'paused' works as before (existing behavior)."""
+        db = _make_db()
+        _events, callback = _collect_events()
+        mock_mgr = MockSubprocessManager()
+        mock_mgr.task_delays["work"] = 0.2
+        executor = FlowExecutor(db, callback, mock_mgr)
+
+        flow = _make_linear_flow(node_names=["start", "work", "finish"])
+        execute_task = asyncio.create_task(executor.execute(flow, {}, "/workspace"))
+
+        # Wait for "work" to start, then pause
+        await asyncio.sleep(0.1)
+        runs = db.list_flow_runs()
+        assert runs
+        flow_run_id = runs[0].id
+        await executor.pause(flow_run_id)
+
+        # Wait for 'paused' state (task needs to finish)
+        for _ in range(200):
+            await asyncio.sleep(0.01)
+            run = db.get_flow_run(flow_run_id)
+            if run and run.status == "paused":
+                break
+        assert run is not None
+        assert run.status == "paused"
+
+        # Resume from 'paused'
+        await executor.resume(flow_run_id)
+
+        # Flow should complete
+        await execute_task
+
+        run = db.get_flow_run(flow_run_id)
+        assert run is not None
+        assert run.status == "completed"
+
+    async def test_pause_idempotent(self) -> None:
+        """Calling pause() twice is safe (idempotent)."""
+        db = _make_db()
+        _events, callback = _collect_events()
+        mock_mgr = MockSubprocessManager()
+        mock_mgr.task_delays["work"] = 1.0
+        executor = FlowExecutor(db, callback, mock_mgr)
+
+        flow = _make_linear_flow(node_names=["start", "work", "finish"])
+        execute_task = asyncio.create_task(executor.execute(flow, {}, "/workspace"))
+
+        await asyncio.sleep(0.1)
+        runs = db.list_flow_runs()
+        assert runs
+        flow_run_id = runs[0].id
+
+        # Pause twice
+        await executor.pause(flow_run_id)
+        await executor.pause(flow_run_id)  # should be a no-op
+
+        run = db.get_flow_run(flow_run_id)
+        assert run is not None
+        assert run.status == "pausing"
+
+        # Clean up
+        await executor.cancel(flow_run_id)
+        await execute_task
+
+    async def test_on_error_pause_goes_directly_to_paused(self) -> None:
+        """on_error=pause still goes directly to 'paused' (not via 'pausing').
+
+        The _pause_flow helper is called after the failing task is already done,
+        so there are no running tasks and the status should be 'paused' directly.
+        """
+        db = _make_db()
+        events, callback = _collect_events()
+        mock_mgr = MockSubprocessManager()
+        mock_mgr.task_responses["work"] = (1, [])
+        executor = FlowExecutor(db, callback, mock_mgr)
+
+        flow = _make_linear_flow(
+            on_error=ErrorPolicy.PAUSE,
+            node_names=["start", "work", "finish"],
+        )
+        flow_run_id, execute_task = await _execute_until_paused(
+            executor, flow, {}, "/workspace", db
+        )
+
+        run = db.get_flow_run(flow_run_id)
+        assert run is not None
+        assert run.status == "paused"
+
+        # Verify the status went directly to 'paused' (no 'pausing' intermediate)
+        pausing_events = [
+            e
+            for e in events
+            if e.type == EventType.FLOW_STATUS_CHANGED and e.payload.get("new_status") == "pausing"
+        ]
+        assert len(pausing_events) == 0, "on_error=pause should not use 'pausing' state"
+
+        # Clean up
+        await executor.cancel(flow_run_id)
+        await execute_task
+
+    async def test_cancel_while_pausing(self) -> None:
+        """Cancel takes precedence over pausing."""
+        db = _make_db()
+        _events, callback = _collect_events()
+        mock_mgr = MockSubprocessManager()
+        mock_mgr.task_delays["work"] = 2.0
+        executor = FlowExecutor(db, callback, mock_mgr)
+
+        flow = _make_linear_flow(node_names=["start", "work", "finish"])
+        execute_task = asyncio.create_task(executor.execute(flow, {}, "/workspace"))
+
+        await asyncio.sleep(0.1)
+        runs = db.list_flow_runs()
+        assert runs
+        flow_run_id = runs[0].id
+
+        # Pause (status goes to 'pausing')
+        await executor.pause(flow_run_id)
+        run = db.get_flow_run(flow_run_id)
+        assert run is not None
+        assert run.status == "pausing"
+
+        # Cancel while pausing
+        await executor.cancel(flow_run_id)
+        await execute_task
+
+        run = db.get_flow_run(flow_run_id)
+        assert run is not None
+        assert run.status == "cancelled"
 
 
 # ---------------------------------------------------------------------------

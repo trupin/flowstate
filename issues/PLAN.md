@@ -494,6 +494,14 @@
 | ---------- | ------------------------------------------------------------ | ------ | -------- | ----------- | ------ |
 | UI-070     | Cancel button succeeds on backend but UI does not reflect it | ui     | P1       | —           | todo   |
 
+
+### Phase 30 — Two-Phase Pause UX
+
+| Issue      | Title                                                        | Domain | Priority | Depends On  | Status |
+| ---------- | ------------------------------------------------------------ | ------ | -------- | ----------- | ------ |
+| ENGINE-078 | Two-phase pause with `pausing` intermediate state            | engine | P1       | —           | done |
+| UI-071     | Immediate pause feedback with pausing/resume UX              | ui     | P1       | ENGINE-078  | done   |
+
 ---
 
 ## Cross-Domain Coordination

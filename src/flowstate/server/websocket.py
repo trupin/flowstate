@@ -273,7 +273,7 @@ class WebSocketHub:
             logger.exception("Control action '%s' failed for run %s", action, flow_run_id)
             # Broadcast a status_changed event as a fallback so the UI updates
             # even if the executor raised partway through.
-            target_status = "cancelled" if action in ("cancel", "abort") else "paused"
+            target_status = "cancelled" if action in ("cancel", "abort") else "pausing"
             fallback_event: dict[str, Any] = {
                 "type": "flow.status_changed",
                 "flow_run_id": actual_run_id,
