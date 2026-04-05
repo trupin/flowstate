@@ -283,9 +283,9 @@ flow <name> {
     harness = <string>                    // optional — default: "claude" (agent runtime)
     subtasks = true | false               // optional — default: false (agent subtask management)
     skip_permissions = true | false       // optional — default: false
-    sandbox = true | false                // optional — default: false (OpenShell sandbox isolation)
-    sandbox_policy = <path>               // optional — path to OpenShell policy YAML
-    lumon = true | false                  // optional — default: false (Lumon language-level security)
+    sandbox = true | false                // optional — default: false (Lumon sandboxing, alias for lumon)
+    sandbox_policy = <path>               // optional — path to .lumon.json plugin contracts (alias for lumon_config)
+    lumon = true | false                  // optional — default: false (Lumon language-level sandboxing)
     lumon_config = <path>                 // optional — path to .lumon.json plugin contracts
     schedule = <cron_expression>          // optional — recurring flow
     on_overlap = skip | queue | parallel  // optional — default: skip
@@ -308,9 +308,11 @@ flow <name> {
 
 `harness` sets the default agent runtime for all nodes. `"claude"` (default) uses the native Claude Code CLI. Other values (e.g., `"gemini"`, `"custom"`) use the ACP (Agent Client Protocol) to communicate with the agent subprocess. Harnesses are configured in `flowstate.toml` under `[harnesses.<name>]`. Each node can override the flow-level harness with its own `harness` attribute.
 
-`sandbox` enables OpenShell sandbox isolation for agent subprocesses. When `true`, each task execution runs inside an isolated OpenShell container with filesystem, network, and syscall restrictions. Each task gets its own sandbox (created before execution, destroyed after). Requires `openshell` to be installed and Docker running. `sandbox_policy` specifies the path to an OpenShell policy YAML file for fine-grained control over filesystem paths, network access, and process restrictions. Each node can override the flow-level sandbox settings.
+`sandbox` and `lumon` both enable Lumon language-level sandboxing (see Section 9.9). They are aliases — `sandbox = true` is equivalent to `lumon = true`. When either is `true`, the engine deploys Lumon's configuration into the agent's worktree before launching the subprocess. The agent is constrained to operate only through Lumon's safe, type-checked language primitives — it cannot run arbitrary shell commands, edit files outside the sandbox directory, or bypass the language's restricted vocabulary. Enforcement is layered: a `PreToolUse` hook (`sandbox-guard.py`) blocks disallowed operations at the tool level, and a deployed `CLAUDE.md` provides procedural constraints.
 
-`lumon` enables Lumon language-level security for agent subprocesses (see Section 9.9). When `true`, the engine deploys Lumon's configuration into the task directory before launching the subprocess. The agent is then constrained to operate only through Lumon's safe, type-checked language primitives — it cannot run arbitrary shell commands, edit files outside the sandbox, or bypass the language's restricted vocabulary. Enforcement is layered: a `PreToolUse` hook (`sandbox-guard.py`) blocks disallowed operations at the tool level, and the deployed `CLAUDE.md` provides procedural constraints. `lumon_config` specifies the path to a `.lumon.json` file that controls plugin contracts (which operations are available and with what parameters). Each node can override the flow-level lumon settings. Requires the `lumon` package (installed from `git+https://github.com/trupin/lumon.git`).
+`sandbox_policy` and `lumon_config` both specify the path to a `.lumon.json` plugin contracts file (they are aliases). The file controls which plugins are available, which functions are exposed, and parameter constraints. Resolved relative to the flow file's directory. Each node can override the flow-level settings.
+
+Lumon sandboxing requires per-node worktree isolation (Section 9.7) — each node gets its own worktree with its own Lumon deployment. Requires the `lumon` package (installed from `git+https://github.com/trupin/lumon.git`).
 
 **Important**: When using the Claude Agent SDK harness, the engine must explicitly pass the deployed settings file via `ClaudeAgentOptions(settings=<path>)` because the SDK does not automatically load `.claude/settings.json` from the working directory. The ACP harness loads it automatically from `cwd`. This is handled transparently by the engine — flow authors do not need to worry about harness differences.
 
@@ -1412,52 +1414,96 @@ flow mixed_pipeline {
 - Judge evaluation always uses the flow's default harness
 - The artifact API protocol (`summary`, `decision`, `output`) is agent-agnostic — all agents submit artifacts via HTTP POST regardless of harness
 
-### 9.9 Lumon Security Layer
+### 9.9 Lumon Sandboxing
 
-Flowstate supports **Lumon** as a language-level security layer for agent subprocesses. While `sandbox` (Section 9.8 / OpenShell) provides OS-level isolation (filesystem, network, syscall restrictions), Lumon provides **cognitive-level** constraints — the agent can only act within Lumon's safe, type-checked language primitives.
+Flowstate uses **Lumon** as its sandboxing system. Both `sandbox = true` and `lumon = true` activate Lumon — they are aliases. When active, agents are constrained to operate through Lumon's safe, type-checked language primitives. They cannot run arbitrary shell commands, edit files outside a restricted directory, or bypass the language's vocabulary.
 
-**What is Lumon**: A minimal interpreted language designed for AI agents. Safety by construction — the language provides only elementary, auditable primitives (text, list, map, io, git operations) that compose safely. Agents cannot conceive of actions outside the language's vocabulary. All code is statically type-checked before execution. Plugin contracts further restrict what operations are available and with what parameters.
+**What is Lumon**: A minimal interpreted language designed for AI agents. Safety by construction — only elementary, auditable primitives (text, list, map, io, git, browser, etc.) that compose safely. All code is statically type-checked before execution. Plugin contracts restrict what operations are available and with what parameters.
 
-**Dependency**: Flowstate installs Lumon from GitHub as a Python dependency: `lumon @ git+https://github.com/trupin/lumon.git`.
+**Dependency**: `lumon @ git+https://github.com/trupin/lumon.git` in `pyproject.toml`.
 
-**Activation**: Set `lumon = true` at the flow level (default for all nodes) or per-node. Resolution: `node.lumon → flow.lumon → false`.
+**Activation**: Set `sandbox = true` or `lumon = true` at the flow level (default for all nodes) or per-node. Resolution: `(node.lumon ?? flow.lumon) or (node.sandbox ?? flow.sandbox)`. Lumon requires per-node worktree isolation (Section 9.7).
 
-**Mechanism — three enforcement layers**:
+#### 9.9.1 Deployment
 
-1. **Deploy phase**: Before launching the subprocess for a `lumon=true` task, the engine runs `lumon deploy <task-dir>`. This creates:
-   - `<task-dir>/CLAUDE.md` — procedural constraints telling the agent to only use `lumon --working-dir sandbox` commands
-   - `<task-dir>/.claude/settings.json` — hook configuration registering `sandbox-guard.py` as a `PreToolUse` hook
-   - `<task-dir>/.claude/hooks/sandbox-guard.py` — enforcement script that intercepts every tool call
-   - `<task-dir>/.claude/skills/` — Lumon language reference and coding skills
+Before launching a Lumon task, the engine:
 
-2. **Hook enforcement** (`sandbox-guard.py`): Runs before every Bash, Read, Edit, and Write tool call:
+1. **Resolves plugins**: Merges plugin directories into `<worktree>/plugins/`:
+   - Global plugins from `~/.flowstate/plugins/` (symlinked)
+   - Per-flow plugins from `<flow-file-dir>/plugins/` (symlinked, override global)
+2. **Copies config**: If `lumon_config` (or `sandbox_policy`) is set, resolves the path relative to the flow file's directory and copies to `<worktree>/.lumon.json`
+3. **Deploys**: Runs `lumon deploy <worktree> --force`, which creates:
+   - `<worktree>/CLAUDE.md` — procedural constraints (only `lumon --working-dir sandbox` commands)
+   - `<worktree>/.claude/settings.json` — hook configuration (PreToolUse → sandbox-guard.py)
+   - `<worktree>/.claude/hooks/sandbox-guard.py` — enforcement script
+   - `<worktree>/.claude/skills/` — Lumon language reference
+4. **Creates sandbox dir**: `mkdir -p <worktree>/sandbox/`
+
+The agent's worktree after deployment:
+```
+<worktree>/
+├── plugins/          ← Symlinked plugins (global + per-flow)
+│   ├── browser/      ← Plugin: manifest.lumon + impl.lumon + Python
+│   └── ...
+├── sandbox/          ← Agent's restricted working space
+├── .lumon.json       ← Plugin contracts (optional)
+├── .claude/
+│   ├── settings.json ← Hook config
+│   ├── hooks/sandbox-guard.py
+│   └── skills/
+└── CLAUDE.md         ← Agent instructions
+```
+
+#### 9.9.2 Three Enforcement Layers
+
+1. **Hook enforcement** (`sandbox-guard.py`): Runs before every Bash, Read, Edit, and Write tool call:
    - **Bash**: Only allows `lumon --working-dir sandbox ...` commands. Rejects all other shell commands, pipe chains (`&&`, `||`, `;`), backticks, `$()`.
-   - **Edit/Write**: Only allows paths inside `<task-dir>/sandbox/` or `<task-dir>/.claude/`.
+   - **Edit/Write**: Only allows paths inside `<worktree>/sandbox/` or `<worktree>/.claude/`.
    - **Read**: Only allows paths in the current directory and `~/.claude/`.
    - All decisions logged to `.claude/hooks/sandbox-guard.log`.
 
-3. **Language constraints**: The agent writes `.lumon` code and runs it through the interpreter. Lumon's type system is checked before execution. Only safe primitives are available (`io.read`, `io.write`, `list.map`, `git.commit`, etc.). Plugin contracts in `.lumon.json` further restrict parameters (e.g., SQL queries must match a whitelist pattern, numeric arguments must be within a range).
+2. **Language constraints**: The agent writes `.lumon` code and runs it through the interpreter. Only safe primitives are available (`io.read`, `io.write`, `list.map`, `git.commit`, etc.). Plugin functions extend the vocabulary within their contracts.
 
-**Settings pass-through for SDK harness**: The Claude Agent SDK does not automatically load `.claude/settings.json` from the working directory. When using the SDK harness (`"claude"` default), the engine must explicitly pass `ClaudeAgentOptions(settings=<task-dir>/.claude/settings.json)` so the CLI subprocess loads the hook configuration. The ACP harness discovers settings from `cwd` automatically — no extra handling needed.
-
-**Plugin contracts** (`lumon_config`): An optional `.lumon.json` file controls what plugins are available and their parameter constraints. Resolved relative to the flow file's directory. Copied to `<task-dir>/.lumon.json` at deploy time. Example:
+3. **Plugin contracts** (`.lumon.json`): Control which plugins are available, which functions are exposed, and parameter constraints. Example:
 
 ```json
 {
   "plugins": {
-    "db": {
-      "plugin": "postgres",
-      "contracts": {
-        "query": "SELECT * WHERE id = *",
-        "timeout": [1, 3600]
-      },
-      "expose": ["query"]
+    "homes": {
+      "plugin": "browser",
+      "expose": ["guide", "navigate", "get_text", "screenshot", "click"],
+      "navigate": { "url": "https://*.homes.com/*" },
+      "env": { "BROWSER_ENGINE": "safari" }
+    },
+    "gmail": {
+      "expose": ["search", "read"],
+      "search": { "max_results": [1, 50] }
     }
   }
 }
 ```
 
-**Task output directory**: When Lumon is active, the agent operates inside `<task-dir>/sandbox/`. Since artifacts are submitted via the API (Section 9.6), there is no filesystem path difference — the agent POSTs to the same API endpoints regardless of Lumon sandboxing.
+Each plugin entry maps an alias to a plugin directory. `expose` restricts which functions the agent can call. Per-function contracts restrict parameter values (wildcards, ranges, enums). `env` passes environment variables to the plugin's Python implementation.
+
+#### 9.9.3 Plugin Management
+
+Plugins are directories containing `manifest.lumon` (function signatures), `impl.lumon` (Lumon implementation), and optionally Python files (for system-level operations like browser automation).
+
+Lumon discovers plugins at `../plugins/` relative to the `--working-dir sandbox` path — i.e., `<worktree>/plugins/`. Flowstate manages this directory:
+
+- **Global plugins** (`~/.flowstate/plugins/`): Common plugins shared across all flows. Installed by the user.
+- **Per-flow plugins** (`<flow-file-dir>/plugins/`): Specialized plugins alongside the flow file. Versioned with the flow.
+- **Merge strategy**: Both are symlinked into `<worktree>/plugins/`. Per-flow overrides global (same-name plugin → per-flow wins).
+
+#### 9.9.4 ACP Compatibility
+
+The ACP harness spawns `claude-agent-acp` with `cwd=<worktree>`. Claude Code discovers `.claude/settings.json` from the cwd and loads the PreToolUse hooks automatically. No special ACP handling is needed.
+
+The SDK harness requires explicit settings pass-through: `ClaudeAgentOptions(settings=<worktree>/.claude/settings.json)`.
+
+#### 9.9.5 Artifact Submission
+
+Lumon agents submit artifacts (summaries, decisions, output) via the Flowstate API (Section 9.6), same as non-Lumon agents. The `$FLOWSTATE_SERVER_URL` environment variable is injected into the agent's environment. Agents use `curl` commands to POST artifacts — these are allowed by the sandbox-guard hook.
 
 ### 9.4 Error Detection
 
