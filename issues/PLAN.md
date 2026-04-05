@@ -476,8 +476,8 @@
 
 | Issue      | Title                                                        | Domain | Priority | Depends On  | Status |
 | ---------- | ------------------------------------------------------------ | ------ | -------- | ----------- | ------ |
-| ENGINE-076 | Create flowstate Lumon plugin for artifact submission         | engine | P0       | —           | todo   |
-| ENGINE-077 | Lumon deploy integration with plugin management              | engine | P0       | ENGINE-076  | todo   |
+| ENGINE-076 | Create flowstate Lumon plugin for artifact submission         | engine | P0       | —           | done   |
+| ENGINE-077 | Lumon deploy integration with plugin management              | engine | P0       | ENGINE-076  | done   |
 
 
 ### Phase 28b — Lumon Server & UI
@@ -485,8 +485,8 @@
 
 | Issue      | Title                                                        | Domain | Priority | Depends On  | Status |
 | ---------- | ------------------------------------------------------------ | ------ | -------- | ----------- | ------ |
-| SERVER-025 | Expose lumon/sandbox settings in flow API responses           | server | P1       | —           | todo   |
-| UI-067     | Show Lumon security indicator in flow detail panel            | ui     | P1       | SERVER-025  | todo   |
+| SERVER-025 | Expose lumon/sandbox settings in flow API responses           | server | P1       | —           | done   |
+| UI-067     | Show Lumon security indicator in flow detail panel            | ui     | P1       | SERVER-025  | done   |
 
 
 ---
