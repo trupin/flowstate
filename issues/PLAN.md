@@ -488,6 +488,11 @@
 | SERVER-025 | Expose lumon/sandbox settings in flow API responses           | server | P1       | —           | done   |
 | UI-067     | Show Lumon security indicator in flow detail panel            | ui     | P1       | SERVER-025  | done   |
 
+### Phase 29 — Bug Fixes
+
+| Issue      | Title                                                        | Domain | Priority | Depends On  | Status |
+| ---------- | ------------------------------------------------------------ | ------ | -------- | ----------- | ------ |
+| UI-070     | Cancel button succeeds on backend but UI does not reflect it | ui     | P1       | —           | todo   |
 
 ---
 
