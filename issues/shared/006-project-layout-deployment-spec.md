@@ -4,7 +4,7 @@
 shared
 
 ## Status
-todo
+done
 
 ## Priority
 P0 (critical path)
@@ -64,12 +64,53 @@ Not applicable — no runtime behavior.
 3. Read §13.3 and §13.4 end-to-end with fresh eyes: can a domain agent implement SERVER-026 / ENGINE-079 / SHARED-008 without asking a clarifying question? If yes, PASS.
 
 ## E2E Verification Log
-_Filled in by the implementing agent._
+
+### Post-Implementation Verification
+
+Spec-only issue — no runtime surface to exercise. Verification was structural:
+
+```
+$ grep -n "TBD: SHARED" specs.md
+(no matches)
+
+$ grep -n "TBD" specs.md
+(no matches)
+```
+
+§13.3 now contains:
+- Full project directory layout diagram
+- `<slug>` formula with symlink handling note
+- `FLOWSTATE_CONFIG` and `FLOWSTATE_DATA_DIR` env var semantics
+- The 5-step project resolution algorithm
+- The `Project` dataclass field table (implementation contract for SHARED-007)
+- Flow `workspace` and node `cwd` resolution rules (all three cases: absolute, relative, omitted)
+- Migration note (greenfield)
+- Non-goals list
+
+§13.4 now contains:
+- `pipx` / `uv tool install` install command
+- First-run bootstrap sequence
+- UI packaging story (Hatchling hook + importlib.resources + dev fallback)
+- Lumon optional-extra contract (`flowstate[lumon]`, `LumonNotInstalledError`)
+- Security posture (127.0.0.1 default, non-loopback warning)
+- `/health` endpoint contract
+- Release procedure outline
+- Non-goals list
+
+§13.1 config schema was also updated:
+- Removed `[database]` section (derived, not configured)
+- Changed `watch_dir = "./flows"` → `watch_dir = "flows"` (project-rooted semantics)
+- Removed the "global or local override" sentence
+- Added notes clarifying project-relative resolution
+
+§13.2 CLI reference added `flowstate init` as a documented command.
+
+A downstream agent implementing SHARED-007, SERVER-026, ENGINE-079, or SHARED-008 can now cite specs.md §13.3/§13.4 by field name without ambiguity.
 
 ## Completion Checklist
-- [ ] §13.3 Project Layout fully authored
-- [ ] §13.4 Deployment & Installation fully authored
-- [ ] §13.1 config schema updated to match
-- [ ] No `[TBD: SHARED-006]` markers remain
-- [ ] Migration note included
-- [ ] Non-goals enumerated
+- [x] §13.3 Project Layout fully authored
+- [x] §13.4 Deployment & Installation fully authored
+- [x] §13.1 config schema updated to match
+- [x] No `[TBD: SHARED-006]` markers remain
+- [x] Migration note included
+- [x] Non-goals enumerated

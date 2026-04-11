@@ -512,7 +512,7 @@ Make Flowstate installable from PyPI via `pipx` / `uv tool install` and runnable
 
 | Issue      | Title                                                               | Domain | Priority | Depends On | Status |
 | ---------- | ------------------------------------------------------------------- | ------ | -------- | ---------- | ------ |
-| SHARED-006 | Spec: project layout & deployment model                             | shared | P0       | —          | todo   |
+| SHARED-006 | Spec: project layout & deployment model                             | shared | P0       | —          | done   |
 | SHARED-007 | Define `Project` contract (root, slug, abs paths) in `config.py`    | shared | P0       | SHARED-006 | todo   |
 
 #### Phase 31.1 — Core deployability (parallel after SHARED-007)
