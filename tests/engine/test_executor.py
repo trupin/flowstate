@@ -6520,6 +6520,285 @@ class TestSkipTaskResumesPausedFlow:
         await execute_task
 
 
+class TestRetryTaskEmitsTaskRetried:
+    """retry_task() must always emit a TASK_RETRIED event so the UI learns
+    about the new task execution, regardless of whether the flow was paused.
+    See UI-072.
+    """
+
+    async def test_retry_emits_task_retried_event_when_paused(self) -> None:
+        """A paused flow being retried emits TASK_RETRIED with the new task id."""
+        db = _make_db()
+        events, callback = _collect_events()
+        mock_mgr = MockSubprocessManager()
+        mock_mgr.task_responses["work"] = (1, [])
+        executor = FlowExecutor(db, callback, mock_mgr)
+
+        flow = _make_linear_flow(on_error=ErrorPolicy.PAUSE)
+        flow_run_id, execute_task = await _execute_until_paused(
+            executor, flow, {}, "/workspace", db
+        )
+
+        events.clear()
+
+        tasks = db.list_task_executions(flow_run_id)
+        failed_task = next(t for t in tasks if t.status == "failed")
+
+        # Make "work" succeed on retry so the flow finishes cleanly.
+        del mock_mgr.task_responses["work"]
+        await executor.retry_task(flow_run_id, failed_task.id)
+
+        retried = [e for e in events if e.type == EventType.TASK_RETRIED]
+        assert len(retried) == 1
+        evt = retried[0]
+        assert evt.flow_run_id == flow_run_id
+        assert evt.payload["original_task_execution_id"] == failed_task.id
+        assert evt.payload["node_name"] == "work"
+        assert evt.payload["generation"] == 2
+        new_task_id = evt.payload["task_execution_id"]
+        assert isinstance(new_task_id, str)
+        # The new task id should match the freshly created task in the DB.
+        all_work = [t for t in db.list_task_executions(flow_run_id) if t.node_name == "work"]
+        assert any(t.id == new_task_id for t in all_work)
+
+        await execute_task
+
+    async def test_retry_emits_task_retried_event_when_not_paused(self) -> None:
+        """When the flow is running (not paused), retry_task still emits
+        TASK_RETRIED so the UI updates. The legacy FLOW_STATUS_CHANGED event
+        is NOT emitted in this case (no status transition).
+        """
+        db = _make_db()
+        events, callback = _collect_events()
+        mock_mgr = MockSubprocessManager()
+        executor = FlowExecutor(db, callback, mock_mgr)
+
+        # Set up minimal executor state without driving the main loop.
+        flow = _make_linear_flow(on_error=ErrorPolicy.PAUSE)
+        executor._flow = flow
+        executor._expanded_prompts = {n: f"Do the {n} step" for n in flow.nodes}
+        executor._pending_tasks = set()
+        executor._paused = False
+        executor._cancelled = False
+        executor._task_id = None
+        executor._task_row = None
+
+        # Create a flow run + a "failed" task directly in the DB.
+        flow_def_id = db.create_flow_definition("test-flow", "source", "{}")
+        flow_run_id = db.create_flow_run(
+            flow_definition_id=flow_def_id,
+            data_dir="/tmp/test",
+            budget_seconds=3600,
+            on_error="pause",
+            default_workspace="/workspace",
+        )
+        db.update_flow_run_status(flow_run_id, "running")
+        failed_id = db.create_task_execution(
+            flow_run_id=flow_run_id,
+            node_name="work",
+            node_type="task",
+            generation=1,
+            context_mode="handoff",
+            cwd="/workspace",
+            task_dir="",
+            prompt_text="Do the work step",
+        )
+        db.update_task_status(failed_id, "failed", error_message="boom")
+
+        events.clear()
+        await executor.retry_task(flow_run_id, failed_id)
+
+        # TASK_RETRIED must fire.
+        retried = [e for e in events if e.type == EventType.TASK_RETRIED]
+        assert len(retried) == 1
+        evt = retried[0]
+        assert evt.payload["original_task_execution_id"] == failed_id
+        assert evt.payload["node_name"] == "work"
+        assert evt.payload["generation"] == 2
+
+        # FLOW_STATUS_CHANGED must NOT fire because the flow was already
+        # running, not paused. (Regression guard for the legacy behavior.)
+        status_evts = [e for e in events if e.type == EventType.FLOW_STATUS_CHANGED]
+        assert status_evts == []
+
+        # The new pending task should be queued for the main loop.
+        new_task_id = evt.payload["task_execution_id"]
+        assert new_task_id in executor._pending_tasks
+
+    async def test_retry_paused_to_running_status_event_still_fires(self) -> None:
+        """Regression: existing paused -> running FLOW_STATUS_CHANGED behavior
+        is preserved alongside the new TASK_RETRIED event.
+        """
+        db = _make_db()
+        events, callback = _collect_events()
+        mock_mgr = MockSubprocessManager()
+        mock_mgr.task_responses["work"] = (1, [])
+        executor = FlowExecutor(db, callback, mock_mgr)
+
+        flow = _make_linear_flow(on_error=ErrorPolicy.PAUSE)
+        flow_run_id, execute_task = await _execute_until_paused(
+            executor, flow, {}, "/workspace", db
+        )
+
+        events.clear()
+
+        tasks = db.list_task_executions(flow_run_id)
+        failed_task = next(t for t in tasks if t.status == "failed")
+
+        del mock_mgr.task_responses["work"]
+        await executor.retry_task(flow_run_id, failed_task.id)
+
+        status_evts = [e for e in events if e.type == EventType.FLOW_STATUS_CHANGED]
+        assert any(
+            e.payload["old_status"] == "paused"
+            and e.payload["new_status"] == "running"
+            and e.payload["reason"] == "Task retried"
+            for e in status_evts
+        )
+        retried = [e for e in events if e.type == EventType.TASK_RETRIED]
+        assert len(retried) == 1
+
+        await execute_task
+
+
+class TestSkipTaskEmitsTaskSkipped:
+    """skip_task() must always emit a TASK_SKIPPED event regardless of paused
+    state. See UI-072.
+    """
+
+    async def test_skip_emits_task_skipped_event_when_paused(self) -> None:
+        """skip_task on a paused flow emits TASK_SKIPPED with next task id."""
+        db = _make_db()
+        events, callback = _collect_events()
+        mock_mgr = MockSubprocessManager()
+        mock_mgr.task_responses["work"] = (1, [])
+        executor = FlowExecutor(db, callback, mock_mgr)
+
+        flow = _make_linear_flow(on_error=ErrorPolicy.PAUSE)
+        flow_run_id, execute_task = await _execute_until_paused(
+            executor, flow, {}, "/workspace", db
+        )
+
+        events.clear()
+
+        tasks = db.list_task_executions(flow_run_id)
+        failed_task = next(t for t in tasks if t.status == "failed")
+
+        await executor.skip_task(flow_run_id, failed_task.id)
+
+        skipped = [e for e in events if e.type == EventType.TASK_SKIPPED]
+        assert len(skipped) == 1
+        evt = skipped[0]
+        assert evt.payload["task_execution_id"] == failed_task.id
+        assert evt.payload["node_name"] == "work"
+        # next_task_execution_id should be set to the queued "finish" task.
+        next_id = evt.payload["next_task_execution_id"]
+        assert isinstance(next_id, str)
+        finish_tasks = [t for t in db.list_task_executions(flow_run_id) if t.node_name == "finish"]
+        assert any(t.id == next_id for t in finish_tasks)
+
+        await execute_task
+
+    async def test_skip_emits_task_skipped_event_when_not_paused(self) -> None:
+        """When the flow is running (not paused), skip_task still emits
+        TASK_SKIPPED. FLOW_STATUS_CHANGED is NOT emitted in this case.
+        """
+        db = _make_db()
+        events, callback = _collect_events()
+        mock_mgr = MockSubprocessManager()
+        executor = FlowExecutor(db, callback, mock_mgr)
+
+        flow = _make_linear_flow(on_error=ErrorPolicy.PAUSE)
+        executor._flow = flow
+        executor._expanded_prompts = {n: f"Do the {n} step" for n in flow.nodes}
+        executor._pending_tasks = set()
+        executor._paused = False
+        executor._cancelled = False
+        executor._task_id = None
+        executor._task_row = None
+
+        flow_def_id = db.create_flow_definition("test-flow", "source", "{}")
+        flow_run_id = db.create_flow_run(
+            flow_definition_id=flow_def_id,
+            data_dir="/tmp/test",
+            budget_seconds=3600,
+            on_error="pause",
+            default_workspace="/workspace",
+        )
+        db.update_flow_run_status(flow_run_id, "running")
+        failed_id = db.create_task_execution(
+            flow_run_id=flow_run_id,
+            node_name="work",
+            node_type="task",
+            generation=1,
+            context_mode="handoff",
+            cwd="/workspace",
+            task_dir="",
+            prompt_text="Do the work step",
+        )
+        db.update_task_status(failed_id, "failed", error_message="boom")
+
+        events.clear()
+        await executor.skip_task(flow_run_id, failed_id)
+
+        skipped = [e for e in events if e.type == EventType.TASK_SKIPPED]
+        assert len(skipped) == 1
+        evt = skipped[0]
+        assert evt.payload["task_execution_id"] == failed_id
+        assert evt.payload["node_name"] == "work"
+        next_id = evt.payload["next_task_execution_id"]
+        assert isinstance(next_id, str)
+        # The next task should be queued.
+        assert next_id in executor._pending_tasks
+
+        # No FLOW_STATUS_CHANGED because the flow was already running.
+        status_evts = [e for e in events if e.type == EventType.FLOW_STATUS_CHANGED]
+        assert status_evts == []
+
+
+class TestTaskRetriedSkippedEventTypes:
+    """Sanity checks for the new event type values and serialization."""
+
+    def test_task_retried_value(self) -> None:
+        assert EventType.TASK_RETRIED == "task.retried"
+        assert EventType.TASK_RETRIED.value == "task.retried"
+
+    def test_task_skipped_value(self) -> None:
+        assert EventType.TASK_SKIPPED == "task.skipped"
+        assert EventType.TASK_SKIPPED.value == "task.skipped"
+
+    def test_task_retried_serialization(self) -> None:
+        event = FlowEvent(
+            type=EventType.TASK_RETRIED,
+            flow_run_id="run-1",
+            timestamp="2024-01-01T00:00:00",
+            payload={
+                "task_execution_id": "new-1",
+                "node_name": "work",
+                "generation": 2,
+                "original_task_execution_id": "old-1",
+            },
+        )
+        d = event.to_dict()
+        assert d["type"] == "task.retried"
+        assert d["payload"]["original_task_execution_id"] == "old-1"
+
+    def test_task_skipped_serialization(self) -> None:
+        event = FlowEvent(
+            type=EventType.TASK_SKIPPED,
+            flow_run_id="run-1",
+            timestamp="2024-01-01T00:00:00",
+            payload={
+                "task_execution_id": "t1",
+                "node_name": "work",
+                "next_task_execution_id": "t2",
+            },
+        )
+        d = event.to_dict()
+        assert d["type"] == "task.skipped"
+        assert d["payload"]["next_task_execution_id"] == "t2"
+
+
 class TestTaskInterruptedEventType:
     """Test that the TASK_INTERRUPTED event type exists and works."""
 

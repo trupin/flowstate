@@ -283,6 +283,57 @@ export interface FlowEvent {
   payload: Record<string, unknown>;
 }
 
+// --- WebSocket server-to-client control messages ---
+//
+// These are sent by the server in response to a client action (pause,
+// cancel, abort, retry_task, skip_task). They are NOT flow events --
+// they do not carry `flow_run_id` at the top level or a timestamp, and
+// they are addressed to a single originating websocket rather than
+// broadcast to all subscribers.
+
+export type ControlActionType =
+  | 'pause'
+  | 'cancel'
+  | 'abort'
+  | 'retry_task'
+  | 'skip_task';
+
+export interface ActionAckMessage {
+  type: 'action_ack';
+  payload: {
+    action: ControlActionType;
+    flow_run_id: string;
+    task_execution_id?: string;
+  };
+}
+
+export interface ActionErrorMessage {
+  type: 'error';
+  payload: {
+    // Pre-existing error shapes from the server may omit `action`
+    // and `flow_run_id` (e.g. "Invalid JSON", "Unknown action",
+    // "task_execution_id is required"). Only `message` is guaranteed.
+    action?: ControlActionType;
+    flow_run_id?: string;
+    task_execution_id?: string;
+    message: string;
+  };
+}
+
+export type ServerMessage = FlowEvent | ActionAckMessage | ActionErrorMessage;
+
+export function isActionAck(msg: ServerMessage): msg is ActionAckMessage {
+  return msg.type === 'action_ack';
+}
+
+export function isActionError(msg: ServerMessage): msg is ActionErrorMessage {
+  return msg.type === 'error';
+}
+
+export function isFlowEvent(msg: ServerMessage): msg is FlowEvent {
+  return msg.type !== 'action_ack' && msg.type !== 'error';
+}
+
 // --- WebSocket client action types ---
 
 export interface ClientAction {

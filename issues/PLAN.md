@@ -493,6 +493,7 @@
 | Issue      | Title                                                        | Domain | Priority | Depends On  | Status |
 | ---------- | ------------------------------------------------------------ | ------ | -------- | ----------- | ------ |
 | UI-070     | Cancel button succeeds on backend but UI does not reflect it | ui     | P1       | —           | todo   |
+| UI-072     | Retry Task button click appears to do nothing                | ui     | P1       | —           | done        |
 
 
 ### Phase 30 — Two-Phase Pause UX

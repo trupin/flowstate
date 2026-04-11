@@ -38,6 +38,9 @@ export function RunDetail() {
     isConnected,
     send,
     subtaskVersion,
+    pendingAction,
+    actionError,
+    dismissActionError,
   } = useFlowRun(id!);
 
   // The effective task shown in log viewer and highlighted in graph:
@@ -351,6 +354,27 @@ export function RunDetail() {
             </span>
           </div>
         )}
+        {actionError && (
+          <div
+            className="task-error-banner action-error-banner"
+            data-testid="action-error-banner"
+            role="alert"
+          >
+            <span className="task-error-label">
+              {actionError.action
+                ? `${actionError.action.replace('_', ' ')} failed`
+                : 'Action failed'}
+            </span>
+            <span className="task-error-message">{actionError.message}</span>
+            <button
+              className="task-error-dismiss"
+              onClick={dismissActionError}
+              aria-label="Dismiss error"
+            >
+              &times;
+            </button>
+          </div>
+        )}
       </div>
 
       <div
@@ -437,6 +461,7 @@ export function RunDetail() {
         budgetSeconds={run.budget_seconds}
         selectedTaskId={selectedTaskExecution?.id}
         selectedTaskStatus={selectedTaskExecution?.status}
+        pendingAction={pendingAction}
         onPause={handlePause}
         onResume={handleResume}
         onCancel={handleCancel}

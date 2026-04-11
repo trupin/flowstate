@@ -2,12 +2,29 @@ import { useState, useEffect, useCallback, useRef, useMemo } from 'react';
 import { useWebSocket } from './useWebSocket';
 import { api } from '../api/client';
 import type {
+  ControlActionType,
   FlowRun,
   TaskExecution,
   EdgeTransition,
   LogEntry,
   FlowEvent,
 } from '../api/types';
+
+// Pending-action state: tracks a control action (cancel, retry_task, etc.)
+// that was sent over the websocket and is waiting for an ack, error, or
+// downstream flow event. A ``task_execution_id`` is present for task-level
+// actions so we can match incoming acks/errors precisely.
+export interface PendingAction {
+  action: ControlActionType;
+  task_execution_id?: string;
+  started_at: number;
+}
+
+export interface ActionErrorState {
+  action?: ControlActionType;
+  task_execution_id?: string;
+  message: string;
+}
 
 interface UseFlowRunReturn {
   run: FlowRun | null;
@@ -25,6 +42,9 @@ interface UseFlowRunReturn {
   isConnected: boolean;
   send: (data: unknown) => void;
   subtaskVersion: number;
+  pendingAction: PendingAction | null;
+  actionError: ActionErrorState | null;
+  dismissActionError: () => void;
 }
 
 function upsertAllTaskExecutions(
@@ -299,6 +319,22 @@ function applyEvent(
       });
       break;
     }
+    case 'task.retried': {
+      // A retry succeeded -- a new task execution row was created by the
+      // executor. Re-fetch the run detail so the new generation appears in
+      // the graph. The event payload carries task_execution_id, node_name,
+      // generation, and original_task_execution_id but we re-fetch rather
+      // than patching the map because retry can also transition the run
+      // status out of paused/failed and we want a consistent snapshot.
+      fetchRunDetail();
+      break;
+    }
+    case 'task.skipped': {
+      // A skip succeeded -- the task is now in ``skipped`` status and the
+      // next task (if any) has been queued. Re-fetch to update the graph.
+      fetchRunDetail();
+      break;
+    }
     case 'edge.transition':
       setEdges((prev) => [
         ...prev,
@@ -322,8 +358,16 @@ function applyEvent(
 
 export function useFlowRun(runId: string): UseFlowRunReturn {
   const wsUrl = `${window.location.protocol === 'https:' ? 'wss:' : 'ws:'}//${window.location.host}/ws`;
-  const { send, subscribe, unsubscribe, eventQueue, clearQueue, isConnected } =
-    useWebSocket(wsUrl);
+  const {
+    send,
+    subscribe,
+    unsubscribe,
+    eventQueue,
+    clearQueue,
+    controlQueue,
+    clearControlQueue,
+    isConnected,
+  } = useWebSocket(wsUrl);
   const [run, setRun] = useState<FlowRun | null>(null);
   const [tasks, setTasks] = useState<Map<string, TaskExecution>>(new Map());
   const [allTaskExecutions, setAllTaskExecutions] = useState<
@@ -338,16 +382,38 @@ export function useFlowRun(runId: string): UseFlowRunReturn {
   >(null);
   const [logs, setLogs] = useState<Map<string, LogEntry[]>>(new Map());
   const [subtaskVersion, setSubtaskVersion] = useState(0);
+  const [pendingAction, setPendingAction] = useState<PendingAction | null>(
+    null,
+  );
+  const [actionError, setActionError] = useState<ActionErrorState | null>(null);
 
-  // Fallback timer ref: when a cancel/abort action is sent, we start a 3-second
-  // timeout. If the flow status hasn't become terminal by then, we re-fetch from
-  // the REST API to ensure the UI reflects the actual state. This handles the
-  // case where the WebSocket status_changed event is lost or never emitted.
-  const cancelFallbackTimer = useRef<ReturnType<typeof setTimeout> | null>(
+  // Fallback timer ref: when a control action is sent, we start a 3-second
+  // timeout. If the ack/error/expected event hasn't arrived by then, we
+  // re-fetch from the REST API to ensure the UI reflects the actual state
+  // and clear the pending flag so buttons become usable again. This handles
+  // dropped messages, server crashes, and bugs where no downstream event
+  // is emitted.
+  const pendingFallbackTimer = useRef<ReturnType<typeof setTimeout> | null>(
     null,
   );
 
-  // Clear fallback timer when status becomes terminal
+  // Keep a ref to the current pending action so timers and control-queue
+  // effects can read its identity without re-subscribing each render.
+  const pendingActionRef = useRef<PendingAction | null>(null);
+  useEffect(() => {
+    pendingActionRef.current = pendingAction;
+  }, [pendingAction]);
+
+  const clearPending = useCallback(() => {
+    if (pendingFallbackTimer.current !== null) {
+      clearTimeout(pendingFallbackTimer.current);
+      pendingFallbackTimer.current = null;
+    }
+    setPendingAction(null);
+  }, []);
+
+  // Clear fallback timer + pending state when status becomes terminal.
+  // A terminal status means any outstanding cancel/abort/pause has settled.
   useEffect(() => {
     if (
       run &&
@@ -355,9 +421,18 @@ export function useFlowRun(runId: string): UseFlowRunReturn {
         run.status,
       )
     ) {
-      if (cancelFallbackTimer.current !== null) {
-        clearTimeout(cancelFallbackTimer.current);
-        cancelFallbackTimer.current = null;
+      if (pendingFallbackTimer.current !== null) {
+        clearTimeout(pendingFallbackTimer.current);
+        pendingFallbackTimer.current = null;
+      }
+      const currentPending = pendingActionRef.current;
+      if (
+        currentPending &&
+        (currentPending.action === 'cancel' ||
+          currentPending.action === 'abort' ||
+          currentPending.action === 'pause')
+      ) {
+        setPendingAction(null);
       }
     }
   }, [run]);
@@ -365,8 +440,8 @@ export function useFlowRun(runId: string): UseFlowRunReturn {
   // Cleanup fallback timer on unmount
   useEffect(() => {
     return () => {
-      if (cancelFallbackTimer.current !== null) {
-        clearTimeout(cancelFallbackTimer.current);
+      if (pendingFallbackTimer.current !== null) {
+        clearTimeout(pendingFallbackTimer.current);
       }
     };
   }, []);
@@ -456,6 +531,29 @@ export function useFlowRun(runId: string): UseFlowRunReturn {
       if (event.type === 'subtask.updated') {
         hasSubtaskEvent = true;
       }
+      // Clear pending retry/skip when the matching task.retried/task.skipped
+      // event arrives. The event carries ``original_task_execution_id`` (for
+      // retry) or ``task_execution_id`` (for skip, which is the skipped task).
+      const current = pendingActionRef.current;
+      if (current) {
+        if (
+          current.action === 'retry_task' &&
+          event.type === 'task.retried' &&
+          (current.task_execution_id === undefined ||
+            current.task_execution_id ===
+              (event.payload.original_task_execution_id as string | undefined))
+        ) {
+          clearPending();
+        } else if (
+          current.action === 'skip_task' &&
+          event.type === 'task.skipped' &&
+          (current.task_execution_id === undefined ||
+            current.task_execution_id ===
+              (event.payload.task_execution_id as string | undefined))
+        ) {
+          clearPending();
+        }
+      }
       applyEvent(
         event,
         setRun,
@@ -471,7 +569,7 @@ export function useFlowRun(runId: string): UseFlowRunReturn {
       setSubtaskVersion((v) => v + 1);
     }
     clearQueue(count);
-  }, [eventQueue, clearQueue, runId, fetchRunDetail]);
+  }, [eventQueue, clearQueue, runId, fetchRunDetail, clearPending]);
 
   // The effective task is whichever task the user should be viewing:
   // manual selection takes priority, otherwise auto-selected.
@@ -538,30 +636,109 @@ export function useFlowRun(runId: string): UseFlowRunReturn {
     });
   }, []);
 
-  // Wrap send to detect cancel/abort actions and start a fallback timer.
-  // If the backend status_changed event doesn't arrive within 3 seconds,
-  // re-fetch from the REST API to ensure the UI reflects cancellation.
+  // Wrap send to detect control actions and manage pending state + fallback.
+  //
+  // When the client sends a control action (cancel/abort/pause/retry_task/
+  // skip_task), we:
+  //   1. Set ``pendingAction`` so the UI can disable buttons / show feedback.
+  //   2. Clear any previous actionError.
+  //   3. Start a 3-second fallback timer. If no ack/error/matching event
+  //      arrives by then, re-fetch the run detail and clear the pending
+  //      state so buttons become clickable again.
   const wrappedSend = useCallback(
     (data: unknown) => {
       send(data);
-      const msg = data as Record<string, unknown> | null;
+      if (!data || typeof data !== 'object') return;
+      const msg = data as Record<string, unknown>;
+      const action = msg.action;
       if (
-        msg &&
-        typeof msg === 'object' &&
-        (msg.action === 'cancel' || msg.action === 'abort')
+        action !== 'cancel' &&
+        action !== 'abort' &&
+        action !== 'pause' &&
+        action !== 'retry_task' &&
+        action !== 'skip_task'
       ) {
-        // Clear any existing timer before starting a new one
-        if (cancelFallbackTimer.current !== null) {
-          clearTimeout(cancelFallbackTimer.current);
-        }
-        cancelFallbackTimer.current = setTimeout(() => {
-          cancelFallbackTimer.current = null;
-          fetchRunDetail();
-        }, 3000);
+        return;
       }
+      const payload = (msg.payload ?? {}) as Record<string, unknown>;
+      const taskExecutionId =
+        typeof payload.task_execution_id === 'string'
+          ? payload.task_execution_id
+          : undefined;
+
+      const pending: PendingAction = {
+        action,
+        task_execution_id: taskExecutionId,
+        started_at: Date.now(),
+      };
+      setPendingAction(pending);
+      setActionError(null);
+
+      if (pendingFallbackTimer.current !== null) {
+        clearTimeout(pendingFallbackTimer.current);
+      }
+      pendingFallbackTimer.current = setTimeout(() => {
+        pendingFallbackTimer.current = null;
+        // Only act if this pending action is still the current one.
+        // (A later send would have replaced it, cancelling this timer
+        // already -- but guard just in case.)
+        if (pendingActionRef.current?.started_at === pending.started_at) {
+          fetchRunDetail();
+          setPendingAction(null);
+        }
+      }, 3000);
     },
     [send, fetchRunDetail],
   );
+
+  // Drain the control-message queue. For each ack/error, match against
+  // the current pending action and clear it (and surface errors).
+  useEffect(() => {
+    if (controlQueue.length === 0) return;
+    const count = controlQueue.length;
+    for (const msg of controlQueue) {
+      const current = pendingActionRef.current;
+      if (msg.type === 'action_ack') {
+        if (
+          current &&
+          current.action === msg.payload.action &&
+          // For task-level actions, require the task_execution_id to match.
+          // For flow-level actions, ignore task_execution_id.
+          (current.task_execution_id === undefined ||
+            current.task_execution_id === msg.payload.task_execution_id)
+        ) {
+          clearPending();
+        }
+        continue;
+      }
+      // error message
+      const errAction = msg.payload.action;
+      const errTaskId = msg.payload.task_execution_id;
+      const matches =
+        current &&
+        // If the error carries an action, require it to match. Otherwise
+        // (generic error with only ``message``), treat it as matching the
+        // current pending action -- the server sent it on this websocket
+        // in response to our most recent request.
+        (errAction === undefined || errAction === current.action) &&
+        (errTaskId === undefined ||
+          current.task_execution_id === undefined ||
+          errTaskId === current.task_execution_id);
+      if (matches) {
+        clearPending();
+      }
+      setActionError({
+        action: errAction ?? current?.action,
+        task_execution_id: errTaskId ?? current?.task_execution_id,
+        message: msg.payload.message,
+      });
+    }
+    clearControlQueue(count);
+  }, [controlQueue, clearControlQueue, clearPending]);
+
+  const dismissActionError = useCallback(() => {
+    setActionError(null);
+  }, []);
 
   return {
     run,
@@ -579,5 +756,8 @@ export function useFlowRun(runId: string): UseFlowRunReturn {
     isConnected,
     send: wrappedSend,
     subtaskVersion,
+    pendingAction,
+    actionError,
+    dismissActionError,
   };
 }

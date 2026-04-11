@@ -266,13 +266,18 @@ class TestPauseAction:
         with client.websocket_connect("/ws") as ws:
             ws.send_json({"action": "subscribe", "flow_run_id": "run-1"})
             ws.send_json({"action": "pause", "flow_run_id": "run-1"})
+            # Consume the action_ack response
+            response = ws.receive_json()
+            assert response["type"] == "action_ack"
+            assert response["payload"]["action"] == "pause"
+            assert response["payload"]["flow_run_id"] == "run-1"
 
         mock_executor.pause.assert_called_once_with("run-1")
 
 
 class TestCancelAction:
     def test_cancel_action(self) -> None:
-        """Send cancel. Verify executor.cancel() called."""
+        """Send cancel. Verify executor.cancel() called and ack returned."""
         mock_executor = MagicMock()
         mock_executor.cancel = AsyncMock()
         mock_executor._flow_run_id = "run-1"
@@ -285,13 +290,53 @@ class TestCancelAction:
 
         with client.websocket_connect("/ws") as ws:
             ws.send_json({"action": "cancel", "flow_run_id": "run-1"})
+            response = ws.receive_json()
+            assert response["type"] == "action_ack"
+            assert response["payload"]["action"] == "cancel"
+            assert response["payload"]["flow_run_id"] == "run-1"
+
+        mock_executor.cancel.assert_called_once_with("run-1")
+
+    def test_cancel_action_error_sends_error_and_fallback(self) -> None:
+        """If executor.cancel raises, the client receives an error message."""
+        mock_executor = MagicMock()
+        mock_executor.cancel = AsyncMock(side_effect=RuntimeError("boom during cancel"))
+        mock_executor._flow_run_id = "run-1"
+
+        run_manager = RunManager()
+        run_manager._executors["run-1"] = mock_executor
+
+        ws_hub = WebSocketHub()
+        client = _make_test_client(ws_hub=ws_hub, run_manager=run_manager)
+
+        with client.websocket_connect("/ws") as ws:
+            # Subscribe so the fallback status_changed broadcast also reaches us.
+            ws.send_json({"action": "subscribe", "flow_run_id": "run-1"})
+            ws.send_json({"action": "cancel", "flow_run_id": "run-1"})
+
+            messages: list[dict[str, object]] = []
+            for _ in range(2):
+                messages.append(ws.receive_json())
+
+        types = {m["type"] for m in messages}
+        assert "error" in types
+        assert "flow.status_changed" in types
+
+        error_msg = next(m for m in messages if m["type"] == "error")
+        error_payload = error_msg["payload"]
+        assert isinstance(error_payload, dict)
+        assert error_payload["action"] == "cancel"
+        assert error_payload["flow_run_id"] == "run-1"
+        assert "boom during cancel" in error_payload["message"]
 
         mock_executor.cancel.assert_called_once_with("run-1")
 
 
 class TestRetryTaskAction:
     def test_retry_task_action(self) -> None:
-        """Send retry_task with task_execution_id. Verify executor.retry_task() called."""
+        """Send retry_task with task_execution_id. Verify executor.retry_task()
+        is called and an action_ack is returned to the client.
+        """
         mock_executor = MagicMock()
         mock_executor.retry_task = AsyncMock()
 
@@ -309,13 +354,18 @@ class TestRetryTaskAction:
                     "payload": {"task_execution_id": "task-1"},
                 }
             )
+            response = ws.receive_json()
+            assert response["type"] == "action_ack"
+            assert response["payload"]["action"] == "retry_task"
+            assert response["payload"]["flow_run_id"] == "run-1"
+            assert response["payload"]["task_execution_id"] == "task-1"
 
         mock_executor.retry_task.assert_called_once_with("run-1", "task-1")
 
 
 class TestSkipTaskAction:
     def test_skip_task_action(self) -> None:
-        """Send skip_task. Verify executor.skip_task() called."""
+        """Send skip_task. Verify executor.skip_task() called and ack returned."""
         mock_executor = MagicMock()
         mock_executor.skip_task = AsyncMock()
 
@@ -333,15 +383,21 @@ class TestSkipTaskAction:
                     "payload": {"task_execution_id": "task-1"},
                 }
             )
+            response = ws.receive_json()
+            assert response["type"] == "action_ack"
+            assert response["payload"]["action"] == "skip_task"
+            assert response["payload"]["task_execution_id"] == "task-1"
 
         mock_executor.skip_task.assert_called_once_with("run-1", "task-1")
 
 
 class TestTaskControlErrorHandling:
-    """ENGINE-038: WebSocket _handle_task_control catches executor errors."""
+    """UI-072 / ENGINE-038: ``_handle_task_control`` catches all executor errors
+    and surfaces them to the originating client without killing the connection.
+    """
 
-    def test_retry_task_value_error_does_not_kill_connection(self) -> None:
-        """If retry_task raises ValueError, the WS connection stays alive."""
+    def test_retry_task_value_error_sends_error_message(self) -> None:
+        """ValueError from retry_task is reported via an error message."""
         mock_executor = MagicMock()
         mock_executor.retry_task = AsyncMock(
             side_effect=ValueError("Can only retry failed tasks, got status: completed")
@@ -354,7 +410,6 @@ class TestTaskControlErrorHandling:
         client = _make_test_client(ws_hub=ws_hub, run_manager=run_manager)
 
         with client.websocket_connect("/ws") as ws:
-            # Send retry that will raise ValueError
             ws.send_json(
                 {
                     "action": "retry_task",
@@ -362,13 +417,20 @@ class TestTaskControlErrorHandling:
                     "payload": {"task_execution_id": "task-1"},
                 }
             )
+            response = ws.receive_json()
+            assert response["type"] == "error"
+            payload = response["payload"]
+            assert payload["action"] == "retry_task"
+            assert payload["task_execution_id"] == "task-1"
+            assert "Can only retry failed tasks" in payload["message"]
+
             # Connection should still be alive -- send another action to verify
             ws.send_json({"action": "subscribe", "flow_run_id": "run-1"})
 
         mock_executor.retry_task.assert_called_once_with("run-1", "task-1")
 
-    def test_skip_task_runtime_error_does_not_kill_connection(self) -> None:
-        """If skip_task raises RuntimeError, the WS connection stays alive."""
+    def test_skip_task_runtime_error_sends_error_message(self) -> None:
+        """RuntimeError from skip_task is reported via an error message."""
         mock_executor = MagicMock()
         mock_executor.skip_task = AsyncMock(side_effect=RuntimeError("Flow run not found"))
 
@@ -386,10 +448,83 @@ class TestTaskControlErrorHandling:
                     "payload": {"task_execution_id": "task-1"},
                 }
             )
+            response = ws.receive_json()
+            assert response["type"] == "error"
+            payload = response["payload"]
+            assert payload["action"] == "skip_task"
+            assert "Flow run not found" in payload["message"]
+
             # Connection should still be alive
             ws.send_json({"action": "subscribe", "flow_run_id": "run-1"})
 
         mock_executor.skip_task.assert_called_once_with("run-1", "task-1")
+
+    def test_retry_task_os_error_sends_error_message(self) -> None:
+        """OSError (e.g. worktree creation failure) is caught and surfaced.
+
+        Before UI-072, only ValueError/RuntimeError were caught — any other
+        exception propagated up to ``connect()``, was logged, and closed the
+        WebSocket leaving the UI silent.
+        """
+        mock_executor = MagicMock()
+        mock_executor.retry_task = AsyncMock(
+            side_effect=OSError("worktree path missing: /tmp/gone")
+        )
+
+        run_manager = RunManager()
+        run_manager._executors["run-1"] = mock_executor
+
+        ws_hub = WebSocketHub()
+        client = _make_test_client(ws_hub=ws_hub, run_manager=run_manager)
+
+        with client.websocket_connect("/ws") as ws:
+            ws.send_json(
+                {
+                    "action": "retry_task",
+                    "flow_run_id": "run-1",
+                    "payload": {"task_execution_id": "task-1"},
+                }
+            )
+            response = ws.receive_json()
+            assert response["type"] == "error"
+            payload = response["payload"]
+            assert payload["action"] == "retry_task"
+            assert payload["flow_run_id"] == "run-1"
+            assert payload["task_execution_id"] == "task-1"
+            assert "worktree path missing" in payload["message"]
+
+            # Connection should still be alive after a non-Value/RuntimeError
+            ws.send_json({"action": "subscribe", "flow_run_id": "run-1"})
+
+        mock_executor.retry_task.assert_called_once_with("run-1", "task-1")
+
+    def test_retry_task_generic_subprocess_error_sends_error_message(self) -> None:
+        """A subprocess.CalledProcessError-style failure is also surfaced."""
+        import subprocess
+
+        mock_executor = MagicMock()
+        mock_executor.retry_task = AsyncMock(
+            side_effect=subprocess.CalledProcessError(returncode=128, cmd=["git", "worktree"])
+        )
+
+        run_manager = RunManager()
+        run_manager._executors["run-1"] = mock_executor
+
+        ws_hub = WebSocketHub()
+        client = _make_test_client(ws_hub=ws_hub, run_manager=run_manager)
+
+        with client.websocket_connect("/ws") as ws:
+            ws.send_json(
+                {
+                    "action": "retry_task",
+                    "flow_run_id": "run-1",
+                    "payload": {"task_execution_id": "task-1"},
+                }
+            )
+            response = ws.receive_json()
+            assert response["type"] == "error"
+            assert response["payload"]["action"] == "retry_task"
+            assert "git" in response["payload"]["message"]
 
 
 class TestAbortAction:
@@ -407,6 +542,9 @@ class TestAbortAction:
 
         with client.websocket_connect("/ws") as ws:
             ws.send_json({"action": "abort", "flow_run_id": "run-1"})
+            response = ws.receive_json()
+            assert response["type"] == "action_ack"
+            assert response["payload"]["action"] == "abort"
 
         mock_executor.cancel.assert_called_once_with("run-1")
 

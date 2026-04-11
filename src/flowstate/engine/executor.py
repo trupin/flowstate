@@ -1850,6 +1850,25 @@ class FlowExecutor:
             )
             self._resume_event.set()
 
+        # Always emit a TASK_RETRIED event so the UI learns about the new
+        # task execution, regardless of whether the flow was paused. The
+        # FLOW_STATUS_CHANGED event above only fires in the paused case;
+        # without TASK_RETRIED the UI has no signal that retry succeeded
+        # when the flow is running or being restarted from terminal state.
+        self._emit(
+            FlowEvent(
+                type=EventType.TASK_RETRIED,
+                flow_run_id=flow_run_id,
+                timestamp=_now_iso(),
+                payload={
+                    "task_execution_id": new_task_id,
+                    "node_name": old_task.node_name,
+                    "generation": new_gen,
+                    "original_task_execution_id": task_execution_id,
+                },
+            )
+        )
+
     async def skip_task(self, flow_run_id: str, task_execution_id: str) -> None:
         """Skip a failed task and continue via first outgoing edge."""
         task = self._db.get_task_execution(task_execution_id)
@@ -1861,6 +1880,7 @@ class FlowExecutor:
         self._db.update_task_status(task_execution_id, "skipped")
 
         # Continue via first outgoing edge (if flow context is available)
+        next_task_id: str | None = None
         if self._flow is not None:
             outgoing = _get_outgoing_edges(self._flow, task.node_name)
             if outgoing:
@@ -1911,6 +1931,23 @@ class FlowExecutor:
                 )
             )
             self._resume_event.set()
+
+        # Always emit a TASK_SKIPPED event so the UI learns about the skip
+        # (and the new task that was queued, if any), regardless of whether
+        # the flow was paused. The FLOW_STATUS_CHANGED event above only
+        # fires in the paused case.
+        self._emit(
+            FlowEvent(
+                type=EventType.TASK_SKIPPED,
+                flow_run_id=flow_run_id,
+                timestamp=_now_iso(),
+                payload={
+                    "task_execution_id": task_execution_id,
+                    "node_name": task.node_name,
+                    "next_task_execution_id": next_task_id,
+                },
+            )
+        )
 
     async def restart_from_task(
         self,

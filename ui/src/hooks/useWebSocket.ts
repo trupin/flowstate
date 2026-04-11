@@ -1,5 +1,11 @@
 import { useRef, useState, useEffect, useCallback } from 'react';
-import type { FlowEvent } from '../api/types';
+import type {
+  ActionAckMessage,
+  ActionErrorMessage,
+  FlowEvent,
+  ServerMessage,
+} from '../api/types';
+import { isActionAck, isActionError } from '../api/types';
 
 interface UseWebSocketReturn {
   send: (data: unknown) => void;
@@ -7,6 +13,8 @@ interface UseWebSocketReturn {
   unsubscribe: (flowRunId: string) => void;
   eventQueue: FlowEvent[];
   clearQueue: (processedCount: number) => void;
+  controlQueue: Array<ActionAckMessage | ActionErrorMessage>;
+  clearControlQueue: (processedCount: number) => void;
   isConnected: boolean;
 }
 
@@ -14,6 +22,9 @@ export function useWebSocket(url: string): UseWebSocketReturn {
   const wsRef = useRef<WebSocket | null>(null);
   const [isConnected, setIsConnected] = useState(false);
   const [eventQueue, setEventQueue] = useState<FlowEvent[]>([]);
+  const [controlQueue, setControlQueue] = useState<
+    Array<ActionAckMessage | ActionErrorMessage>
+  >([]);
   const lastTimestampRef = useRef<string | null>(null);
   const retryDelayRef = useRef(1000);
   const mountedRef = useRef(true);
@@ -46,9 +57,20 @@ export function useWebSocket(url: string): UseWebSocketReturn {
 
     ws.onmessage = (event: MessageEvent) => {
       try {
-        const data = JSON.parse(String(event.data)) as FlowEvent;
-        lastTimestampRef.current = data.timestamp;
-        setEventQueue((prev) => [...prev, data]);
+        const data = JSON.parse(String(event.data)) as ServerMessage;
+        if (isActionAck(data) || isActionError(data)) {
+          // Control ack/error messages are addressed to this websocket in
+          // response to a client action. Route them to a separate queue so
+          // flow-event consumers don't see them and so action senders can
+          // observe ack/error without racing the flow-event pipeline.
+          setControlQueue((prev) => [...prev, data]);
+          return;
+        }
+        // Flow event broadcast: track the latest timestamp for replay on
+        // reconnect and enqueue for consumers.
+        const flowEvent = data;
+        lastTimestampRef.current = flowEvent.timestamp;
+        setEventQueue((prev) => [...prev, flowEvent]);
       } catch {
         // ignore malformed messages
       }
@@ -105,6 +127,12 @@ export function useWebSocket(url: string): UseWebSocketReturn {
     [],
   );
 
+  const clearControlQueue = useCallback(
+    (processedCount: number) =>
+      setControlQueue((prev) => prev.slice(processedCount)),
+    [],
+  );
+
   const unsubscribe = useCallback(
     (flowRunId: string) => {
       subscribedRunsRef.current.delete(flowRunId);
@@ -117,5 +145,14 @@ export function useWebSocket(url: string): UseWebSocketReturn {
     [send],
   );
 
-  return { send, subscribe, unsubscribe, eventQueue, clearQueue, isConnected };
+  return {
+    send,
+    subscribe,
+    unsubscribe,
+    eventQueue,
+    clearQueue,
+    controlQueue,
+    clearControlQueue,
+    isConnected,
+  };
 }

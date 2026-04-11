@@ -1591,6 +1591,8 @@ Flows are discovered from the filesystem (watched directory), not created manual
 | `task.log` | `{task_execution_id, log_type, content}` | Streaming output line |
 | `task.completed` | `{task_execution_id, node_name, exit_code, elapsed_seconds}` | Task finishes |
 | `task.failed` | `{task_execution_id, node_name, error_message}` | Task errors |
+| `task.retried` | `{task_execution_id, node_name, generation, original_task_execution_id}` | Task retried — new task execution created |
+| `task.skipped` | `{task_execution_id, node_name, next_task_execution_id}` | Task skipped — next task (if any) started |
 | `edge.transition` | `{from_node, to_node, edge_type, condition, judge_reasoning}` | Edge traversal |
 | `fork.started` | `{fork_group_id, source_node, targets: [...]}` | Fork begins |
 | `fork.joined` | `{fork_group_id, join_node}` | All fork members done |
