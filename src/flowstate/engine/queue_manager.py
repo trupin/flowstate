@@ -20,6 +20,7 @@ from flowstate.engine.executor import FlowExecutor
 from flowstate.engine.worktree import init_git_repo
 
 if TYPE_CHECKING:
+    from flowstate.config import Project
     from flowstate.engine.harness import Harness, HarnessManager
     from flowstate.server.flow_registry import FlowRegistry
     from flowstate.server.run_manager import RunManager
@@ -45,6 +46,7 @@ class QueueManager:
         harness: Harness,
         ws_hub: object,
         config: object,
+        project: Project | None = None,
         poll_interval: float = 2.0,
         max_concurrent: int = 1,
         harness_mgr: HarnessManager | None = None,
@@ -56,6 +58,7 @@ class QueueManager:
         self._harness_mgr = harness_mgr
         self._ws_hub = ws_hub
         self._config = config
+        self._project = project
         self._poll_interval = poll_interval
         self._max_concurrent = max_concurrent
         self._running = False

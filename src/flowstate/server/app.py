@@ -16,7 +16,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
-from flowstate.config import FlowstateConfig, load_config
+from flowstate.config import FlowstateConfig, Project, build_project
 
 logger = logging.getLogger(__name__)
 
@@ -117,10 +117,12 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None]:
     from flowstate.server.websocket import WebSocketHub
     from flowstate.state.repository import FlowstateDB
 
+    project: Project = app.state.project
     config: FlowstateConfig = app.state.config
 
-    # Initialize database
-    db = FlowstateDB(config.database_path)
+    # Initialize database (STATE-012 will harden the constructor to require a
+    # Path; for now pass the project-owned db_path as a string).
+    db = FlowstateDB(str(project.db_path))
     app.state.db = db
 
     # Initialize run manager
@@ -141,8 +143,8 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None]:
     )
     app.state.ws_hub = ws_hub
 
-    # Initialize flow registry
-    registry = FlowRegistry(watch_dir=config.watch_dir)
+    # Initialize flow registry (absolute path, owned by the project).
+    registry = FlowRegistry(flows_dir=project.flows_dir)
 
     # Wire file watcher events to WebSocket hub (SERVER-006)
     def on_file_event(event_type: str, flow: DiscoveredFlow) -> None:
@@ -203,6 +205,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None]:
         harness=app.state.harness,
         ws_hub=ws_hub,
         config=config,
+        project=project,
         harness_mgr=harness_mgr,
     )
     app.state.queue_manager = queue_manager
@@ -218,6 +221,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None]:
 
 
 def create_app(
+    project: Project | None = None,
     config: FlowstateConfig | None = None,
     harness: Any = None,
     static_dir: Path | None | bool = None,
@@ -225,7 +229,14 @@ def create_app(
     """Create and configure the FastAPI application.
 
     Args:
-        config: Optional configuration. If None, loads from TOML or defaults.
+        project: Resolved :class:`Project` context. This is the primary
+            construction path for production code — the CLI calls
+            :func:`flowstate.config.resolve_project` and passes the result
+            here. Tests may omit it and pass ``config=`` instead, in which
+            case a throwaway :class:`Project` is synthesised from a temp
+            directory (no on-disk data is written).
+        config: Backward-compatible test hook. Only consulted when
+            ``project`` is ``None``. Passing neither raises ``TypeError``.
         harness: Optional harness (Harness protocol) for test mock injection.
             Stored on app.state and used as the default harness for task
             execution via HarnessManager.
@@ -237,8 +248,30 @@ def create_app(
     Returns:
         A configured FastAPI instance.
     """
-    if config is None:
-        config = load_config()
+    if project is None:
+        if config is None:
+            raise TypeError(
+                "create_app() requires a `project` (production) or `config` "
+                "(test-only shim). Use flowstate.config.resolve_project() in "
+                "production code and tests/server/conftest.py::project_fixture "
+                "in tests."
+            )
+        # Test-only shim: synthesise a throwaway Project from the config.
+        # We deliberately avoid touching ``config.watch_dir`` on disk because
+        # several tests pass bogus paths like ``/tmp/nonexistent-for-test``
+        # and never actually start the lifespan. When a test passes an
+        # absolute ``watch_dir``, ``build_project`` preserves it as-is
+        # (pathlib ``/`` discards the left side for absolute right operands).
+        import tempfile as _tempfile
+
+        scratch_root = Path(_tempfile.mkdtemp(prefix="flowstate-testapp-"))
+        project = build_project(
+            root=scratch_root,
+            config=config,
+            create_dirs=False,
+        )
+    else:
+        config = project.config
 
     app = FastAPI(
         title="Flowstate",
@@ -253,6 +286,7 @@ def create_app(
         from flowstate.engine.acp_client import AcpHarness
 
         harness = AcpHarness(command=["claude-agent-acp"])
+    app.state.project = project
     app.state.config = config
     app.state.harness = harness
 

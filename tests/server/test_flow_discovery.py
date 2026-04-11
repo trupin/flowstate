@@ -16,6 +16,8 @@ if TYPE_CHECKING:
     from collections.abc import Callable
     from pathlib import Path
 
+    import pytest
+
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
@@ -139,7 +141,7 @@ class TestScanDiscoversFlowFiles:
         (tmp_path / "flow_a.flow").write_text(VALID_FLOW)
         (tmp_path / "flow_b.flow").write_text(VALID_FLOW_2)
 
-        registry = FlowRegistry(watch_dir=str(tmp_path))
+        registry = FlowRegistry(flows_dir=tmp_path)
         await registry.start()
         try:
             flows = registry.list_flows()
@@ -159,7 +161,7 @@ class TestScanWithParseError:
         (tmp_path / "good.flow").write_text(VALID_FLOW)
         (tmp_path / "bad.flow").write_text(INVALID_FLOW)
 
-        registry = FlowRegistry(watch_dir=str(tmp_path))
+        registry = FlowRegistry(flows_dir=tmp_path)
         await registry.start()
         try:
             flows = registry.list_flows()
@@ -182,7 +184,7 @@ class TestScanWithTypeErrors:
         """A flow that parses but has type errors is reported as error."""
         (tmp_path / "broken.flow").write_text(FLOW_WITH_TYPE_ERRORS)
 
-        registry = FlowRegistry(watch_dir=str(tmp_path))
+        registry = FlowRegistry(flows_dir=tmp_path)
         await registry.start()
         try:
             flow = registry.get_flow("broken")
@@ -200,7 +202,7 @@ class TestGetFlowReturnsSource:
         """get_flow includes source_dsl with the file contents."""
         (tmp_path / "my_flow.flow").write_text(VALID_FLOW)
 
-        registry = FlowRegistry(watch_dir=str(tmp_path))
+        registry = FlowRegistry(flows_dir=tmp_path)
         await registry.start()
         try:
             flow = registry.get_flow("my_flow")
@@ -213,7 +215,7 @@ class TestGetFlowReturnsSource:
 class TestGetFlowNotFound:
     async def test_get_flow_not_found(self, tmp_path: Path) -> None:
         """get_flow returns None for a nonexistent flow ID."""
-        registry = FlowRegistry(watch_dir=str(tmp_path))
+        registry = FlowRegistry(flows_dir=tmp_path)
         await registry.start()
         try:
             assert registry.get_flow("nonexistent") is None
@@ -226,7 +228,7 @@ class TestGetFlowAstJson:
         """A valid flow has ast_json populated with serialized AST."""
         (tmp_path / "my_flow.flow").write_text(VALID_FLOW)
 
-        registry = FlowRegistry(watch_dir=str(tmp_path))
+        registry = FlowRegistry(flows_dir=tmp_path)
         await registry.start()
         try:
             flow = registry.get_flow("my_flow")
@@ -242,7 +244,7 @@ class TestGetFlowAstJson:
         """An invalid flow has ast_json=None."""
         (tmp_path / "bad.flow").write_text(INVALID_FLOW)
 
-        registry = FlowRegistry(watch_dir=str(tmp_path))
+        registry = FlowRegistry(flows_dir=tmp_path)
         await registry.start()
         try:
             flow = registry.get_flow("bad")
@@ -257,7 +259,7 @@ class TestGetFlowParams:
         """A flow with param declarations includes params in the response."""
         (tmp_path / "parameterized.flow").write_text(VALID_FLOW_WITH_PARAMS)
 
-        registry = FlowRegistry(watch_dir=str(tmp_path))
+        registry = FlowRegistry(flows_dir=tmp_path)
         await registry.start()
         try:
             flow = registry.get_flow("parameterized")
@@ -281,7 +283,7 @@ class TestGetFlowParams:
 class TestFileWatcherDetectsNewFile:
     async def test_file_watcher_detects_new_file(self, tmp_path: Path) -> None:
         """Start the registry, then write a new .flow file. Verify it appears."""
-        registry = FlowRegistry(watch_dir=str(tmp_path))
+        registry = FlowRegistry(flows_dir=tmp_path)
         await registry.start()
         try:
             assert len(registry.list_flows()) == 0
@@ -302,7 +304,7 @@ class TestFileWatcherDetectsModification:
         """Start with a valid file, modify it to introduce an error."""
         (tmp_path / "evolving.flow").write_text(VALID_FLOW)
 
-        registry = FlowRegistry(watch_dir=str(tmp_path))
+        registry = FlowRegistry(flows_dir=tmp_path)
         await registry.start()
         try:
             flow = registry.get_flow("evolving")
@@ -332,7 +334,7 @@ class TestFileWatcherDetectsDeletion:
         flow_path = tmp_path / "to_delete.flow"
         flow_path.write_text(VALID_FLOW)
 
-        registry = FlowRegistry(watch_dir=str(tmp_path))
+        registry = FlowRegistry(flows_dir=tmp_path)
         await registry.start()
         try:
             assert registry.get_flow("to_delete") is not None
@@ -349,12 +351,59 @@ class TestFileWatcherDetectsDeletion:
 class TestEmptyWatchDir:
     async def test_empty_watch_dir(self, tmp_path: Path) -> None:
         """FlowRegistry with an empty directory returns empty list."""
-        registry = FlowRegistry(watch_dir=str(tmp_path))
+        registry = FlowRegistry(flows_dir=tmp_path)
         await registry.start()
         try:
             assert registry.list_flows() == []
         finally:
             await registry.stop()
+
+
+class TestFlowsDirAbsolutePath:
+    async def test_registry_accepts_absolute_project_flows_dir(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """FlowRegistry(project.flows_dir) discovers flows under that dir (SERVER-027).
+
+        The registry must use the absolute path it was handed and not re-derive
+        anything from CWD.
+        """
+        from tests.server.conftest import make_project_fixture
+
+        fixture = make_project_fixture(tmp_path, monkeypatch)
+        (fixture.flows_dir / "demo.flow").write_text(VALID_FLOW)
+
+        # cd somewhere completely unrelated to prove CWD-independence
+        unrelated = tmp_path / "unrelated"
+        unrelated.mkdir()
+        monkeypatch.chdir(unrelated)
+
+        registry = FlowRegistry(flows_dir=fixture.project.flows_dir)
+        await registry.start()
+        try:
+            flows = registry.list_flows()
+            assert len(flows) == 1
+            flow = flows[0]
+            assert flow.id == "demo"
+            # DiscoveredFlow.flow_file must be absolute and under project flows_dir
+            assert flow.flow_file.is_absolute()
+            assert flow.flow_file == (fixture.flows_dir / "demo.flow").resolve()
+            assert flow.file_path == str(flow.flow_file)
+        finally:
+            await registry.stop()
+
+    async def test_registry_creates_flows_dir_idempotently(self, tmp_path: Path) -> None:
+        """FlowRegistry.__init__ creates the directory if missing, no error on re-create."""
+        missing = tmp_path / "brand" / "new" / "flows"
+        assert not missing.exists()
+
+        r1 = FlowRegistry(flows_dir=missing)
+        assert missing.is_dir()
+
+        # Second construction against the same path must not raise.
+        r2 = FlowRegistry(flows_dir=missing)
+        assert r2.flows_dir == missing.resolve()
+        assert r1.flows_dir == r2.flows_dir
 
 
 class TestWatchDirCreatedIfMissing:
@@ -363,7 +412,7 @@ class TestWatchDirCreatedIfMissing:
         nonexistent = tmp_path / "deeply" / "nested" / "flows"
         assert not nonexistent.exists()
 
-        registry = FlowRegistry(watch_dir=str(nonexistent))
+        registry = FlowRegistry(flows_dir=nonexistent)
         await registry.start()
         try:
             assert nonexistent.exists()
@@ -379,7 +428,7 @@ class TestNonFlowFilesIgnored:
         (tmp_path / "config.toml").write_text("[server]")
         (tmp_path / "good.flow").write_text(VALID_FLOW)
 
-        registry = FlowRegistry(watch_dir=str(tmp_path))
+        registry = FlowRegistry(flows_dir=tmp_path)
         await registry.start()
         try:
             flows = registry.list_flows()
@@ -394,7 +443,7 @@ class TestBinaryFlowFileHandled:
         """A binary file with .flow extension is reported as error."""
         (tmp_path / "binary.flow").write_bytes(b"\x00\x01\x02\xff\xfe")
 
-        registry = FlowRegistry(watch_dir=str(tmp_path))
+        registry = FlowRegistry(flows_dir=tmp_path)
         await registry.start()
         try:
             flow = registry.get_flow("binary")
@@ -410,7 +459,7 @@ class TestEventCallback:
         """Event callback is called when a file changes."""
         callback = MagicMock()
 
-        registry = FlowRegistry(watch_dir=str(tmp_path))
+        registry = FlowRegistry(flows_dir=tmp_path)
         registry.set_event_callback(callback)
         await registry.start()
         try:

@@ -126,8 +126,10 @@ class TestCheckFileNotFound:
 
 
 class TestServerCommand:
+    """The dev repo commits a flowstate.toml anchor with port 9090."""
+
     def test_server_command_starts(self) -> None:
-        """flowstate server invokes uvicorn.run with default host and port."""
+        """flowstate server invokes uvicorn.run with dev-repo host and port."""
         with patch("uvicorn.run") as mock_uvicorn:
             result = runner.invoke(app, ["server"])
 
@@ -135,17 +137,17 @@ class TestServerCommand:
         mock_uvicorn.assert_called_once()
         call_kwargs = mock_uvicorn.call_args
         assert call_kwargs[1]["host"] == "127.0.0.1"
-        assert call_kwargs[1]["port"] == 8080
+        assert call_kwargs[1]["port"] == 9090
 
     def test_server_custom_port(self) -> None:
-        """flowstate server --port 9090 passes port 9090 to uvicorn."""
+        """flowstate server --port 9091 passes port 9091 to uvicorn."""
         with patch("uvicorn.run") as mock_uvicorn:
-            result = runner.invoke(app, ["server", "--port", "9090"])
+            result = runner.invoke(app, ["server", "--port", "9091"])
 
         assert result.exit_code == 0
         mock_uvicorn.assert_called_once()
         call_kwargs = mock_uvicorn.call_args
-        assert call_kwargs[1]["port"] == 9090
+        assert call_kwargs[1]["port"] == 9091
 
     def test_server_custom_host(self) -> None:
         """flowstate server --host 0.0.0.0 passes the host to uvicorn."""
@@ -161,7 +163,7 @@ class TestServerCommand:
         with patch("uvicorn.run"):
             result = runner.invoke(app, ["server"])
 
-        assert "Starting Flowstate server on 127.0.0.1:8080" in result.output
+        assert "Starting Flowstate server on 127.0.0.1:9090" in result.output
 
 
 # ---------------------------------------------------------------------------

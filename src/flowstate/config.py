@@ -86,30 +86,30 @@ class Project:
 
 
 def load_config(path: str | None = None) -> FlowstateConfig:
-    """Load config from TOML file.
+    """Load a ``FlowstateConfig`` from a TOML file.
 
     .. deprecated::
         Prefer :func:`resolve_project` — it walks up from CWD to find a
         ``flowstate.toml`` anchor and returns a fully-built :class:`Project`
-        with absolute paths. This helper is retained for backward compatibility
-        while callsites migrate.
+        with absolute paths. This helper is retained only as a thin
+        TOML-parsing shim for callers that already have an explicit path
+        in hand (e.g. a few unit tests).
 
-    Search order: explicit path, ./flowstate.toml, ~/.flowstate/config.toml.
-    If no file is found and no explicit path given, returns defaults.
-    If an explicit path is given but doesn't exist, raises FileNotFoundError.
+    The legacy search order (``./flowstate.toml`` → ``~/.flowstate/config.toml``)
+    has been removed: the project is now located by :func:`resolve_project`
+    via walk-up + the ``FLOWSTATE_CONFIG`` env var, not by re-reading CWD
+    every time somebody needs a config.
+
+    Parameters
+    ----------
+    path:
+        Path to a ``flowstate.toml``. If ``None``, defaults are returned.
+        If a non-``None`` path is given but the file does not exist, a
+        ``FileNotFoundError`` is raised by the underlying parser.
     """
-    if path is not None:
-        return _parse_toml(Path(path))
-
-    local = Path("flowstate.toml")
-    if local.exists():
-        return _parse_toml(local)
-
-    global_path = Path.home() / ".flowstate" / "config.toml"
-    if global_path.exists():
-        return _parse_toml(global_path)
-
-    return FlowstateConfig()
+    if path is None:
+        return FlowstateConfig()
+    return _parse_toml(Path(path))
 
 
 def resolve_project(start: Path | None = None) -> Project:
@@ -142,22 +142,61 @@ def resolve_project(start: Path | None = None) -> Project:
     anchor = _find_anchor(start)
     root = anchor.parent.resolve()
     config = _parse_toml(anchor)
+    return build_project(root, config)
+
+
+def build_project(
+    root: Path,
+    config: FlowstateConfig | None = None,
+    *,
+    data_dir: Path | None = None,
+    create_dirs: bool = True,
+) -> Project:
+    """Build a :class:`Project` in-memory without walking up from CWD.
+
+    This is the construction path used by tests, the
+    ``tests/server/conftest.py`` ``project_fixture``, and any internal
+    callsite that already knows its project root and config. Production
+    code should use :func:`resolve_project` instead.
+
+    Parameters
+    ----------
+    root:
+        Absolute (or relative — will be resolved) path to the project root.
+        The directory is expected to contain (or soon contain) a
+        ``flowstate.toml``, but the file is not read here.
+    config:
+        Parsed config. If ``None``, :class:`FlowstateConfig` defaults are used.
+    data_dir:
+        Override for ``<data_root>/projects/<slug>/``. If ``None``, derived
+        from :func:`_default_data_dir` + slug, honoring ``FLOWSTATE_DATA_DIR``.
+    create_dirs:
+        When ``True`` (default), ``data_dir``, ``workspaces_dir`` and
+        ``flows_dir`` are created on disk. Set to ``False`` for pure
+        unit tests that should not touch the filesystem.
+    """
+    root = root.expanduser().resolve()
+    cfg = config if config is not None else FlowstateConfig()
     slug = _derive_slug(root)
+    resolved_data_dir = (
+        data_dir.expanduser().resolve()
+        if data_dir is not None
+        else (_default_data_dir() / "projects" / slug).resolve()
+    )
+    flows_dir = (root / cfg.watch_dir).resolve()
+    db_path = resolved_data_dir / "flowstate.db"
+    workspaces_dir = resolved_data_dir / "workspaces"
 
-    data_dir = (_default_data_dir() / "projects" / slug).resolve()
-    flows_dir = (root / config.watch_dir).resolve()
-    db_path = data_dir / "flowstate.db"
-    workspaces_dir = data_dir / "workspaces"
-
-    data_dir.mkdir(parents=True, exist_ok=True)
-    workspaces_dir.mkdir(parents=True, exist_ok=True)
-    flows_dir.mkdir(parents=True, exist_ok=True)
+    if create_dirs:
+        resolved_data_dir.mkdir(parents=True, exist_ok=True)
+        workspaces_dir.mkdir(parents=True, exist_ok=True)
+        flows_dir.mkdir(parents=True, exist_ok=True)
 
     return Project(
         root=root,
         slug=slug,
-        config=config,
-        data_dir=data_dir,
+        config=cfg,
+        data_dir=resolved_data_dir,
         flows_dir=flows_dir,
         db_path=db_path,
         workspaces_dir=workspaces_dir,

@@ -4,11 +4,15 @@ from __future__ import annotations
 
 import logging
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from flowstate.server.app import create_app, mount_static_files
+
+if TYPE_CHECKING:
+    from tests.server.conftest import ProjectFixture
 
 
 def _make_dist(tmp_path: Path, *, assets: bool = True, favicon: bool = False) -> Path:
@@ -264,29 +268,31 @@ class TestFavicon:
 class TestCreateAppStaticDir:
     """create_app() integrates static file mounting via the static_dir parameter."""
 
-    def test_static_dir_none_no_static_files(self) -> None:
+    def test_static_dir_none_no_static_files(self, project_fixture: ProjectFixture) -> None:
         """create_app() with default static_dir=None does not mount static files."""
-        app = create_app()
+        app = create_app(project=project_fixture.project)
         client = TestClient(app, raise_server_exceptions=False)
         response = client.get("/")
         # No SPA fallback mounted, so root returns 404
         assert response.status_code == 404
 
-    def test_static_dir_path_mounts_files(self, tmp_path: Path) -> None:
+    def test_static_dir_path_mounts_files(
+        self, tmp_path: Path, project_fixture: ProjectFixture
+    ) -> None:
         """create_app(static_dir=Path) mounts static files from that directory."""
         dist = _make_dist(tmp_path)
-        app = create_app(static_dir=dist)
+        app = create_app(project=project_fixture.project, static_dir=dist)
         client = TestClient(app)
 
         response = client.get("/")
         assert response.status_code == 200
         assert "Flowstate App" in response.text
 
-    def test_static_dir_true_auto_detects(self) -> None:
+    def test_static_dir_true_auto_detects(self, project_fixture: ProjectFixture) -> None:
         """create_app(static_dir=True) uses UI_DIST_DIR auto-detection."""
         # This test relies on the existence (or not) of the real ui/dist/ dir.
         # It should not crash either way.
-        app = create_app(static_dir=True)
+        app = create_app(project=project_fixture.project, static_dir=True)
         assert isinstance(app, FastAPI)
 
 

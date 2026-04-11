@@ -1,0 +1,25 @@
+# Flowstate dev-repo anchor.
+#
+# This file exists so contributors can run `uv run flowstate server` from the
+# repo root unchanged after the Phase 31 project-resolution migration. It is a
+# minimal `flowstate.toml` — Flowstate resolves the project by walking up from
+# the current working directory to the nearest ancestor containing this file.
+#
+# Runtime data (the DB, run artifacts, auto-generated workspaces) lives under
+# `~/.flowstate/projects/<slug>/` for the dev repo, NOT in this directory.
+
+[server]
+host = "127.0.0.1"
+port = 9090
+
+[flows]
+watch_dir = "flows"
+
+# Example harness entries for development — uncomment and edit as needed.
+#
+# [harnesses.claude]
+# command = ["claude-agent-acp"]
+#
+# [harnesses.gemini]
+# command = ["gemini"]
+# env = { GEMINI_API_KEY = "..." }

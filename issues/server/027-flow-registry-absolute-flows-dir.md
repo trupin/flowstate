@@ -4,7 +4,7 @@
 server
 
 ## Status
-todo
+done
 
 ## Priority
 P0 (critical path)
@@ -20,11 +20,14 @@ P0 (critical path)
 `FlowRegistry` currently takes `watch_dir: str` (default `"./flows"`) and resolves it relative to CWD. Once the server is installed via pipx and run from an arbitrary user project, "CWD-relative" stops making sense. This issue changes `FlowRegistry` to take an absolute `flows_dir: Path` that callers derive from `project.flows_dir`.
 
 ## Acceptance Criteria
-- [ ] `FlowRegistry.__init__` takes `flows_dir: Path` (absolute). The class no longer knows anything about CWD or the `watch_dir` string.
-- [ ] All callers pass `project.flows_dir`.
-- [ ] `FlowRegistry` creates `flows_dir` if it doesn't exist (parents=True, idempotent) so a freshly `flowstate init`-ed project doesn't race on the first scan.
-- [ ] `watchfiles` is watching the absolute path; change events still fire correctly after the switch.
-- [ ] Existing tests pass; add a test that uses a `tmp_path / "flows"` directory and asserts flow discovery works.
+- [x] `FlowRegistry.__init__` takes `flows_dir: Path` (absolute). The class no longer knows anything about CWD or the `watch_dir` string.
+- [x] All callers pass `project.flows_dir` (`create_app` wires `FlowRegistry(flows_dir=project.flows_dir)` in `lifespan()`).
+- [x] `FlowRegistry` creates `flows_dir` if it doesn't exist (parents=True, idempotent) so a freshly `flowstate init`-ed project doesn't race on the first scan — mkdir runs both in `__init__` and at the top of `start()`.
+- [x] `watchfiles` is watching the absolute path (`awatch(self._flows_dir)`); change events still fire correctly after the switch (verified via TEST-4 E2E drop-in).
+- [x] Existing tests pass; added `TestFlowsDirAbsolutePath` with two new cases in `tests/server/test_flow_discovery.py`:
+    - a test that uses a `project_fixture`'s `flows_dir`, cds to an unrelated directory, and verifies the registry still discovers the flow and exposes an absolute `flow_file: Path` on `DiscoveredFlow`.
+    - a test that constructs a registry twice against a missing nested path to prove idempotent mkdir.
+- [x] **(Additive for ENGINE-079 unblock)** `DiscoveredFlow` now exposes `flow_file: Path` alongside the existing `file_path: str`. `__post_init__` derives it from `file_path` when not explicitly provided, so existing test fixtures that construct `DiscoveredFlow(...)` keep working unchanged.
 
 ## Technical Design
 
@@ -56,12 +59,61 @@ P0 (critical path)
 4. Observe `GET /api/flows` picks up the new flow within the watcher debounce window.
 
 ## E2E Verification Log
-_Filled in by the implementing agent._
+
+### Post-Implementation Verification (2026-04-11)
+
+These steps exercise the same running servers used for SERVER-026 (see
+that issue's log for server-start commands). They focus on the two
+SERVER-027 acceptance paths: (a) absolute `flows_dir` wiring from
+`project.flows_dir`, and (b) absolute `flow_file` paths on the API.
+
+**Step 1 — dev-repo registry picks up committed flows**
+
+```
+$ curl -s http://127.0.0.1:9090/api/flows | head -c 200
+[{
+    edges:
+    [{
+        ...
+```
+
+The three committed flows under `flows/` are surfaced with absolute
+`file_path` values rooted at the worktree's `flows/` directory.
+
+**Step 2 — scratch project's flow_file is absolute and rooted in project.flows_dir**
+
+```
+$ cat > /tmp/fs-sprint-26/flows/demo.flow <<'EOF'
+flow demo { ... }
+EOF
+$ sleep 2 && curl -s http://127.0.0.1:9092/api/flows | head -c 200
+[{"id":"demo","name":"demo","file_path":"/private/tmp/fs-sprint-26/flows/demo.flow",...
+```
+
+`file_path` is the absolute path under the scratch project's
+`flows/` directory — confirming `FlowRegistry(project.flows_dir)`
+is doing the discovery, not a stale CWD-relative `./flows` lookup.
+
+**Step 3 — idempotent mkdir is unit-tested**
+
+`tests/server/test_flow_discovery.py::TestFlowsDirAbsolutePath::test_registry_creates_flows_dir_idempotently`
+constructs `FlowRegistry(flows_dir=...)` twice against a missing
+nested path and asserts the directory is created and no error is
+raised on the second construction. Passing.
+
+**Step 4 — CWD-independence test**
+
+`tests/server/test_flow_discovery.py::TestFlowsDirAbsolutePath::test_registry_accepts_absolute_project_flows_dir`
+builds a `project_fixture`, writes a flow under `project.flows_dir`,
+`monkeypatch.chdir`s to an unrelated directory, and asserts the
+registry still discovers the flow and exposes a `flow_file` that is
+absolute and rooted at the project's `flows_dir`. Passing.
 
 ## Completion Checklist
-- [ ] `FlowRegistry` takes absolute `flows_dir: Path`
-- [ ] Callers updated
-- [ ] Auto-mkdir on construction
-- [ ] Tests updated and passing
-- [ ] `/lint` passes
-- [ ] E2E steps above verified
+- [x] `FlowRegistry` takes absolute `flows_dir: Path`
+- [x] Callers updated (`create_app` lifespan)
+- [x] Auto-mkdir on construction (and again in `start()`)
+- [x] Tests updated and passing (16 existing `FlowRegistry(watch_dir=...)` sites migrated to `FlowRegistry(flows_dir=...)`; 2 new tests added)
+- [x] `/lint` passes (`ruff check src/flowstate/ tests/server/` clean)
+- [x] E2E steps above verified
+- [x] **(Additive)** `DiscoveredFlow.flow_file: Path` exposed for ENGINE-079 consumption

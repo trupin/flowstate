@@ -44,7 +44,15 @@ def _serialize_flow(flow_ast: Flow) -> dict[str, Any]:
 
 @dataclass
 class DiscoveredFlow:
-    """An in-memory representation of a discovered .flow file."""
+    """An in-memory representation of a discovered .flow file.
+
+    ``flow_file`` is the absolute :class:`Path` to the source file on disk
+    (equivalent to ``Path(file_path)``). It is exposed as a ``Path`` so
+    downstream consumers — notably the engine's workspace resolver — can
+    compute paths relative to the flow file's parent directory without
+    re-parsing strings. When not explicitly provided, it is derived from
+    ``file_path`` in :meth:`__post_init__`.
+    """
 
     id: str
     name: str | None
@@ -54,26 +62,40 @@ class DiscoveredFlow:
     errors: list[str]
     ast_json: dict[str, Any] | None = None
     params: list[dict[str, Any]] = field(default_factory=list)
+    flow_file: Path = field(default_factory=lambda: Path())
+
+    def __post_init__(self) -> None:
+        # Derive flow_file from file_path when the caller didn't pass one.
+        # An empty Path() is the sentinel for "not set".
+        if self.flow_file == Path():
+            self.flow_file = Path(self.file_path) if self.file_path else Path()
 
 
 class FlowRegistry:
     """Maintains an in-memory registry of discovered .flow files.
 
-    Scans a configured directory for .flow files on startup, parses and
+    Scans an absolute flows directory for .flow files on startup, parses and
     type-checks each one, and watches for changes in the background using
-    watchfiles.
+    watchfiles. The directory is created on construction if missing so a
+    freshly ``flowstate init``-ed project does not race on the first scan.
     """
 
-    def __init__(self, watch_dir: str) -> None:
-        self._watch_dir = Path(watch_dir).resolve()
+    def __init__(self, flows_dir: Path) -> None:
+        self._flows_dir = Path(flows_dir).expanduser().resolve()
+        self._flows_dir.mkdir(parents=True, exist_ok=True)
         self._flows: dict[str, DiscoveredFlow] = {}
         self._watch_task: asyncio.Task[None] | None = None
         self._event_callback: Callable[[str, DiscoveredFlow], None] | None = None
 
     @property
+    def flows_dir(self) -> Path:
+        """The absolute, resolved flows directory path."""
+        return self._flows_dir
+
+    @property
     def watch_dir(self) -> Path:
-        """The resolved watch directory path."""
-        return self._watch_dir
+        """Alias for :attr:`flows_dir` (legacy name)."""
+        return self._flows_dir
 
     def set_event_callback(self, callback: Callable[[str, DiscoveredFlow], None]) -> None:
         """Set callback for file change events.
@@ -85,8 +107,8 @@ class FlowRegistry:
         self._event_callback = callback
 
     async def start(self) -> None:
-        """Scan watch_dir and start background file watcher."""
-        self._watch_dir.mkdir(parents=True, exist_ok=True)
+        """Scan flows_dir and start background file watcher."""
+        self._flows_dir.mkdir(parents=True, exist_ok=True)
         self._scan_all()
         self._watch_task = asyncio.create_task(self._watch_loop())
 
@@ -113,26 +135,28 @@ class FlowRegistry:
         return None
 
     def _scan_all(self) -> None:
-        """Scan watch_dir for all .flow files and process each."""
-        for path in sorted(self._watch_dir.glob("*.flow")):
+        """Scan flows_dir for all .flow files and process each."""
+        for path in sorted(self._flows_dir.glob("*.flow")):
             self._process_file(path)
 
     def _process_file(self, path: Path) -> None:
         """Parse + type-check a .flow file and update the registry."""
         flow_id = path.stem
+        abs_path = path.resolve()
         errors: list[str] = []
         ast_json: dict[str, Any] | None = None
         flow_name: str | None = None
         params: list[dict[str, Any]] = []
 
         try:
-            source = path.read_text()
+            source = abs_path.read_text()
         except (UnicodeDecodeError, OSError) as e:
-            logger.warning("Failed to read %s: %s", path, e)
+            logger.warning("Failed to read %s: %s", abs_path, e)
             self._flows[flow_id] = DiscoveredFlow(
                 id=flow_id,
                 name=None,
-                file_path=str(path),
+                file_path=str(abs_path),
+                flow_file=abs_path,
                 source_dsl="",
                 status="error",
                 errors=[str(e)],
@@ -161,7 +185,8 @@ class FlowRegistry:
         discovered = DiscoveredFlow(
             id=flow_id,
             name=flow_name or flow_id,
-            file_path=str(path),
+            file_path=str(abs_path),
+            flow_file=abs_path,
             source_dsl=source,
             status="valid" if not errors else "error",
             errors=errors,
@@ -177,7 +202,7 @@ class FlowRegistry:
 
     async def _watch_loop(self) -> None:
         """Watch for file changes using watchfiles."""
-        async for changes in awatch(self._watch_dir):
+        async for changes in awatch(self._flows_dir):
             for change_type, path_str in changes:
                 path = Path(path_str)
                 if path.suffix != ".flow":

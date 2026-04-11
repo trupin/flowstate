@@ -3,9 +3,12 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Annotated
+from typing import TYPE_CHECKING, Annotated
 
 import typer
+
+if TYPE_CHECKING:
+    from flowstate.config import Project
 
 app = typer.Typer(
     name="flowstate",
@@ -14,11 +17,32 @@ app = typer.Typer(
 )
 
 
+def _resolve_project_or_exit() -> Project:
+    """Resolve the current project or exit with a clear error.
+
+    Every command that needs project context (DB, flows_dir, workspaces)
+    calls this helper at the top. SERVER-029 will replace the raw error
+    message with a prettier UX; for now we surface the raw exception text.
+    """
+    from flowstate.config import ProjectNotFoundError, resolve_project
+
+    try:
+        return resolve_project()
+    except ProjectNotFoundError as exc:
+        typer.echo(str(exc), err=True)
+        raise typer.Exit(code=2) from None
+
+
 @app.command()
 def check(
     path: Annotated[str, typer.Argument(help="Path to a .flow file")],
 ) -> None:
-    """Parse and type-check a .flow file."""
+    """Parse and type-check a .flow file.
+
+    ``check`` takes an explicit flow path and therefore does not require
+    a surrounding project. It remains the one CLI command that can be
+    invoked from anywhere on disk.
+    """
     file_path = Path(path)
     if not file_path.exists():
         typer.echo(f"Error: File not found: {path}", err=True)
@@ -49,17 +73,16 @@ def check(
 def server(
     host: Annotated[str | None, typer.Option(help="Server host")] = None,
     port: Annotated[int | None, typer.Option(help="Server port")] = None,
-    config: Annotated[str | None, typer.Option("--config", help="Path to config file")] = None,
 ) -> None:
-    """Start the Flowstate web server."""
+    """Start the Flowstate web server bound to the current project."""
     import logging
 
     import uvicorn
 
-    from flowstate.config import load_config
     from flowstate.server.app import create_app
 
-    cfg = load_config(path=config)
+    project = _resolve_project_or_exit()
+    cfg = project.config
 
     # Configure Python logging so flowstate.* loggers produce visible output
     logging.basicConfig(
@@ -73,9 +96,10 @@ def server(
     if port:
         cfg.server_port = port
 
-    application = create_app(config=cfg, static_dir=True)
+    application = create_app(project=project, static_dir=True)
 
     typer.echo(f"Starting Flowstate server on {cfg.server_host}:{cfg.server_port}")
+    typer.echo(f"Project: {project.root} (slug={project.slug})")
     uvicorn.run(application, host=cfg.server_host, port=cfg.server_port)
 
 
@@ -88,11 +112,15 @@ def run(
     server: Annotated[
         str | None, typer.Option("--server", help="Flowstate server URL for artifact API")
     ] = None,
-    config: Annotated[str | None, typer.Option("--config", help="Path to config file")] = None,
 ) -> None:
     """Start a flow run from a .flow file."""
-    file_path = Path(path)
-    if not file_path.exists():
+    project = _resolve_project_or_exit()
+    cfg = project.config
+
+    flow_path = Path(path)
+    if not flow_path.is_absolute():
+        flow_path = (project.root / flow_path).resolve()
+    if not flow_path.exists():
         typer.echo(f"Error: File not found: {path}", err=True)
         raise typer.Exit(code=1)
 
@@ -105,7 +133,7 @@ def run(
         key, _, value = p.partition("=")
         params[key] = value
 
-    source = file_path.read_text()
+    source = flow_path.read_text()
 
     from flowstate.dsl.exceptions import FlowParseError
     from flowstate.dsl.parser import parse_flow
@@ -127,16 +155,13 @@ def run(
     import asyncio
     import json
 
-    from flowstate.config import load_config
     from flowstate.state.repository import FlowstateDB
-
-    cfg = load_config(path=config)
 
     # Resolve server URL: CLI flag takes precedence over config
     server_base_url = server or f"http://{cfg.server_host}:{cfg.server_port}"
 
     async def _run() -> str:
-        db = FlowstateDB(cfg.database_path)
+        db = FlowstateDB(str(project.db_path))
         try:
             # Store the flow definition so we have a reference
             flow_def_id = db.create_flow_definition(
@@ -144,7 +169,8 @@ def run(
                 source_dsl=source,
                 ast_json=json.dumps({"name": flow_ast.name}),
             )
-            data_dir = str(Path.home() / ".flowstate" / "runs")
+            # Runs data dir lives under the project's data_dir (SERVER-026).
+            data_dir = str(project.data_dir / "runs")
             run_id = db.create_flow_run(
                 flow_definition_id=flow_def_id,
                 data_dir=data_dir,
@@ -165,14 +191,12 @@ def run(
 @app.command()
 def runs(
     status: Annotated[str | None, typer.Option(help="Filter by status")] = None,
-    config: Annotated[str | None, typer.Option("--config", help="Path to config file")] = None,
 ) -> None:
     """List all flow runs."""
-    from flowstate.config import load_config
     from flowstate.state.repository import FlowstateDB
 
-    cfg = load_config(path=config)
-    db = FlowstateDB(cfg.database_path)
+    project = _resolve_project_or_exit()
+    db = FlowstateDB(str(project.db_path))
 
     try:
         all_runs = db.list_flow_runs(status=status)
@@ -200,14 +224,12 @@ def runs(
 @app.command()
 def status(
     run_id: Annotated[str, typer.Argument(help="Run ID (or prefix)")],
-    config: Annotated[str | None, typer.Option("--config", help="Path to config file")] = None,
 ) -> None:
     """Show detailed status of a flow run."""
-    from flowstate.config import load_config
     from flowstate.state.repository import FlowstateDB
 
-    cfg = load_config(path=config)
-    db = FlowstateDB(cfg.database_path)
+    project = _resolve_project_or_exit()
+    db = FlowstateDB(str(project.db_path))
 
     try:
         # Try exact match first
@@ -246,15 +268,12 @@ def status(
 
 
 @app.command()
-def schedules(
-    config: Annotated[str | None, typer.Option("--config", help="Path to config file")] = None,
-) -> None:
+def schedules() -> None:
     """List all flow schedules."""
-    from flowstate.config import load_config
     from flowstate.state.repository import FlowstateDB
 
-    cfg = load_config(path=config)
-    db = FlowstateDB(cfg.database_path)
+    project = _resolve_project_or_exit()
+    db = FlowstateDB(str(project.db_path))
 
     try:
         all_schedules = db.list_flow_schedules()
@@ -281,14 +300,12 @@ def schedules(
 @app.command()
 def trigger(
     flow_name: Annotated[str, typer.Argument(help="Flow name to trigger")],
-    config: Annotated[str | None, typer.Option("--config", help="Path to config file")] = None,
 ) -> None:
     """Manually trigger a scheduled flow."""
-    from flowstate.config import load_config
     from flowstate.state.repository import FlowstateDB
 
-    cfg = load_config(path=config)
-    db = FlowstateDB(cfg.database_path)
+    project = _resolve_project_or_exit()
+    db = FlowstateDB(str(project.db_path))
 
     try:
         # Find the flow definition by name
@@ -304,7 +321,7 @@ def trigger(
             raise typer.Exit(code=1)
 
         # Create a run for the scheduled flow
-        data_dir = str(Path.home() / ".flowstate" / "runs")
+        data_dir = str(project.data_dir / "runs")
         run_id = db.create_flow_run(
             flow_definition_id=flow_def.id,
             data_dir=data_dir,

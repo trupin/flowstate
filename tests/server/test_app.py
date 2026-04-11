@@ -1,6 +1,8 @@
 """Tests for FastAPI app factory and config loading."""
 
-from pathlib import Path
+from __future__ import annotations
+
+from typing import TYPE_CHECKING
 
 import pytest
 from fastapi import FastAPI
@@ -9,6 +11,12 @@ from starlette.middleware.cors import CORSMiddleware
 
 from flowstate.config import FlowstateConfig, HarnessConfigEntry, load_config
 from flowstate.server.app import FlowstateError, create_app
+from tests.server.conftest import make_project_fixture
+
+if TYPE_CHECKING:
+    from pathlib import Path
+
+    from tests.server.conftest import ProjectFixture
 
 # ---------------------------------------------------------------------------
 # Config tests
@@ -20,7 +28,7 @@ class TestDefaultConfig:
         """FlowstateConfig() has all expected defaults."""
         config = FlowstateConfig()
         assert config.server_host == "127.0.0.1"
-        assert config.server_port == 8080
+        assert config.server_port == 9090
         assert config.max_concurrent_tasks == 4
         assert config.default_budget == "1h"
         assert config.judge_model == "sonnet"
@@ -97,13 +105,8 @@ class TestLoadConfigMissingFile:
         with pytest.raises(FileNotFoundError):
             load_config(path="/nonexistent/config.toml")
 
-    def test_no_config_file_returns_defaults(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        """No config file found returns all defaults."""
-        monkeypatch.chdir(tmp_path)
-        # Ensure no global config either
-        monkeypatch.setattr(Path, "home", lambda: tmp_path / "fakehome")
+    def test_no_path_returns_defaults(self) -> None:
+        """The deprecated shim returns defaults when passed no path."""
         config = load_config()
         assert config == FlowstateConfig()
 
@@ -117,47 +120,6 @@ class TestLoadConfigEmptyFile:
         assert config == FlowstateConfig()
 
 
-class TestLoadConfigSearchOrder:
-    def test_local_file_found(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-        """flowstate.toml in cwd is found and loaded."""
-        monkeypatch.chdir(tmp_path)
-        local_config = tmp_path / "flowstate.toml"
-        local_config.write_text("[server]\nport = 7777\n")
-        config = load_config()
-        assert config.server_port == 7777
-
-    def test_global_config_fallback(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-        """~/.flowstate/config.toml is found when no local file exists."""
-        monkeypatch.chdir(tmp_path)
-        fake_home = tmp_path / "fakehome"
-        flowstate_dir = fake_home / ".flowstate"
-        flowstate_dir.mkdir(parents=True)
-        global_config = flowstate_dir / "config.toml"
-        global_config.write_text("[server]\nport = 6666\n")
-        monkeypatch.setattr(Path, "home", lambda: fake_home)
-        config = load_config()
-        assert config.server_port == 6666
-
-    def test_local_overrides_global(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-        """Local flowstate.toml takes priority over global config."""
-        monkeypatch.chdir(tmp_path)
-
-        # Create global config
-        fake_home = tmp_path / "fakehome"
-        flowstate_dir = fake_home / ".flowstate"
-        flowstate_dir.mkdir(parents=True)
-        global_config = flowstate_dir / "config.toml"
-        global_config.write_text("[server]\nport = 6666\n")
-        monkeypatch.setattr(Path, "home", lambda: fake_home)
-
-        # Create local config
-        local_config = tmp_path / "flowstate.toml"
-        local_config.write_text("[server]\nport = 5555\n")
-
-        config = load_config()
-        assert config.server_port == 5555
-
-
 class TestLoadConfigUnknownKeys:
     def test_unknown_keys_ignored(self, tmp_path: Path) -> None:
         """Unknown keys in the TOML file are silently ignored."""
@@ -168,7 +130,7 @@ class TestLoadConfigUnknownKeys:
         config = load_config(path=str(toml_file))
         assert config.server_host == "0.0.0.0"
         # All other fields are defaults
-        assert config.server_port == 8080
+        assert config.server_port == 9090
 
 
 # ---------------------------------------------------------------------------
@@ -231,51 +193,60 @@ class TestHarnessConfigParsing:
 
 
 class TestCreateApp:
-    def test_returns_fastapi_instance(self) -> None:
-        """create_app() returns a FastAPI instance."""
-        app = create_app()
+    def test_returns_fastapi_instance(self, project_fixture: ProjectFixture) -> None:
+        """create_app(project=...) returns a FastAPI instance."""
+        app = create_app(project=project_fixture.project)
         assert isinstance(app, FastAPI)
 
-    def test_app_has_config(self) -> None:
-        """App has a FlowstateConfig on app.state."""
-        app = create_app()
+    def test_app_has_project_and_config(self, project_fixture: ProjectFixture) -> None:
+        """App has both a Project and a FlowstateConfig on app.state."""
+        app = create_app(project=project_fixture.project)
+        assert app.state.project is project_fixture.project
         assert isinstance(app.state.config, FlowstateConfig)
+        assert app.state.config is project_fixture.project.config
 
-    def test_app_has_cors_middleware(self) -> None:
+    def test_app_has_cors_middleware(self, project_fixture: ProjectFixture) -> None:
         """App has CORSMiddleware configured."""
-        app = create_app()
+        app = create_app(project=project_fixture.project)
         assert any(m.cls is CORSMiddleware for m in app.user_middleware)
 
-    def test_harness_stored(self) -> None:
+    def test_harness_stored(self, project_fixture: ProjectFixture) -> None:
         """harness argument is stored on app.state."""
         sentinel = object()
-        app = create_app(harness=sentinel)
+        app = create_app(project=project_fixture.project, harness=sentinel)
         assert app.state.harness is sentinel
 
-    def test_harness_created_by_default(self) -> None:
+    def test_harness_created_by_default(self, project_fixture: ProjectFixture) -> None:
         """Default harness is an AcpHarness."""
         from flowstate.engine.acp_client import AcpHarness
 
-        app = create_app()
+        app = create_app(project=project_fixture.project)
         assert isinstance(app.state.harness, AcpHarness)
+
+    def test_requires_project_or_config(self) -> None:
+        """create_app() with neither project nor config raises TypeError."""
+        with pytest.raises(TypeError, match="requires a `project`"):
+            create_app()
 
 
 class TestCreateAppHarnessManager:
-    def test_harness_manager_created_on_app_state(self) -> None:
+    def test_harness_manager_created_on_app_state(self, project_fixture: ProjectFixture) -> None:
         """create_app() stores a HarnessManager on app.state.harness_manager."""
         from flowstate.engine.harness import HarnessManager
 
-        app = create_app()
+        app = create_app(project=project_fixture.project)
         assert hasattr(app.state, "harness_manager")
         assert isinstance(app.state.harness_manager, HarnessManager)
 
-    def test_harness_manager_has_claude_default(self) -> None:
+    def test_harness_manager_has_claude_default(self, project_fixture: ProjectFixture) -> None:
         """HarnessManager always has 'claude' registered as the default."""
-        app = create_app()
+        app = create_app(project=project_fixture.project)
         mgr = app.state.harness_manager
         assert "claude" in mgr.names
 
-    def test_harness_manager_configs_from_config(self) -> None:
+    def test_harness_manager_configs_from_config(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         """HarnessManager receives configs from FlowstateConfig.harnesses."""
         from flowstate.engine.harness import HarnessManager
 
@@ -284,7 +255,8 @@ class TestCreateAppHarnessManager:
                 "gemini": HarnessConfigEntry(command=["gemini"], env={"KEY": "val"}),
             }
         )
-        app = create_app(config=config)
+        fixture = make_project_fixture(tmp_path, monkeypatch, config=config)
+        app = create_app(project=fixture.project)
         mgr = app.state.harness_manager
         assert isinstance(mgr, HarnessManager)
         # The default "claude" is always registered
@@ -292,29 +264,31 @@ class TestCreateAppHarnessManager:
 
 
 class TestCreateAppWithCustomConfig:
-    def test_custom_config_stored(self) -> None:
+    def test_custom_config_stored(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         """Custom config is stored on app.state."""
         config = FlowstateConfig(server_port=9090)
-        app = create_app(config=config)
+        fixture = make_project_fixture(tmp_path, monkeypatch, config=config)
+        app = create_app(project=fixture.project)
         assert app.state.config.server_port == 9090
 
-    def test_custom_config_preserved(self) -> None:
+    def test_custom_config_preserved(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         """All custom config fields are preserved."""
         config = FlowstateConfig(
             server_host="0.0.0.0",
             server_port=3000,
             log_level="debug",
         )
-        app = create_app(config=config)
+        fixture = make_project_fixture(tmp_path, monkeypatch, config=config)
+        app = create_app(project=fixture.project)
         assert app.state.config.server_host == "0.0.0.0"
         assert app.state.config.server_port == 3000
         assert app.state.config.log_level == "debug"
 
 
 class TestErrorHandler:
-    def test_flowstate_error_response(self) -> None:
+    def test_flowstate_error_response(self, project_fixture: ProjectFixture) -> None:
         """FlowstateError is returned as JSON with error and details."""
-        app = create_app()
+        app = create_app(project=project_fixture.project)
 
         @app.get("/api/_test/error")
         async def raise_error() -> None:
@@ -330,9 +304,9 @@ class TestErrorHandler:
             "details": ["detail1", "detail2"],
         }
 
-    def test_flowstate_error_custom_status_code(self) -> None:
+    def test_flowstate_error_custom_status_code(self, project_fixture: ProjectFixture) -> None:
         """FlowstateError respects custom status_code."""
-        app = create_app()
+        app = create_app(project=project_fixture.project)
 
         @app.get("/api/_test/notfound")
         async def raise_not_found() -> None:
@@ -344,9 +318,9 @@ class TestErrorHandler:
         body = response.json()
         assert body == {"error": "not found", "detail": "not found", "details": []}
 
-    def test_flowstate_error_empty_details(self) -> None:
+    def test_flowstate_error_empty_details(self, project_fixture: ProjectFixture) -> None:
         """FlowstateError with no details returns empty list."""
-        app = create_app()
+        app = create_app(project=project_fixture.project)
 
         @app.get("/api/_test/simple")
         async def raise_simple() -> None:
@@ -359,9 +333,9 @@ class TestErrorHandler:
 
 
 class TestCorsHeaders:
-    def test_cors_preflight(self) -> None:
+    def test_cors_preflight(self, project_fixture: ProjectFixture) -> None:
         """Preflight OPTIONS request from localhost gets CORS headers."""
-        app = create_app()
+        app = create_app(project=project_fixture.project)
 
         @app.get("/api/_test/cors")
         async def cors_test() -> dict[str, str]:
@@ -377,9 +351,9 @@ class TestCorsHeaders:
         )
         assert response.headers.get("access-control-allow-origin") == "http://localhost:5173"
 
-    def test_cors_simple_request(self) -> None:
+    def test_cors_simple_request(self, project_fixture: ProjectFixture) -> None:
         """Simple GET with Origin header gets CORS response headers."""
-        app = create_app()
+        app = create_app(project=project_fixture.project)
 
         @app.get("/api/_test/cors")
         async def cors_test() -> dict[str, str]:
@@ -392,9 +366,9 @@ class TestCorsHeaders:
         )
         assert response.headers.get("access-control-allow-origin") == "http://localhost:3000"
 
-    def test_cors_non_localhost_rejected(self) -> None:
+    def test_cors_non_localhost_rejected(self, project_fixture: ProjectFixture) -> None:
         """Non-localhost origin does not get CORS allow header."""
-        app = create_app()
+        app = create_app(project=project_fixture.project)
 
         @app.get("/api/_test/cors")
         async def cors_test() -> dict[str, str]:
