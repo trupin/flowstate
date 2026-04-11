@@ -10,11 +10,7 @@ export interface ControlPanelProps {
   budgetSeconds: number;
   selectedTaskId?: string | null;
   selectedTaskStatus?: TaskStatus | null;
-  /**
-   * Current pending WebSocket control action. When set, the matching
-   * button(s) show a pending state and are disabled until the hook
-   * clears it (on ack, error, matching event, or timeout).
-   */
+  /** Currently pending WebSocket control action, tracked by useFlowRun. */
   pendingAction?: PendingAction | null;
   onPause: () => void | Promise<void>;
   onResume: () => void | Promise<void>;
@@ -45,10 +41,7 @@ export function ControlPanel({
   onRetry,
   onSkip,
 }: ControlPanelProps) {
-  // Local pending only for Resume (which goes through REST, not WS).
-  // All WebSocket actions (pause/cancel/retry_task/skip_task) are tracked
-  // by the parent hook via ``pendingAction`` and cleared on ack/error/
-  // matching event/timeout.
+  // Resume uses REST, not WebSocket, so it has its own local pending flag.
   const [localPending, setLocalPending] = useState<string | null>(null);
 
   const isRunning = flowStatus === 'running';
@@ -82,23 +75,18 @@ export function ControlPanel({
     }
   }
 
-  // A button is disabled if any action is in-flight -- either a local
-  // REST action (resume) or a websocket action awaiting ack.
-  const anyPending = pendingAction !== null && pendingAction !== undefined;
-  const anyLocalPending = localPending !== null;
-  const anyDisabled = anyPending || anyLocalPending;
+  // Disabled whenever any action is in-flight (websocket-tracked or local REST).
+  const anyDisabled = pendingAction != null || localPending !== null;
 
   const pausePending = pendingAction?.action === 'pause';
   const cancelPending =
     pendingAction?.action === 'cancel' || pendingAction?.action === 'abort';
-  const retryPending =
-    pendingAction?.action === 'retry_task' &&
+  const isTaskActionPending = (kind: 'retry_task' | 'skip_task'): boolean =>
+    pendingAction?.action === kind &&
     (pendingAction.task_execution_id === undefined ||
       pendingAction.task_execution_id === selectedTaskId);
-  const skipPending =
-    pendingAction?.action === 'skip_task' &&
-    (pendingAction.task_execution_id === undefined ||
-      pendingAction.task_execution_id === selectedTaskId);
+  const retryPending = isTaskActionPending('retry_task');
+  const skipPending = isTaskActionPending('skip_task');
 
   return (
     <div className="control-panel">

@@ -319,22 +319,12 @@ function applyEvent(
       });
       break;
     }
-    case 'task.retried': {
-      // A retry succeeded -- a new task execution row was created by the
-      // executor. Re-fetch the run detail so the new generation appears in
-      // the graph. The event payload carries task_execution_id, node_name,
-      // generation, and original_task_execution_id but we re-fetch rather
-      // than patching the map because retry can also transition the run
-      // status out of paused/failed and we want a consistent snapshot.
+    case 'task.retried':
+    case 'task.skipped':
+      // Re-fetch so the new task execution and any resulting run-status
+      // transition appear atomically.
       fetchRunDetail();
       break;
-    }
-    case 'task.skipped': {
-      // A skip succeeded -- the task is now in ``skipped`` status and the
-      // next task (if any) has been queued. Re-fetch to update the graph.
-      fetchRunDetail();
-      break;
-    }
     case 'edge.transition':
       setEdges((prev) => [
         ...prev,
@@ -387,18 +377,14 @@ export function useFlowRun(runId: string): UseFlowRunReturn {
   );
   const [actionError, setActionError] = useState<ActionErrorState | null>(null);
 
-  // Fallback timer ref: when a control action is sent, we start a 3-second
-  // timeout. If the ack/error/expected event hasn't arrived by then, we
-  // re-fetch from the REST API to ensure the UI reflects the actual state
-  // and clear the pending flag so buttons become usable again. This handles
-  // dropped messages, server crashes, and bugs where no downstream event
-  // is emitted.
+  // When a control action is sent, we start a 3s timer. If no ack, error, or
+  // matching event arrives by then, re-fetch from REST to unblock the UI.
   const pendingFallbackTimer = useRef<ReturnType<typeof setTimeout> | null>(
     null,
   );
 
-  // Keep a ref to the current pending action so timers and control-queue
-  // effects can read its identity without re-subscribing each render.
+  // Synchronous mirror so timers and drain effects can read current pending
+  // without stale closures.
   const pendingActionRef = useRef<PendingAction | null>(null);
   useEffect(() => {
     pendingActionRef.current = pendingAction;
@@ -636,19 +622,14 @@ export function useFlowRun(runId: string): UseFlowRunReturn {
     });
   }, []);
 
-  // Wrap send to detect control actions and manage pending state + fallback.
-  //
-  // When the client sends a control action (cancel/abort/pause/retry_task/
-  // skip_task), we:
-  //   1. Set ``pendingAction`` so the UI can disable buttons / show feedback.
-  //   2. Clear any previous actionError.
-  //   3. Start a 3-second fallback timer. If no ack/error/matching event
-  //      arrives by then, re-fetch the run detail and clear the pending
-  //      state so buttons become clickable again.
+  // Tracks control-action pending state and starts the fallback timer for
+  // recovery if the server's ack/error/event never arrives.
   const wrappedSend = useCallback(
     (data: unknown) => {
-      send(data);
-      if (!data || typeof data !== 'object') return;
+      if (!data || typeof data !== 'object') {
+        send(data);
+        return;
+      }
       const msg = data as Record<string, unknown>;
       const action = msg.action;
       if (
@@ -658,6 +639,7 @@ export function useFlowRun(runId: string): UseFlowRunReturn {
         action !== 'retry_task' &&
         action !== 'skip_task'
       ) {
+        send(data);
         return;
       }
       const payload = (msg.payload ?? {}) as Record<string, unknown>;
@@ -665,6 +647,20 @@ export function useFlowRun(runId: string): UseFlowRunReturn {
         typeof payload.task_execution_id === 'string'
           ? payload.task_execution_id
           : undefined;
+
+      // Drop duplicate sends while the same action is still pending. Without
+      // this, a double-click on Retry Task would trigger two executor.retry_task
+      // calls server-side and create two task executions.
+      const current = pendingActionRef.current;
+      if (
+        current &&
+        current.action === action &&
+        current.task_execution_id === taskExecutionId
+      ) {
+        return;
+      }
+
+      send(data);
 
       const pending: PendingAction = {
         action,
@@ -679,9 +675,6 @@ export function useFlowRun(runId: string): UseFlowRunReturn {
       }
       pendingFallbackTimer.current = setTimeout(() => {
         pendingFallbackTimer.current = null;
-        // Only act if this pending action is still the current one.
-        // (A later send would have replaced it, cancelling this timer
-        // already -- but guard just in case.)
         if (pendingActionRef.current?.started_at === pending.started_at) {
           fetchRunDetail();
           setPendingAction(null);
@@ -691,19 +684,19 @@ export function useFlowRun(runId: string): UseFlowRunReturn {
     [send, fetchRunDetail],
   );
 
-  // Drain the control-message queue. For each ack/error, match against
-  // the current pending action and clear it (and surface errors).
+  // Drain the control-message queue: match acks/errors against the current
+  // pending action. Keeps the first error to avoid a burst of errors clobbering
+  // each other in state.
   useEffect(() => {
     if (controlQueue.length === 0) return;
     const count = controlQueue.length;
+    let firstError: ActionErrorState | null = null;
     for (const msg of controlQueue) {
       const current = pendingActionRef.current;
       if (msg.type === 'action_ack') {
         if (
           current &&
           current.action === msg.payload.action &&
-          // For task-level actions, require the task_execution_id to match.
-          // For flow-level actions, ignore task_execution_id.
           (current.task_execution_id === undefined ||
             current.task_execution_id === msg.payload.task_execution_id)
         ) {
@@ -711,27 +704,30 @@ export function useFlowRun(runId: string): UseFlowRunReturn {
         }
         continue;
       }
-      // error message
       const errAction = msg.payload.action;
       const errTaskId = msg.payload.task_execution_id;
+      // Only match when the error explicitly names the current action. Legacy
+      // errors without an `action` field are shown but don't clear pending,
+      // so an unsolicited "Invalid JSON" never cancels an in-flight request.
       const matches =
-        current &&
-        // If the error carries an action, require it to match. Otherwise
-        // (generic error with only ``message``), treat it as matching the
-        // current pending action -- the server sent it on this websocket
-        // in response to our most recent request.
-        (errAction === undefined || errAction === current.action) &&
+        current !== null &&
+        errAction === current.action &&
         (errTaskId === undefined ||
           current.task_execution_id === undefined ||
           errTaskId === current.task_execution_id);
       if (matches) {
         clearPending();
       }
-      setActionError({
-        action: errAction ?? current?.action,
-        task_execution_id: errTaskId ?? current?.task_execution_id,
-        message: msg.payload.message,
-      });
+      if (firstError === null) {
+        firstError = {
+          action: errAction ?? current?.action,
+          task_execution_id: errTaskId ?? current?.task_execution_id,
+          message: msg.payload.message,
+        };
+      }
+    }
+    if (firstError !== null) {
+      setActionError(firstError);
     }
     clearControlQueue(count);
   }, [controlQueue, clearControlQueue, clearPending]);

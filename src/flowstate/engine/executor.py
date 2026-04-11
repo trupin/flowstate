@@ -1850,11 +1850,7 @@ class FlowExecutor:
             )
             self._resume_event.set()
 
-        # Always emit a TASK_RETRIED event so the UI learns about the new
-        # task execution, regardless of whether the flow was paused. The
-        # FLOW_STATUS_CHANGED event above only fires in the paused case;
-        # without TASK_RETRIED the UI has no signal that retry succeeded
-        # when the flow is running or being restarted from terminal state.
+        # Emit regardless of paused state so the UI always sees the new task.
         self._emit(
             FlowEvent(
                 type=EventType.TASK_RETRIED,
@@ -1932,10 +1928,7 @@ class FlowExecutor:
             )
             self._resume_event.set()
 
-        # Always emit a TASK_SKIPPED event so the UI learns about the skip
-        # (and the new task that was queued, if any), regardless of whether
-        # the flow was paused. The FLOW_STATUS_CHANGED event above only
-        # fires in the paused case.
+        # Emit regardless of paused state so the UI always sees the skip.
         self._emit(
             FlowEvent(
                 type=EventType.TASK_SKIPPED,

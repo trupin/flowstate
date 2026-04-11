@@ -58,19 +58,14 @@ export function useWebSocket(url: string): UseWebSocketReturn {
     ws.onmessage = (event: MessageEvent) => {
       try {
         const data = JSON.parse(String(event.data)) as ServerMessage;
+        // Control ack/error → separate queue so flow-event consumers don't see
+        // them and action senders don't race the flow-event pipeline.
         if (isActionAck(data) || isActionError(data)) {
-          // Control ack/error messages are addressed to this websocket in
-          // response to a client action. Route them to a separate queue so
-          // flow-event consumers don't see them and so action senders can
-          // observe ack/error without racing the flow-event pipeline.
           setControlQueue((prev) => [...prev, data]);
           return;
         }
-        // Flow event broadcast: track the latest timestamp for replay on
-        // reconnect and enqueue for consumers.
-        const flowEvent = data;
-        lastTimestampRef.current = flowEvent.timestamp;
-        setEventQueue((prev) => [...prev, flowEvent]);
+        lastTimestampRef.current = data.timestamp;
+        setEventQueue((prev) => [...prev, data]);
       } catch {
         // ignore malformed messages
       }
