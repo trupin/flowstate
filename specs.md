@@ -1629,6 +1629,39 @@ Flows are discovered from the filesystem (watched directory), not created manual
 | `interrupt_task` | `{task_execution_id}` | Interrupt a running task for user interaction |
 | `send_message` | `{task_execution_id, message}` | Send a user message to a running or interrupted task |
 
+**Server → Client action responses**:
+
+In addition to flow events, the server sends two message types in direct response to client actions. These let the UI give immediate feedback for an action without waiting for downstream flow events.
+
+`action_ack` — sent on the originating WebSocket when a control action (`pause`, `cancel`, `abort`, `retry_task`, `skip_task`) succeeds:
+
+```json
+{
+    "type": "action_ack",
+    "payload": {
+        "action": "<action_type>",
+        "flow_run_id": "<uuid>",
+        "task_execution_id": "<uuid>"   // present for retry_task / skip_task
+    }
+}
+```
+
+`error` — sent on the originating WebSocket when a client message is malformed or a control action fails. The `action`, `flow_run_id`, and `task_execution_id` fields are present when relevant:
+
+```json
+{
+    "type": "error",
+    "payload": {
+        "action": "<action_type>",       // optional: present when an action triggered the error
+        "flow_run_id": "<uuid>",         // optional
+        "task_execution_id": "<uuid>",   // optional: for task-level actions
+        "message": "<human-readable reason>"
+    }
+}
+```
+
+For control actions that fail mid-cleanup (e.g. `cancel` raising during shutdown), the server still broadcasts a `flow.status_changed` fallback event in addition to sending an `error` to the originating client, so all subscribers see the run transition out of `running`.
+
 **Reconnection**: On WebSocket reconnect, client sends `subscribe` with `last_event_timestamp`. Server replays all events after that timestamp from the database.
 
 ### 10.4 Graph Visualization
@@ -1815,6 +1848,8 @@ level = "info"
 
 This file can be placed at `~/.flowstate/config.toml` (global) or in the current directory as `flowstate.toml` (local override).
 
+> **Note** [TBD: SHARED-006, SHARED-007]: the deployable v0.1 model replaces this with a project-rooted model where `flowstate.toml` is a per-project anchor file. See §13.3 Project Layout below.
+
 ### 13.2 CLI Interface
 
 ```bash
@@ -1838,7 +1873,78 @@ flowstate schedules
 
 # Manually trigger a scheduled flow
 flowstate trigger <flow-name>
+
+# Bootstrap Flowstate in an existing project [TBD: SERVER-028]
+flowstate init
 ```
+
+### 13.3 Project Layout [TBD: SHARED-006]
+
+> **Status:** Stub — full content is authored in SHARED-006. This section exists so that SHARED-007, SERVER-026, STATE-012, SERVER-027, ENGINE-079, and ENGINE-080 have a referenceable spec anchor.
+
+**Goal (v0.1):** Flowstate runs as a **per-project dev server**. Each project is a directory containing a `flowstate.toml` anchor file. All Flowstate CLI commands (`server`, `run`, `check`, `init`) resolve the current project by walking up from CWD until they find `flowstate.toml`, analogous to how `git` finds its repo root.
+
+**Project layout:**
+```
+my-app/                 # any existing repo
+├── .git/
+├── flowstate.toml      # anchor file — makes this a Flowstate project
+├── flows/              # .flow files, version-controlled with the project
+│   ├── build.flow
+│   └── deploy.flow
+└── src/
+```
+
+**Per-project data directory:** `~/.flowstate/projects/<slug>/`
+- `<slug> = <basename>-<sha1(abspath)[:8]>` — stable for a given abspath, collision-safe across projects with the same basename.
+- Contents: `flowstate.db` (SQLite), `workspaces/<flow-name>/<run-id[:8]>/` (auto-generated run workspaces).
+- `~/.flowstate/projects/` can be overridden via `FLOWSTATE_DATA_DIR` env var.
+
+**Project resolution algorithm:**
+1. Start at CWD (or explicit `--project <path>` if given).
+2. Walk up the directory tree looking for `flowstate.toml`.
+3. If found: parse it, derive the `Project` context object, return.
+4. If not found: raise `ProjectNotFoundError` with a message pointing at `flowstate init`.
+
+**Path resolution within a project:**
+- `flows/watch_dir` is resolved relative to the project root (not CWD).
+- A flow's `workspace` attribute:
+  - Absolute path → used as-is.
+  - Relative path → resolved relative to the **flow file's containing directory** (not CWD), falling back to the project root if ambiguous.
+  - Omitted → auto-generated under `<data_dir>/workspaces/<flow-name>/<run-id[:8]>/`, auto-initialized as a git repo.
+
+**Non-goals for v0.1:**
+- No global/multi-project daemon.
+- No migration of existing `~/.flowstate/flowstate.db` data — v0.1 is greenfield per-project.
+- No in-project state (everything Flowstate writes goes to `~/.flowstate/projects/<slug>/`; project directory is never touched beyond `flowstate init`'s initial scaffold).
+
+### 13.4 Deployment & Installation [TBD: SHARED-006, SHARED-008, SHARED-009, SHARED-010, SHARED-011]
+
+> **Status:** Stub — full content is authored in SHARED-006 and referenced by the Phase 3 packaging issues.
+
+**Primary install channel (v0.1):** `pipx` or `uv tool install`. Flowstate is published to PyPI as the `flowstate` package.
+```bash
+uv tool install flowstate         # or: pipx install flowstate
+flowstate --version
+```
+
+**First-run bootstrap:**
+```bash
+cd ~/my-app
+flowstate init                    # creates flowstate.toml + flows/example.flow
+flowstate check flows/example.flow
+flowstate server                  # http://127.0.0.1:9090
+```
+
+**UI packaging:** the built React UI (`ui/dist/`) is bundled into the `flowstate` wheel via a Hatchling custom build hook (SHARED-008) and served from `importlib.resources` at runtime (SERVER-032). No separate `npm run build` step is required by end users.
+
+**Lumon sandboxing** is an **optional extra**: `pip install "flowstate[lumon]"` (SHARED-009). Core Flowstate installs without any private git dependencies, unblocking PyPI publishing.
+
+**Security posture (v0.1):** Flowstate binds to `127.0.0.1:9090` by default. Binding to any non-loopback address triggers a loud warning (SERVER-030) — network-exposed deployment is explicitly out of scope for v0.1 and there is no built-in authentication.
+
+**Health check:** `GET /health` returns the current project's slug, server version, and liveness status (SERVER-031). Suitable for local orchestrators.
+
+**Non-goals for v0.1:** Docker images, Homebrew formulae, systemd units, authentication, multi-tenancy. These are deferred to future releases.
 
 ---
 

@@ -503,6 +503,47 @@
 | ENGINE-078 | Two-phase pause with `pausing` intermediate state            | engine | P1       | —           | done |
 | UI-071     | Immediate pause feedback with pausing/resume UX              | ui     | P1       | ENGINE-078  | done   |
 
+
+### Phase 31 — Deployability v0.1
+
+Make Flowstate installable from PyPI via `pipx` / `uv tool install` and runnable inside any existing user project. Introduces the per-project dev-server model: `flowstate.toml` is a project anchor, `flows/` lives in the user's repo, each project gets its own `~/.flowstate/projects/<slug>/` data directory, and the built React UI is bundled into the wheel.
+
+#### Phase 31.0 — Shared contracts & spec
+
+| Issue      | Title                                                               | Domain | Priority | Depends On | Status |
+| ---------- | ------------------------------------------------------------------- | ------ | -------- | ---------- | ------ |
+| SHARED-006 | Spec: project layout & deployment model                             | shared | P0       | —          | todo   |
+| SHARED-007 | Define `Project` contract (root, slug, abs paths) in `config.py`    | shared | P0       | SHARED-006 | todo   |
+
+#### Phase 31.1 — Core deployability (parallel after SHARED-007)
+
+| Issue      | Title                                                               | Domain | Priority | Depends On | Status |
+| ---------- | ------------------------------------------------------------------- | ------ | -------- | ---------- | ------ |
+| SERVER-026 | Config loader: project resolution + env-var overrides               | server | P0       | SHARED-007 | todo   |
+| STATE-012  | Derive DB path from `Project.db_path`; drop hardcoded default       | state  | P0       | SHARED-007 | todo   |
+| SERVER-027 | Flow registry: resolve `watch_dir` relative to project root         | server | P0       | SHARED-007 | todo   |
+| ENGINE-079 | Resolve flow `workspace` relative to flow file (fallback: project)  | engine | P0       | SHARED-007 | todo   |
+| ENGINE-080 | Per-project workspaces dir + queue_manager update                    | engine | P0       | SHARED-007, ENGINE-079 | todo   |
+
+#### Phase 31.2 — Bootstrap UX & hardening
+
+| Issue      | Title                                                               | Domain | Priority | Depends On   | Status |
+| ---------- | ------------------------------------------------------------------- | ------ | -------- | ------------ | ------ |
+| SERVER-028 | `flowstate init` command with project-type detection                | server | P0       | SERVER-026, SERVER-027 | todo   |
+| SERVER-029 | Clear error when no `flowstate.toml` found                          | server | P0       | SERVER-026   | todo   |
+| SERVER-030 | Loud warning on non-127.0.0.1 bind; default host to 127.0.0.1       | server | P1       | SERVER-026   | todo   |
+| SERVER-031 | `GET /health` endpoint returning project slug + version             | server | P1       | SERVER-026   | todo   |
+
+#### Phase 31.3 — Packaging & distribution
+
+| Issue      | Title                                                               | Domain | Priority | Depends On              | Status |
+| ---------- | ------------------------------------------------------------------- | ------ | -------- | ----------------------- | ------ |
+| SHARED-008 | Hatchling build hook: `npm run build` → `src/flowstate/_ui_dist/`   | shared | P0       | SHARED-006              | todo   |
+| SERVER-032 | Serve UI from `importlib.resources` instead of `ui/dist/`           | server | P0       | SHARED-008              | todo   |
+| SHARED-009 | Make `lumon` an optional extra; guard all lumon imports             | shared | P0       | —                       | todo   |
+| SHARED-010 | PyPI release pipeline + `pyproject.toml` metadata                    | shared | P1       | SHARED-008, SHARED-009  | todo   |
+| SHARED-011 | Deployment docs in README + `specs.md §13` cross-ref                 | shared | P1       | SHARED-010              | todo   |
+
 ---
 
 ## Cross-Domain Coordination
