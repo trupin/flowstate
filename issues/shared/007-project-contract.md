@@ -4,7 +4,7 @@
 shared
 
 ## Status
-todo
+done
 
 ## Priority
 P0 (critical path)
@@ -148,12 +148,65 @@ This issue has no runtime UI/server surface on its own — its E2E verification 
 4. `cd /tmp && uv run python -c "from flowstate.config import resolve_project; resolve_project()"` → raises `ProjectNotFoundError`.
 
 ## E2E Verification Log
-_Filled in by the implementing agent._
+
+### Post-Implementation Verification
+
+**Smoke test (spec §13.3 resolution algorithm):**
+```
+$ cd /tmp && rm -rf fs-smoke && mkdir fs-smoke && cd fs-smoke \
+  && printf '[flows]\nwatch_dir = "flows"\n' > flowstate.toml
+$ uv --project /Users/theophanerupin/code/flowstate/.claude/worktrees/phase-31-deployability \
+    run python -c "from flowstate.config import resolve_project; p = resolve_project(); \
+                   print(p.slug, p.data_dir, p.flows_dir)"
+fs-smoke-<8hex>  /Users/theophanerupin/.flowstate/projects/fs-smoke-<8hex>  /private/tmp/fs-smoke/flows
+```
+Walk-up, slug derivation, and directory auto-creation all work as specified.
+
+**Unit tests (13 new tests, all passing):**
+- `test_resolve_project_finds_anchor_in_cwd` — baseline walk-up
+- `test_resolve_project_walks_up_from_subdirectory` — walk-up from a nested child
+- `test_resolve_project_nearest_ancestor_wins` — nested projects: inner wins
+- `test_resolve_project_raises_when_no_anchor` — ProjectNotFoundError message references `flowstate init`
+- `test_resolve_project_flowstate_config_env_var_overrides_walk_up` — FLOWSTATE_CONFIG short-circuit
+- `test_resolve_project_flowstate_config_missing_raises` — bad FLOWSTATE_CONFIG → ProjectNotFoundError
+- `test_resolve_project_flowstate_data_dir_override` — FLOWSTATE_DATA_DIR override
+- `test_slug_is_stable_for_same_path` — deterministic slug
+- `test_slug_differs_for_same_basename_different_paths` — collision safety
+- `test_resolve_project_auto_creates_dirs` — data_dir, flows_dir, workspaces_dir mkdir
+- `test_resolve_project_with_file_as_start` — start param can be a file path
+- `test_project_is_frozen` — FrozenInstanceError on mutation
+- `test_load_config_still_works_for_backward_compat` — legacy shim still functions
+
+```
+$ uv run pytest tests/server/test_config.py -q
+13 passed in 0.03s
+```
+
+**Type check:**
+```
+$ uv run pyright src/flowstate/config.py tests/server/test_config.py
+0 errors, 0 warnings, 0 informations
+```
+
+**Lint:**
+```
+$ uv run ruff check src/flowstate/config.py tests/server/test_config.py
+All checks passed!
+```
+
+**Regression sweep:**
+- `tests/state` — 214/214 pass
+- `tests/server` — 336 pass; 10 pre-existing failures confirmed on clean main (port==8080 stale assertions, ENGINE-078 pausing-state transition tests, and test_cli integration tests). None caused by this issue.
+- `tests/engine` subset (budget, context, events, harness, judge, queue_manager, scheduler, subprocess_mgr, worktree, file_protocol, edge_delays, sdk_runner, lumon, acp_client) — 398/398 pass. Executor tests not re-run (config.py is not a dependency of executor code paths).
+- `tests/server/test_app.py::TestDefaultConfig::test_all_defaults` — updated `watch_dir == "./flows"` → `watch_dir == "flows"` to match the new project-rooted default per spec §13.1. Pre-existing stale `server_port == 8080` assertion left alone (not in scope).
+
+The `Project` contract is now the single choke-point all Phase 31.1 issues will consume.
 
 ## Completion Checklist
-- [ ] `Project` dataclass + `resolve_project()` implemented
-- [ ] `ProjectNotFoundError` defined
-- [ ] Env-var overrides implemented
-- [ ] Unit tests passing
-- [ ] `/lint` passes
-- [ ] Smoke test above verified
+- [x] `Project` dataclass + `resolve_project()` implemented
+- [x] `ProjectNotFoundError` defined
+- [x] Env-var overrides implemented (`FLOWSTATE_CONFIG`, `FLOWSTATE_DATA_DIR`)
+- [x] Unit tests passing (13 new tests)
+- [x] `/lint` passes
+- [x] Smoke test verified
+- [x] `load_config()` shim preserved for SERVER-026 migration

@@ -28,7 +28,7 @@ class TestDefaultConfig:
         assert config.judge_max_retries == 1
         assert config.database_path == "~/.flowstate/flowstate.db"
         assert config.database_wal_mode is True
-        assert config.watch_dir == "./flows"
+        assert config.watch_dir == "flows"
         assert config.log_level == "info"
         assert config.harnesses == {}
 
