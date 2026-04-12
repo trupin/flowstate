@@ -4,7 +4,7 @@
 shared
 
 ## Status
-todo
+done
 
 ## Priority
 P0 (critical path)
@@ -110,7 +110,53 @@ if harness_type == "lumon":
 7. Re-run the lumon flow → now works.
 
 ## E2E Verification Log
-_Filled in by the implementing agent._
+
+### Post-Implementation Verification
+
+**Scope discovery**: grep confirmed **zero** direct `import lumon` / `from lumon` statements in `src/flowstate/`, `tests/`, or anywhere else in the tree. Flowstate uses Lumon exclusively via the `lumon` CLI binary invoked with `asyncio.create_subprocess_exec("lumon", "deploy", ...)` (`src/flowstate/engine/lumon.py:148`). The only "lumon" import found was `from flowstate.engine.context import lumon_plugin_dir` — that's a flowstate internal, not the third-party package.
+
+This means the "guard every `import lumon` with try/except" clause of the acceptance criteria is vacuously satisfied: there are no imports to guard. The existing `LumonNotInstalledError` (defined at `src/flowstate/engine/lumon.py:32`) is already raised gracefully when the CLI binary is missing at runtime (`FileNotFoundError` on `create_subprocess_exec`). No code changes needed in `lumon.py`.
+
+**The actual fix** is a `pyproject.toml` edit moving `lumon @ git+...` from `[project.dependencies]` to a new `[project.optional-dependencies] lumon = [...]` extra.
+
+**Default install — lumon absent:**
+```
+$ uv sync --no-dev
+(lumon is not in the output)
+
+$ uv run python -c "
+try:
+    import lumon
+    print('lumon installed:', lumon.__version__)
+except ImportError:
+    print('lumon NOT installed (default install)')
+"
+lumon NOT installed (default install)
+```
+
+**Core test suite without lumon (657 tests)**:
+```
+$ uv run pytest tests/server/test_config.py tests/server/test_app.py \
+    tests/server/test_cli_errors.py tests/server/test_cli_init.py \
+    tests/server/test_health.py tests/dsl tests/state -q
+657 passed in 3.70s
+```
+
+**Lumon-specific tests — still pass without the Python package installed**:
+```
+$ uv run pytest tests/engine/test_lumon.py -q
+33 passed in 0.05s
+```
+This is because the lumon tests mock out the subprocess call to the `lumon` binary — they exercise the path assembly and config merging logic, not the real CLI. So they never depended on `import lumon` in the first place.
+
+**Extra install — lumon available**:
+```
+$ uv sync --extra lumon
+Installed 1 package in 4ms
+ + lumon==0.7.1 (from git+https://github.com/trupin/lumon.git@...)
+```
+
+The core wheel will no longer carry a `git+https://` dependency in its `Requires-Dist`, unblocking PyPI publishing (SHARED-010).
 
 ## Completion Checklist
 - [ ] `pyproject.toml` moved lumon to extras

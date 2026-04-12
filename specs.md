@@ -1975,6 +1975,8 @@ In all cases the resolved path must exist and be a directory (with the exception
 
 ### 13.4 Deployment & Installation
 
+> **See also**: [`README.md` Install & Quickstart](./README.md#install) for the end-user-facing version of the install flow. This section is the contract; the README is the sales pitch.
+
 **Primary install channel (v0.1):** Flowstate is published to PyPI as `flowstate` and installed with `pipx` or `uv tool install`:
 
 ```bash

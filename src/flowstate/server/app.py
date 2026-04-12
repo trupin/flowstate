@@ -5,6 +5,7 @@ from __future__ import annotations
 import logging
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime
+from importlib.resources import as_file, files
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -20,6 +21,55 @@ from flowstate.config import FlowstateConfig, Project, build_project
 
 logger = logging.getLogger(__name__)
 
+
+def locate_ui_dist() -> Path | None:
+    """Return the path to the bundled UI assets, or None if not found.
+
+    Resolution order (per SHARED-008 + SERVER-032):
+
+    1. ``importlib.resources.files("flowstate") / "_ui_dist"`` — the wheel-
+       packaged bundle produced by the Hatchling build hook. This is the
+       production path; it works regardless of CWD because it is resolved
+       against the installed package location.
+
+    2. Dev fallback: ``<repo root>/ui/dist/`` next to the source checkout.
+       Used by contributors running ``uv run flowstate server`` from the
+       Flowstate repo without having built a wheel. Located by walking up
+       from ``src/flowstate/server/app.py`` three levels (``server`` →
+       ``flowstate`` → ``src`` → repo root) and then into ``ui/dist``.
+
+    3. Neither present → returns ``None``. ``mount_static_files()`` then
+       logs an INFO message and the server serves API-only. This is a
+       supported mode per spec §13.4.
+
+    The function never raises. Callers should treat ``None`` as "no UI"
+    and the API will still work.
+    """
+    # 1. Packaged wheel assets. ``files()`` works in source checkouts too —
+    # it will return the directory under ``src/flowstate/_ui_dist`` if the
+    # Hatchling build hook has already populated it during a prior
+    # ``uv build``.
+    try:
+        packaged = files("flowstate") / "_ui_dist"
+        with as_file(packaged) as path:
+            if (path / "index.html").is_file():
+                return Path(path)
+    except (FileNotFoundError, ModuleNotFoundError, NotADirectoryError):
+        pass
+
+    # 2. Dev fallback: sibling ``ui/dist/`` next to the source tree.
+    pkg_root = Path(__file__).resolve().parent.parent  # .../src/flowstate
+    repo_root = pkg_root.parent.parent  # <repo>/
+    dev_dist = repo_root / "ui" / "dist"
+    if (dev_dist / "index.html").is_file():
+        return dev_dist
+
+    return None
+
+
+# Backward-compat alias for anything that imported UI_DIST_DIR directly.
+# Prefer ``locate_ui_dist()`` going forward — it returns ``None`` cleanly
+# for "not found" instead of a path that may not exist.
 UI_DIST_DIR = Path(__file__).parent.parent.parent.parent / "ui" / "dist"
 
 
@@ -46,22 +96,36 @@ def mount_static_files(app: FastAPI, dist_dir: Path | None = None) -> None:
     - /favicon.ico from dist/favicon.ico
     - /{path:path} catch-all SPA fallback serving index.html
 
-    If the dist directory or index.html does not exist, logs a warning
-    and returns without mounting anything. The app continues to function
-    normally for API-only usage.
+    If no UI bundle is found, logs an INFO message and returns without
+    mounting anything. The app continues to function normally for
+    API-only usage.
 
     Args:
         app: The FastAPI application instance.
-        dist_dir: Path to the UI dist directory. Defaults to UI_DIST_DIR.
+        dist_dir: Optional explicit path to the UI dist directory. When
+            omitted, ``locate_ui_dist()`` is used to find the wheel-
+            packaged bundle via ``importlib.resources``, with a dev
+            fallback to ``<repo>/ui/dist/`` for source checkouts.
     """
-    dist = dist_dir or UI_DIST_DIR
+    if dist_dir is not None:
+        # Caller provided an explicit path — use it verbatim and preserve
+        # the original detailed "missing dir" / "missing index.html" log
+        # messages (tests depend on them).
+        dist = dist_dir
+    else:
+        # Auto-detect: prefer the wheel-packaged bundle, fall back to a
+        # dev ``ui/dist/`` checkout. ``locate_ui_dist()`` returns ``None``
+        # when neither source is usable.
+        dist = locate_ui_dist()
+        if dist is None:
+            logger.info(
+                "UI bundle not found; serving API only. "
+                "Run 'cd ui && npm run build' (or rebuild the wheel) "
+                "if you want the web UI."
+            )
+            return
 
     if not dist.exists():
-        # The UI is optional per spec §13.4 — the API-only mode is a
-        # first-class configuration (source checkouts, headless CI
-        # runners, users who only drive the server via CLI/curl). A
-        # missing bundle is not a fault, so we log it at INFO and phrase
-        # the message as information rather than an alarm.
         logger.info(
             "UI bundle not found at %s; serving API only. "
             "Run 'cd ui && npm run build' if you want the web UI.",

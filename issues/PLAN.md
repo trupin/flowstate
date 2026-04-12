@@ -538,11 +538,11 @@ Make Flowstate installable from PyPI via `pipx` / `uv tool install` and runnable
 
 | Issue      | Title                                                               | Domain | Priority | Depends On              | Status |
 | ---------- | ------------------------------------------------------------------- | ------ | -------- | ----------------------- | ------ |
-| SHARED-008 | Hatchling build hook: `npm run build` → `src/flowstate/_ui_dist/`   | shared | P0       | SHARED-006              | todo   |
-| SERVER-032 | Serve UI from `importlib.resources` instead of `ui/dist/`           | server | P0       | SHARED-008              | todo   |
-| SHARED-009 | Make `lumon` an optional extra; guard all lumon imports             | shared | P0       | —                       | todo   |
-| SHARED-010 | PyPI release pipeline + `pyproject.toml` metadata                    | shared | P1       | SHARED-008, SHARED-009  | todo   |
-| SHARED-011 | Deployment docs in README + `specs.md §13` cross-ref                 | shared | P1       | SHARED-010              | todo   |
+| SHARED-008 | Hatchling build hook: `npm run build` → `src/flowstate/_ui_dist/`   | shared | P0       | SHARED-006              | done   |
+| SERVER-032 | Serve UI from `importlib.resources` instead of `ui/dist/`           | server | P0       | SHARED-008              | done   |
+| SHARED-009 | Make `lumon` an optional extra; guard all lumon imports             | shared | P0       | —                       | done   |
+| SHARED-010 | PyPI release pipeline + `pyproject.toml` metadata                    | shared | P1       | SHARED-008, SHARED-009  | done   |
+| SHARED-011 | Deployment docs in README + `specs.md §13` cross-ref                 | shared | P1       | SHARED-010              | done   |
 
 ---
 

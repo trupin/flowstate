@@ -57,28 +57,67 @@ flow discuss_flowstate {
 
 The DSL supports conditional routing, fork/join parallelism, cross-flow filing, wait/fence synchronization, and more. See [`specs.md`](specs.md) for the full specification.
 
-## Quick start
+## Install
 
-Requires Python 3.12+ and [uv](https://docs.astral.sh/uv/).
+Flowstate is a CLI + local web server distributed as a Python wheel with
+the React UI bundled in. Install it with `uv tool install` or `pipx` —
+no Node.js or separate build step required at install time.
 
 ```bash
-# Install
+uv tool install flowstate            # recommended
+# or
+pipx install flowstate
+```
+
+Requires **Python 3.12+**. For sandboxed execution (optional):
+
+```bash
+pip install 'flowstate[lumon]'
+```
+
+## Quickstart
+
+In any existing project directory:
+
+```bash
+cd ~/my-app                          # any existing repo
+flowstate init                       # creates flowstate.toml + flows/example.flow
+flowstate check flows/example.flow   # validates the scaffolded flow
+flowstate server                     # http://127.0.0.1:9090
+```
+
+`flowstate init` detects your project type (Node / Python / Rust) from
+`package.json` / `pyproject.toml` / `Cargo.toml` and seeds a starter flow
+tailored to it. Open http://127.0.0.1:9090 in your browser to see the UI.
+
+### Where Flowstate stores state
+
+All runtime data (SQLite database, auto-generated run worktrees, logs)
+lives under `~/.flowstate/projects/<project-slug>/`. Your project
+directory is never modified beyond the files `flowstate init` scaffolds
+on the first run. See [`specs.md §13`](./specs.md#13-configuration) for
+the full project-layout and deployment spec.
+
+### Working on Flowstate itself
+
+Contributors building Flowstate from source:
+
+```bash
 git clone https://github.com/trupin/flowstate.git
 cd flowstate
 uv sync
-
-# Validate a flow file
+cd ui && npm install && cd ..        # UI deps for dev server
 uv run flowstate check demo/unit_test_gen.flow
-
-# Start the server + UI
-uv run flowstate server
+uv run flowstate server              # uses the committed flowstate.toml at repo root
 ```
 
-The web UI is available at `http://localhost:8642`. The React frontend dev server (with hot reload) can be started separately:
+The React frontend dev server (with hot reload) can be started separately:
 
 ```bash
-cd ui && npm install && npm run dev
+cd ui && npm run dev
 ```
+
+Maintainer release procedure is in [`RELEASING.md`](./RELEASING.md).
 
 ## Architecture
 
