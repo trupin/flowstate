@@ -285,4 +285,4 @@ This sprint is complete when:
 - **`flowstate check` against seeded templates**: all four starter flows must be type-safe (per SERVER-028 acceptance). If any template fails `check` (e.g., Rust template references a missing harness), TEST-1 through TEST-4 all fail. The agent should run `flowstate check` against every generated template during implementation, not just at E2E time.
 - **Grep markers for template detection**: TEST-2/3/4 grep for loose substrings (`npm`, `pytest`, `cargo`). If the templates happen to share vocabulary (e.g., a Python template mentioning `cargo cult` in a comment), the assertions would false-positive. The agent should keep marker tokens distinct and domain-specific.
 
-**Eval verdict: FAIL (issues/evals/sprint-phase-31-2-eval.md)**
+**Eval verdict: PASS (issues/evals/sprint-phase-31-2-eval.md)** — Round 2, 17/17 criteria PASS.
