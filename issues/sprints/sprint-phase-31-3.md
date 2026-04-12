@@ -314,3 +314,5 @@ This sprint is complete when all of the following are true:
 7. **TEST-INT-1 (the canonical shippable v0.1 demo) passes end-to-end against the installed wheel** — this is the blocking gate. If TEST-INT-1 fails, the sprint does not ship, regardless of the state of other tests.
 8. No production PyPI upload has occurred (TEST-10.7).
 9. The orchestrator has committed each issue in a separate commit following the `[ISSUE-ID] ...` convention.
+
+**Eval verdict: PASS (issues/evals/sprint-phase-31-3-eval.md)**
