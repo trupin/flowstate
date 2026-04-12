@@ -1880,7 +1880,7 @@ flowstate trigger <flow-name>
 flowstate init
 ```
 
-Every command except `flowstate init` and `flowstate --version` / `--help` requires a project context (see §13.3). Commands exit with code `2` and a message pointing at `flowstate init` when no project is found.
+Every command except `flowstate init`, `flowstate check`, and `flowstate --version` / `--help` requires a project context (see §13.3). Commands that require a project exit with code `2` and a message pointing at `flowstate init` when no project is found. `flowstate check` is a pure DSL validator that takes an explicit flow file path and operates without project context, so it can be used for quick syntax-checking outside any project.
 
 ### 13.3 Project Layout
 

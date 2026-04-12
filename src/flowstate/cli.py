@@ -20,6 +20,67 @@ app = typer.Typer(
 # SERVER-030: hosts that are considered safe (no "no auth" warning).
 LOOPBACK_HOSTS: frozenset[str] = frozenset({"127.0.0.1", "localhost", "::1"})
 
+# Sentinel version for source checkouts that haven't been ``pip install -e``'d.
+# Kept in lockstep with ``flowstate.server.health._DEV_VERSION`` — both paths
+# must return the same fallback string so ``flowstate --version`` and
+# ``GET /health`` agree on what "dev build" looks like to users.
+_DEV_VERSION = "0.0.0+dev"
+
+
+def _resolve_version() -> str:
+    """Return the installed ``flowstate`` package version, or the dev fallback.
+
+    ``importlib.metadata.version`` raises :class:`PackageNotFoundError`
+    when the package is not installed into the active environment (the
+    typical state for a source checkout that hasn't been ``pip install
+    -e``'d). In that case we return ``"0.0.0+dev"`` — the same sentinel
+    the ``/health`` endpoint uses — so humans see a clearly-a-dev-build
+    string instead of a crash.
+    """
+    from importlib.metadata import PackageNotFoundError
+    from importlib.metadata import version as pkg_version
+
+    try:
+        return pkg_version("flowstate")
+    except PackageNotFoundError:
+        return _DEV_VERSION
+
+
+def _version_callback(value: bool) -> None:
+    """Typer eager callback for ``--version`` / ``-V``.
+
+    Runs *before* Typer dispatches to a subcommand, so ``flowstate
+    --version`` succeeds outside any project (no ``_require_project``
+    walk), prints a version string to stdout, and exits 0.
+    """
+    if not value:
+        return
+    typer.echo(f"flowstate {_resolve_version()}")
+    raise typer.Exit(code=0)
+
+
+@app.callback()
+def _main(
+    version: Annotated[
+        bool,
+        typer.Option(
+            "--version",
+            "-V",
+            help="Show the Flowstate version and exit.",
+            is_eager=True,
+            callback=_version_callback,
+        ),
+    ] = False,
+) -> None:
+    """Flowstate top-level entry point.
+
+    This callback exists solely to register the global ``--version`` /
+    ``-V`` flag. The flag is marked ``is_eager=True`` so its callback
+    fires before Typer resolves (and validates) any subcommand, which
+    is what lets ``flowstate --version`` run from any directory —
+    including one with no ``flowstate.toml`` anchor.
+    """
+
 
 def _require_project() -> Project:
     """Resolve the current project or exit with a clear, friendly error.

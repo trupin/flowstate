@@ -154,12 +154,26 @@ class TestNoDistDir:
         # Without static files, root path returns 404 (no route defined)
         assert response.status_code == 404
 
-    def test_warning_logged(self, caplog: logging.LogRecord) -> None:
-        """A warning is logged when dist dir does not exist."""
+    def test_info_logged(self, caplog: logging.LogRecord) -> None:
+        """An INFO-level note is logged when dist dir does not exist.
+
+        SERVER-028 fix loop: the UI bundle is optional per spec §13.4,
+        so a missing dist is informational, not a warning. We assert
+        the level is INFO (not WARNING) to prevent regression back to
+        the alarmist log that spammed every default-bind startup.
+        """
         app = FastAPI()
-        with caplog.at_level(logging.WARNING):  # type: ignore[union-attr]
+        with caplog.at_level(logging.INFO, logger="flowstate.server.app"):  # type: ignore[union-attr]
             mount_static_files(app, dist_dir=Path("/nonexistent/dist"))
-        assert any("not found" in record.message for record in caplog.records)  # type: ignore[union-attr]
+        matching = [
+            r  # type: ignore[union-attr]
+            for r in caplog.records  # type: ignore[union-attr]
+            if "UI bundle not found" in r.message  # type: ignore[union-attr]
+        ]
+        assert matching, "expected an INFO log about missing UI bundle"
+        assert all(r.levelno == logging.INFO for r in matching), (  # type: ignore[union-attr]
+            "UI-bundle-missing log must be INFO, not WARNING"
+        )
 
     def test_api_routes_still_work(self) -> None:
         """API routes work normally when static files are not mounted."""
@@ -196,15 +210,27 @@ class TestMissingIndexHtml:
         # Without index.html, SPA fallback is not mounted
         assert response.status_code == 404
 
-    def test_warning_logged_missing_index(self, tmp_path: Path, caplog: logging.LogRecord) -> None:
-        """Warning is logged when dist exists but index.html does not."""
+    def test_info_logged_missing_index(self, tmp_path: Path, caplog: logging.LogRecord) -> None:
+        """An INFO-level note is logged when dist exists but index.html does not.
+
+        Same SERVER-028 fix-loop rationale as ``test_info_logged``: an
+        incomplete UI bundle is informational, not an alarm.
+        """
         dist = tmp_path / "dist"
         dist.mkdir()
 
         app = FastAPI()
-        with caplog.at_level(logging.WARNING):  # type: ignore[union-attr]
+        with caplog.at_level(logging.INFO, logger="flowstate.server.app"):  # type: ignore[union-attr]
             mount_static_files(app, dist_dir=dist)
-        assert any("index.html" in record.message for record in caplog.records)  # type: ignore[union-attr]
+        matching = [
+            r  # type: ignore[union-attr]
+            for r in caplog.records  # type: ignore[union-attr]
+            if "no index.html" in r.message  # type: ignore[union-attr]
+        ]
+        assert matching, "expected an INFO log about missing index.html"
+        assert all(r.levelno == logging.INFO for r in matching), (  # type: ignore[union-attr]
+            "index.html-missing log must be INFO, not WARNING"
+        )
 
 
 class TestRealStaticFilePriority:

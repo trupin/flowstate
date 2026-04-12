@@ -103,11 +103,17 @@ All tests assume `flowstate` is on PATH (installed via `uv run flowstate ...` or
 ### TEST-8: Other project-requiring commands also fail cleanly outside a project
 
   Given: Same empty `/tmp/fs-no-project/` as TEST-7
-  When: Each of the following is run in turn: `flowstate run flows/foo.flow`, `flowstate check flows/foo.flow`, `flowstate runs`, `flowstate status <fake-id>`
+  When: Each of the following is run in turn: `flowstate run flows/foo.flow`, `flowstate runs`, `flowstate status <fake-id>`
   Then:
   - Every invocation exits with code 2
   - Every stderr contains the same `No flowstate.toml found` message
   - No Python tracebacks appear
+
+  Note: `flowstate check` is intentionally exempt. It is a pure DSL validator
+  that takes an explicit flow file path and operates without project context,
+  per specs.md §13.2. Running `flowstate check /some/path/foo.flow` outside a
+  project must not error on "no project" — it simply checks the file, or fails
+  with "file not found" if the path is invalid.
 
 ### TEST-9: `flowstate init` itself works outside any project
 
@@ -133,8 +139,10 @@ All tests assume `flowstate` is on PATH (installed via `uv run flowstate ...` or
   When: `flowstate server` is launched from that directory with no `--host` flag
   Then:
   - Server starts and binds to `127.0.0.1:9090` (the default)
-  - Stderr during startup does **not** contain the word `WARNING` or the `=====` border line
+  - Stderr during startup does **not** contain the host-warning-banner signature: specifically, the substring `Flowstate is binding to` must be absent, and the `============================================================` border line must be absent
   - `GET http://127.0.0.1:9090/health` returns 200 (used as the readiness probe)
+
+  Note: the test checks for the SERVER-030 host-warning banner specifically, not arbitrary `WARNING`-level log lines. Unrelated warnings from other subsystems (e.g. an INFO-level notice about a missing `ui/dist` in source checkouts) do not fail this test. What must be absent is the specific banner SERVER-030 emits for non-loopback binds.
 
 ### TEST-12: `flowstate server --host 0.0.0.0` prints the loud warning and still starts
 
@@ -207,7 +215,7 @@ This is the single canonical E2E path the evaluator runs last to prove all four 
   - Step 1 exits with code 2 and stderr points at `flowstate init`
   - Step 2 creates `flowstate.toml` and `flows/example.flow`, and the flow file contains a Node marker (grep for `npm` or `node`) because `package.json` was present
   - Step 3 exits 0 (the seeded Node template is type-safe)
-  - Step 4's stderr contains no `WARNING` line
+  - Step 4's stderr contains no SERVER-030 host-warning banner (no `Flowstate is binding to` substring, no `============================================================` border line) — see TEST-11 note on banner-specific matching
   - Step 5's first successful response body satisfies:
     - `status == "ok"`
     - `project.slug` starts with `fs-journey-`
@@ -276,3 +284,5 @@ This sprint is complete when:
 - **`/health` version mismatch**: this worktree is a source checkout, so `importlib.metadata.version("flowstate")` may raise `PackageNotFoundError` depending on whether `flowstate` has been `pip install -e .`d into the active venv. TEST-14 accepts both a PEP 440 version **and** the `"0.0.0+dev"` fallback to cover both cases.
 - **`flowstate check` against seeded templates**: all four starter flows must be type-safe (per SERVER-028 acceptance). If any template fails `check` (e.g., Rust template references a missing harness), TEST-1 through TEST-4 all fail. The agent should run `flowstate check` against every generated template during implementation, not just at E2E time.
 - **Grep markers for template detection**: TEST-2/3/4 grep for loose substrings (`npm`, `pytest`, `cargo`). If the templates happen to share vocabulary (e.g., a Python template mentioning `cargo cult` in a comment), the assertions would false-positive. The agent should keep marker tokens distinct and domain-specific.
+
+**Eval verdict: FAIL (issues/evals/sprint-phase-31-2-eval.md)**

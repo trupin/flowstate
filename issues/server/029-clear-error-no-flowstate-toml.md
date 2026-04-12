@@ -154,6 +154,34 @@ In addition to the journey test, the unit test suite
 
 All 11 tests in that file pass.
 
+## E2E Verification Log — Fix-loop round 1 (2026-04-11)
+
+The Phase 31.2 evaluator flagged `flowstate check flows/foo.flow` in
+a no-project directory as exiting `1` (`File not found`) instead of
+`2` with the friendly project-not-found message. After review with
+the orchestrator, the sprint contract TEST-8 and `specs.md §13.2` were
+updated to explicitly exempt `check` from `_require_project()`:
+`check` is a pure DSL syntax/type validator over an explicit file
+path and should work outside any project. **No change to `check`
+behavior in this round.** The existing unit test
+`tests/server/test_cli_errors.py::TestCommandsThatBypassProjectCheck::test_check_without_project`
+already pins the correct behavior (exit 1 + "File not found") and
+continues to pass.
+
+Re-verified live:
+
+```
+$ cd /tmp/fs-fixloop-test         # no ancestor flowstate.toml
+$ uv --project <worktree> run flowstate check flows/foo.flow
+Error: File not found: flows/foo.flow
+exit=1
+```
+
+The four genuinely project-requiring commands (`server`, `run`, `runs`,
+`status`, `schedules`, `trigger`) are unchanged and still exit 2 with
+the friendly message — proven by the existing parametrized test in
+`test_cli_errors.py` which continues to pass (11/11).
+
 ## Completion Checklist
 - [x] `_require_project()` helper implemented
 - [x] Every project-requiring command migrated
@@ -163,3 +191,5 @@ All 11 tests in that file pass.
 - [x] Unit tests passing
 - [x] `/lint` passes
 - [x] E2E steps above verified
+- [x] Fix-loop round 1: `check` exemption confirmed against updated
+      sprint contract + `specs.md §13.2`; no code change needed.

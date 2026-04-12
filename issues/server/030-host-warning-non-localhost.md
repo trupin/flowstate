@@ -154,6 +154,41 @@ The three SERVER-030 invariants are explicitly asserted:
    `localhost`, `::1`, and also for `::` (IPv6 wildcard, warns) and
    `192.168.1.10` (routable, warns). All 10 tests pass.
 
+## E2E Verification Log — Fix-loop round 1 (2026-04-11)
+
+The Phase 31.2 evaluator flagged TEST-11 under the strict reading
+"stderr must contain no WARNING token". The host-warning banner
+itself was correctly absent on default-bind startup (the actual
+target of TEST-11), but a pre-existing unrelated
+`WARNING flowstate.server.app: UI dist directory not found ...`
+log from `src/flowstate/server/app.py` was tripping the literal
+assertion. That log has been downgraded to `INFO` — see the
+SERVER-028 fix-loop entry for details. **No change to `_warn_if_non_loopback`
+or any of SERVER-030's code paths was needed.**
+
+Re-verified on the real server:
+
+```
+$ export FLOWSTATE_DATA_DIR=/tmp/fs-fixloop-data
+$ cd /tmp/fs-fixloop-server
+$ nohup flowstate server --port 9193 > server-default.log 2>&1 &
+$ curl -s http://127.0.0.1:9193/health   # → 200
+
+$ grep -c WARNING server-default.log   # 0  (no WARNING token at all)
+$ grep -c '=====' server-default.log   # 0  (no host banner border)
+$ grep -c 'Flowstate is binding to' server-default.log   # 0
+
+$ nohup flowstate server --host 0.0.0.0 --port 9194 > server-open.log 2>&1 &
+$ curl -s http://127.0.0.1:9194/health   # → 200
+$ grep -c '^=====' server-open.log                        # 2  (border top+bottom)
+$ grep -c 'WARNING: Flowstate is binding to 0.0.0.0:9194' server-open.log  # 1
+$ grep -c 'NO AUTHENTICATION' server-open.log             # 1
+$ grep -c 'Only use non-loopback binds in trusted networks' server-open.log # 1
+```
+
+Both the "no banner on loopback" and "banner fires exactly once on
+non-loopback" invariants still hold after the fix-loop changes.
+
 ## Completion Checklist
 - [x] Default host set to `127.0.0.1`
 - [x] `_warn_if_non_loopback` implemented
@@ -161,3 +196,5 @@ The three SERVER-030 invariants are explicitly asserted:
 - [x] Unit test passing
 - [x] `/lint` passes
 - [x] E2E steps above verified
+- [x] Fix-loop round 1: TEST-11 strict-read fail resolved by
+      SERVER-028 log-level fix; banner behavior unchanged.

@@ -208,6 +208,64 @@ Notes:
   an `example.flow` containing the string `npm` (grepped inside the
   test script, not shown above).
 
+## E2E Verification Log — Fix-loop round 1 (2026-04-11)
+
+The Phase 31.2 evaluator flagged a pre-existing UI-dist WARNING log on
+default-bind server startup as a strict-reading TEST-11 / TEST-17-step-4
+failure. This was noise from before Phase 31 (`flowstate/server/app.py`
+emitted `logger.warning("UI dist directory not found at ...")` whenever
+the UI bundle had not been built). Because the UI is optional per
+spec §13.4, the message was downgraded to `logger.info` and reworded:
+`"UI bundle not found at <path>; serving API only. Run 'cd ui && npm
+run build' if you want the web UI."`
+
+Verified against the real server on a scratch project (not via
+TestClient):
+
+```
+$ rm -rf /tmp/fs-fixloop-server && mkdir -p /tmp/fs-fixloop-server && cd /tmp/fs-fixloop-server
+$ uv --project <worktree> run flowstate init
+Created flowstate.toml and flows/example.flow.
+Next:
+  flowstate check flows/example.flow
+  flowstate server
+
+$ export FLOWSTATE_DATA_DIR=/tmp/fs-fixloop-data
+$ nohup uv --project <worktree> run flowstate server --port 9193 > server-default.log 2>&1 &
+$ curl -s http://127.0.0.1:9193/health
+{"status":"ok","version":"0.1.0","project":{"slug":"fs-fixloop-server-b8c6ea27","root":"/private/tmp/fs-fixloop-server"}}
+
+$ cat server-default.log
+2026-04-11 21:26:58,244 INFO  flowstate.server.app: UI bundle not found at .../ui/dist; serving API only. Run 'cd ui && npm run build' if you want the web UI.
+Starting Flowstate server on 127.0.0.1:9193
+Project: /private/tmp/fs-fixloop-server (slug=fs-fixloop-server-b8c6ea27)
+INFO:     Uvicorn running on http://127.0.0.1:9193 (Press CTRL+C to quit)
+
+$ grep -c WARNING server-default.log    # 0 — no WARNING tokens
+$ grep -c '=====' server-default.log    # 0 — no host banner border
+```
+
+Cross-check: the **host-warning banner** for non-loopback binds is
+still emitted. Proof on the same worktree:
+
+```
+$ nohup uv --project <worktree> run flowstate server --host 0.0.0.0 --port 9194 > server-open.log 2>&1 &
+$ curl -s http://127.0.0.1:9194/health   # → 200
+$ head -7 server-open.log
+============================================================
+WARNING: Flowstate is binding to 0.0.0.0:9194.
+Flowstate v0.1 has NO AUTHENTICATION. Anyone who can reach
+this address can execute code on this machine via Flowstate's
+subprocess harnesses.
+Only use non-loopback binds in trusted networks.
+============================================================
+```
+
+Tests touched: `tests/server/test_static_files.py::test_info_logged`
+and `::test_info_logged_missing_index` — both updated to assert the
+log level is `INFO`, not `WARNING`, and to match the new message text.
+Targeted suite: `pytest tests/server/test_static_files.py` → all green.
+
 ## Completion Checklist
 - [x] `init` command implemented
 - [x] Four `.flow` templates + `flowstate.toml.tmpl` bundled in the wheel
@@ -216,3 +274,4 @@ Notes:
 - [x] Unit tests passing
 - [x] `/lint` passes
 - [x] E2E steps above verified
+- [x] Fix-loop round 1: UI-bundle log downgraded to INFO

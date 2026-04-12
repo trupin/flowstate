@@ -97,6 +97,41 @@ class TestCommandsThatBypassProjectCheck:
         assert "No flowstate.toml found" not in (result.stdout or "")
         assert "No flowstate.toml found" not in (result.stderr or "")
 
+    def test_version_long_flag_works_outside_project(self, no_project: Path) -> None:
+        """`flowstate --version` exits 0 outside any project and prints a version.
+
+        SERVER-028 fix loop: the version flag is registered via an
+        eager Typer callback so it fires before ``_require_project`` is
+        ever consulted. It must not fail on a missing ``flowstate.toml``.
+        """
+        result = runner.invoke(app, ["--version"])
+        assert result.exit_code == 0, (
+            f"expected exit 0, got {result.exit_code}; "
+            f"stdout={result.stdout!r} stderr={result.stderr!r}"
+        )
+        combined = (result.stdout or "") + (result.stderr or "")
+        # A non-empty version string must be present. We don't assert
+        # the exact value because it varies between source checkouts
+        # (fallback ``0.0.0+dev``) and installed wheels (PEP 440
+        # releases like ``0.1.0``).
+        assert "flowstate" in combined.lower()
+        # Must contain something that looks like a version (digit + dot).
+        import re
+
+        assert re.search(
+            r"\d+\.\d+", combined
+        ), f"expected a version-looking substring in output; got {combined!r}"
+        assert "No flowstate.toml found" not in combined
+
+    def test_version_short_flag_works_outside_project(self, no_project: Path) -> None:
+        """`flowstate -V` is an alias for `--version` and behaves identically."""
+        result = runner.invoke(app, ["-V"])
+        assert result.exit_code == 0
+        combined = (result.stdout or "") + (result.stderr or "")
+        import re
+
+        assert re.search(r"\d+\.\d+", combined)
+
     def test_check_without_project(self, no_project: Path) -> None:
         # `check` takes an explicit file path and is not a project-requiring
         # command. It should fail because the file doesn't exist, not

@@ -140,9 +140,52 @@ All four assertions passed. Notes:
     - The `PackageNotFoundError` → `"0.0.0+dev"` fallback path.
     - The endpoint survives 5 sequential requests (polling loop).
 
+## E2E Verification Log — Fix-loop round 1 (2026-04-11)
+
+The Phase 31.2 evaluator flagged TEST-10 because the CLI had no
+top-level `--version` flag. The `/health` endpoint already resolved
+the version from `importlib.metadata.version("flowstate")` with a
+`"0.0.0+dev"` fallback; this round wires the **same** resolver into
+the CLI via an eager Typer callback (`src/flowstate/cli.py::_version_callback`).
+The two call sites now share both the sentinel string and the fallback
+semantics, so `flowstate --version` and `GET /health` agree on what
+"dev build" looks like.
+
+Verified against the real CLI (outside any project, so the walk-up
+must not reach a `flowstate.toml`):
+
+```
+$ cd /tmp/fs-fixloop-test   # no ancestor flowstate.toml
+$ uv --project <worktree> run flowstate --version
+flowstate 0.1.0
+exit=0
+
+$ uv --project <worktree> run flowstate -V
+flowstate 0.1.0
+exit=0
+```
+
+And the corresponding `/health` value is still identical:
+
+```
+$ curl -s http://127.0.0.1:9193/health
+{"status":"ok","version":"0.1.0","project":{"slug":"fs-fixloop-server-b8c6ea27","root":"/private/tmp/fs-fixloop-server"}}
+```
+
+New unit tests in `tests/server/test_cli_errors.py`:
+- `TestCommandsThatBypassProjectCheck::test_version_long_flag_works_outside_project`
+- `TestCommandsThatBypassProjectCheck::test_version_short_flag_works_outside_project`
+
+Both assert exit 0, a non-empty version-looking string, and no
+"No flowstate.toml found" in stdout/stderr. The helper doesn't
+hard-code `"0.1.0"` because the same code must keep working on source
+checkouts where the fallback `"0.0.0+dev"` applies.
+
 ## Completion Checklist
 - [x] `/health` endpoint implemented
 - [x] Version read from package metadata with dev fallback
 - [x] Integration test passing
 - [x] `/lint` passes
 - [x] E2E steps above verified
+- [x] Fix-loop round 1: top-level `--version` / `-V` flag added,
+      sharing the `/health` resolver + `0.0.0+dev` fallback.

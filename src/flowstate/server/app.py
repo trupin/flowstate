@@ -57,17 +57,27 @@ def mount_static_files(app: FastAPI, dist_dir: Path | None = None) -> None:
     dist = dist_dir or UI_DIST_DIR
 
     if not dist.exists():
-        logger.warning(
-            "UI dist directory not found at %s. "
-            "Static file serving is disabled. "
-            "Run 'cd ui && npm run build' to build the UI.",
+        # The UI is optional per spec §13.4 — the API-only mode is a
+        # first-class configuration (source checkouts, headless CI
+        # runners, users who only drive the server via CLI/curl). A
+        # missing bundle is not a fault, so we log it at INFO and phrase
+        # the message as information rather than an alarm.
+        logger.info(
+            "UI bundle not found at %s; serving API only. "
+            "Run 'cd ui && npm run build' if you want the web UI.",
             dist,
         )
         return
 
     index_html = dist / "index.html"
     if not index_html.exists():
-        logger.warning("index.html not found in %s. Static file serving is disabled.", dist)
+        # Same rationale as above: an incomplete dist/ without index.html
+        # is a build-in-progress or partial checkout, not a server error.
+        logger.info(
+            "UI bundle at %s has no index.html; serving API only. "
+            "Run 'cd ui && npm run build' if you want the web UI.",
+            dist,
+        )
         return
 
     # Mount static assets (JS, CSS, images, etc.)
