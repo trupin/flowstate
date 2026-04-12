@@ -7,12 +7,14 @@ import logging
 import os
 import re
 import uuid
+from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from fastapi import APIRouter, Request
 from starlette.responses import Response
 
 from flowstate.dsl.parser import parse_flow
+from flowstate.engine.context import resolve_workspace
 from flowstate.engine.executor import FlowExecutor
 from flowstate.engine.worktree import init_git_repo, is_git_repo
 from flowstate.server.app import FlowstateError
@@ -37,6 +39,7 @@ from flowstate.server.models import (
 from flowstate.server.run_manager import InvalidStateError
 
 if TYPE_CHECKING:
+    from flowstate.config import Project
     from flowstate.server.flow_registry import DiscoveredFlow, FlowRegistry
     from flowstate.server.run_manager import RunManager
     from flowstate.state.models import (
@@ -59,19 +62,41 @@ logger = logging.getLogger(__name__)
 _ALLOWED_IDE_COMMANDS = frozenset({"code", "cursor", "zed", "subl", "open", "xdg-open"})
 
 
-async def _resolve_workspace(flow_name: str, workspace: str | None, run_id: str) -> str:
-    """Determine workspace: use the flow's explicit workspace or auto-generate an isolated one.
+async def _resolve_workspace(
+    flow_name: str,
+    workspace: str | None,
+    run_id: str,
+    *,
+    project: Project,
+    flow_file: Path | None = None,
+) -> str:
+    """Resolve the workspace path for a run.
 
-    For auto-generated workspaces, creates the directory and initializes it as
-    a git repo so that worktree isolation works out of the box.
+    Per spec §13.3 "Path resolution within a project":
+
+    - If ``workspace`` is set, it is resolved via
+      :func:`flowstate.engine.context.resolve_workspace` — absolute paths
+      are used as-is, relative paths are resolved against the flow file's
+      containing directory (NOT the server CWD).
+    - If ``workspace`` is omitted, an auto-generated workspace is created at
+      ``project.workspaces_dir / flow_name / run_id[:8]``. The directory is
+      initialized as a git repo so worktree isolation works out of the box
+      (ENGINE-069 behavior preserved).
     """
     if workspace:
-        return workspace
-    auto_path = os.path.expanduser(f"~/.flowstate/workspaces/{flow_name}/{run_id[:8]}")
-    os.makedirs(auto_path, exist_ok=True)
-    if not await init_git_repo(auto_path):
+        if flow_file is None:
+            # Legacy/scheduled path with no flow file available — treat as
+            # already-absolute and just expanduser+resolve.
+            return str(Path(workspace).expanduser().resolve())
+        resolved = resolve_workspace(workspace, flow_file)
+        assert resolved is not None  # workspace was not None
+        return str(resolved)
+
+    auto_path = project.workspaces_dir / flow_name / run_id[:8]
+    auto_path.mkdir(parents=True, exist_ok=True)
+    if not await init_git_repo(str(auto_path)):
         logger.warning("Failed to initialize git repo in auto-workspace %s", auto_path)
-    return auto_path
+    return str(auto_path)
 
 
 @router.post("/open")
@@ -342,11 +367,12 @@ async def start_run(
     harness_mgr = _get_harness_mgr(request)
 
     # Resolve flow file directory for Lumon plugin resolution (ENGINE-077)
+    # and for flow-file-relative workspace resolution (ENGINE-079).
     flow_file_dir: str | None = None
+    flow_file_path: Path | None = None
     if flow.file_path:
-        from pathlib import Path as _Path
-
-        flow_file_dir = str(_Path(flow.file_path).resolve().parent)
+        flow_file_path = Path(flow.file_path).resolve()
+        flow_file_dir = str(flow_file_path.parent)
 
     executor = FlowExecutor(
         db=db,
@@ -357,13 +383,21 @@ async def start_run(
         harness_mgr=harness_mgr,
         server_base_url=f"http://{config.server_host}:{config.server_port}",
         flow_file_dir=flow_file_dir,
+        flow_file=flow_file_path,
     )
 
     # Register and start as background task with a single shared run_id
     run_manager = _get_run_manager(request)
     run_id = str(uuid.uuid4())
 
-    workspace = await _resolve_workspace(flow_ast.name, flow_ast.workspace, run_id)
+    project: Project = request.app.state.project
+    workspace = await _resolve_workspace(
+        flow_ast.name,
+        flow_ast.workspace,
+        run_id,
+        project=project,
+        flow_file=flow_file_path,
+    )
 
     # Pass run_id to execute so DB uses the same key as RunManager
     execute_coro = executor.execute(
@@ -1144,7 +1178,14 @@ async def trigger_schedule(request: Request, schedule_id: str) -> dict[str, str]
     run_manager = _get_run_manager(request)
     run_id = str(uuid.uuid4())
 
-    workspace = await _resolve_workspace(flow_ast.name, flow_ast.workspace, run_id)
+    project_ctx: Project = request.app.state.project
+    workspace = await _resolve_workspace(
+        flow_ast.name,
+        flow_ast.workspace,
+        run_id,
+        project=project_ctx,
+        flow_file=None,  # scheduled flows have no DiscoveredFlow with a file path
+    )
     execute_coro = executor.execute(
         flow_ast, {}, workspace, flow_run_id=run_id, source_dsl=flow_def.source_dsl
     )

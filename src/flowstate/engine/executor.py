@@ -237,12 +237,22 @@ class FlowExecutor:
         harness_mgr: HarnessManager | None = None,
         server_base_url: str | None = None,
         flow_file_dir: str | None = None,
+        flow_file: Path | None = None,
     ) -> None:
         self._db = db
         self._raw_callback = event_callback
         self._harness_mgr = harness_mgr or HarnessManager(default_harness=harness)
         self._server_base_url = server_base_url
         self._flow_file_dir = flow_file_dir
+        # ENGINE-079: absolute path to the .flow source file. Used to resolve
+        # relative workspace / cwd attributes relative to the flow file's
+        # containing directory rather than the server's CWD.
+        self._flow_file: Path | None = flow_file
+        if flow_file is None and flow_file_dir is not None:
+            # Back-compat: older call sites pass only flow_file_dir.
+            # Synthesize a stand-in flow_file so resolve_cwd can use its parent.
+            # Any child path under the dir works for .parent resolution.
+            self._flow_file = Path(flow_file_dir) / "__flow__"
         self._judge = judge or JudgeProtocol(harness)
         self._semaphore = asyncio.Semaphore(max_concurrent)
         self._max_concurrent = max_concurrent
@@ -833,7 +843,7 @@ class FlowExecutor:
         # Enqueue join target
         join_node = flow.nodes[fork_group.join_node_name]
         join_gen = fork_group.generation + 1
-        cwd = resolve_cwd(join_node, flow)
+        cwd = resolve_cwd(join_node, flow, flow_file=self._flow_file)
 
         # Per-node worktree: merge all member branches into join worktree (ENGINE-070)
         join_wt: WorktreeInfo | None = None
@@ -1306,7 +1316,7 @@ class FlowExecutor:
 
         assert isinstance(source_task, TaskExecutionRow)
 
-        cwd = resolve_cwd(target_node, flow)
+        cwd = resolve_cwd(target_node, flow, flow_file=self._flow_file)
         workspace = flow.workspace or cwd
 
         # Per-node worktree isolation (ENGINE-070)
@@ -2906,7 +2916,7 @@ class FlowExecutor:
         If *worktree_override* is provided (e.g. from fork branching), it is
         used directly and the normal worktree resolution is skipped.
         """
-        cwd = resolve_cwd(node, flow)
+        cwd = resolve_cwd(node, flow, flow_file=self._flow_file)
         workspace = flow.workspace or cwd
 
         # Per-node worktree isolation (ENGINE-070)

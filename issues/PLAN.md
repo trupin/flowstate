@@ -520,10 +520,10 @@ Make Flowstate installable from PyPI via `pipx` / `uv tool install` and runnable
 | Issue      | Title                                                               | Domain | Priority | Depends On | Status |
 | ---------- | ------------------------------------------------------------------- | ------ | -------- | ---------- | ------ |
 | SERVER-026 | Config loader: project resolution + env-var overrides               | server | P0       | SHARED-007 | done   |
-| STATE-012  | Derive DB path from `Project.db_path`; drop hardcoded default       | state  | P0       | SHARED-007 | todo   |
+| STATE-012  | Derive DB path from `Project.db_path`; drop hardcoded default       | state  | P0       | SHARED-007 | done   |
 | SERVER-027 | Flow registry: resolve `watch_dir` relative to project root         | server | P0       | SHARED-007 | done   |
-| ENGINE-079 | Resolve flow `workspace` relative to flow file (fallback: project)  | engine | P0       | SHARED-007 | todo   |
-| ENGINE-080 | Per-project workspaces dir + queue_manager update                    | engine | P0       | SHARED-007, ENGINE-079 | todo   |
+| ENGINE-079 | Resolve flow `workspace` relative to flow file (fallback: project)  | engine | P0       | SHARED-007 | done   |
+| ENGINE-080 | Per-project workspaces dir + queue_manager update                    | engine | P0       | SHARED-007, ENGINE-079 | done   |
 
 #### Phase 31.2 — Bootstrap UX & hardening
 

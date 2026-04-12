@@ -11,11 +11,12 @@ import asyncio
 import contextlib
 import json
 import logging
-import os
 import uuid
+from pathlib import Path
 from typing import TYPE_CHECKING
 
 from flowstate.dsl.parser import parse_flow
+from flowstate.engine.context import resolve_workspace
 from flowstate.engine.executor import FlowExecutor
 from flowstate.engine.worktree import init_git_repo
 
@@ -154,6 +155,19 @@ class QueueManager:
         port = getattr(self._config, "server_port", 9090)
         server_base_url = f"http://{host}:{port}"
 
+        # ENGINE-079: resolve the .flow file's absolute path so flow-level
+        # workspace and node-level cwd can be resolved relative to the flow
+        # file's containing directory rather than the server's CWD.
+        flow_file_path: Path | None = None
+        flow_file_dir: str | None = None
+        raw_flow_file = getattr(flow, "flow_file", None)
+        if isinstance(raw_flow_file, Path) and str(raw_flow_file) not in ("", "."):
+            flow_file_path = raw_flow_file.resolve()
+            flow_file_dir = str(flow_file_path.parent)
+        elif flow.file_path:
+            flow_file_path = Path(flow.file_path).resolve()
+            flow_file_dir = str(flow_file_path.parent)
+
         # Create executor
         executor = FlowExecutor(
             db=self._db,
@@ -163,15 +177,33 @@ class QueueManager:
             worktree_cleanup=getattr(self._config, "worktree_cleanup", True),
             harness_mgr=self._harness_mgr,
             server_base_url=server_base_url,
+            flow_file_dir=flow_file_dir,
+            flow_file=flow_file_path,
         )
 
         # Generate run ID and workspace
         run_id = str(uuid.uuid4())
-        if flow_ast.workspace:
-            workspace = flow_ast.workspace
+        # ENGINE-079: resolve flow-level workspace relative to the flow file.
+        # ENGINE-080: fall back to the per-project workspaces directory.
+        resolved_ws: Path | None = None
+        if flow_file_path is not None:
+            resolved_ws = resolve_workspace(flow_ast.workspace, flow_file_path)
+        elif flow_ast.workspace:
+            # No flow file available (should not happen in production) —
+            # treat the workspace string as a literal path.
+            resolved_ws = Path(flow_ast.workspace).expanduser().resolve()
+
+        if resolved_ws is not None:
+            workspace = str(resolved_ws)
         else:
-            workspace = os.path.expanduser(f"~/.flowstate/workspaces/{flow_ast.name}/{run_id[:8]}")
-            os.makedirs(workspace, exist_ok=True)
+            if self._project is None:
+                raise RuntimeError(
+                    f"QueueManager has no Project context; cannot auto-generate "
+                    f"a workspace for flow {flow_ast.name!r}"
+                )
+            auto_ws = self._project.workspaces_dir / flow_ast.name / run_id[:8]
+            auto_ws.mkdir(parents=True, exist_ok=True)
+            workspace = str(auto_ws)
             if not await init_git_repo(workspace):
                 logger.warning("Failed to initialize git repo in auto-workspace %s", workspace)
 

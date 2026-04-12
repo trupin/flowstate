@@ -6,13 +6,20 @@ FlowRegistry, RunManager, SubprocessManager, and WebSocket hub.
 
 from __future__ import annotations
 
+import asyncio
 import json
 from dataclasses import dataclass, field
-from typing import Any
+from pathlib import Path
+from typing import TYPE_CHECKING, Any
 from unittest.mock import MagicMock
+
+import pytest
 
 from flowstate.engine.queue_manager import QueueManager
 from flowstate.state.repository import FlowstateDB
+
+if TYPE_CHECKING:
+    from flowstate.config import Project
 
 # ---------------------------------------------------------------------------
 # Mock helpers
@@ -91,13 +98,36 @@ def _make_db() -> FlowstateDB:
     return FlowstateDB(":memory:")
 
 
+@pytest.fixture
+def default_project(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> Project:
+    """Throwaway :class:`Project` used by QueueManager tests that hit auto-gen.
+
+    Imports the canonical ``make_project_fixture`` helper from
+    ``tests/server/conftest.py`` so state/server/engine tests stay in lockstep.
+    """
+    from tests.server.conftest import make_project_fixture
+
+    return make_project_fixture(tmp_path, monkeypatch).project
+
+
 def _make_queue_manager(
     db: FlowstateDB | None = None,
     registry: MockFlowRegistry | None = None,
     run_manager: MockRunManager | None = None,
     max_concurrent: int = 1,
+    project: Project | None = None,
 ) -> tuple[QueueManager, FlowstateDB, MockFlowRegistry, MockRunManager]:
-    """Create a QueueManager with test doubles."""
+    """Create a QueueManager with test doubles.
+
+    Note: When ``project`` is ``None``, the QueueManager will hit its
+    auto-workspace fallback and raise ``RuntimeError`` if any flow lacks
+    an explicit ``workspace`` attribute. Tests that start a run therefore
+    need to either pass a real ``Project`` (see ``_make_project``) or use
+    a flow DSL with an explicit workspace.
+    """
     db = db or _make_db()
     reg = registry or MockFlowRegistry()
     rm = run_manager or MockRunManager()
@@ -114,6 +144,7 @@ def _make_queue_manager(
         harness=MagicMock(),
         ws_hub=ws_hub,
         config=config,
+        project=project,
         poll_interval=0.1,
         max_concurrent=max_concurrent,
     )
@@ -151,7 +182,7 @@ class TestGetFlowByName:
 
 
 class TestProcessQueues:
-    async def test_starts_run_for_queued_task(self) -> None:
+    async def test_starts_run_for_queued_task(self, default_project: Project) -> None:
         """When a queued task exists and there is capacity, a run should start."""
         flow = MockDiscoveredFlow(
             id="test_flow",
@@ -161,7 +192,7 @@ class TestProcessQueues:
             status="valid",
         )
         registry = MockFlowRegistry([flow])
-        qm, db, _, rm = _make_queue_manager(registry=registry)
+        qm, db, _, rm = _make_queue_manager(registry=registry, project=default_project)
 
         # Create a queued task
         task_id = db.create_task("test_flow", "Build feature X")
@@ -180,7 +211,7 @@ class TestProcessQueues:
         # flow_run_id is set inside executor.execute() which runs as a
         # background task -- not set yet since MockRunManager doesn't await it
 
-    async def test_capacity_limit_prevents_second_task(self) -> None:
+    async def test_capacity_limit_prevents_second_task(self, default_project: Project) -> None:
         """When max_concurrent=1 and one task is running, don't start another."""
         flow = MockDiscoveredFlow(
             id="test_flow",
@@ -190,7 +221,9 @@ class TestProcessQueues:
             status="valid",
         )
         registry = MockFlowRegistry([flow])
-        qm, db, _, rm = _make_queue_manager(registry=registry, max_concurrent=1)
+        qm, db, _, rm = _make_queue_manager(
+            registry=registry, max_concurrent=1, project=default_project
+        )
 
         # Create two queued tasks
         db.create_task("test_flow", "Task 1")
@@ -210,7 +243,7 @@ class TestProcessQueues:
         assert task2 is not None
         assert task2.status == "queued"
 
-    async def test_multiple_flows_processed_independently(self) -> None:
+    async def test_multiple_flows_processed_independently(self, default_project: Project) -> None:
         """Tasks from different flows should be started independently."""
         flow_a = MockDiscoveredFlow(
             id="flow_a",
@@ -227,7 +260,9 @@ class TestProcessQueues:
             status="valid",
         )
         registry = MockFlowRegistry([flow_a, flow_b])
-        qm, db, _, rm = _make_queue_manager(registry=registry, max_concurrent=1)
+        qm, db, _, rm = _make_queue_manager(
+            registry=registry, max_concurrent=1, project=default_project
+        )
 
         # One task per flow
         db.create_task("flow_a", "Task A")
@@ -280,7 +315,7 @@ class TestProcessQueues:
         assert task is not None
         assert task.status == "failed"
 
-    async def test_task_params_passed_to_executor(self) -> None:
+    async def test_task_params_passed_to_executor(self, default_project: Project) -> None:
         """Task params_json should be parsed and passed to the executor."""
         flow = MockDiscoveredFlow(
             id="test_flow",
@@ -290,7 +325,7 @@ class TestProcessQueues:
             status="valid",
         )
         registry = MockFlowRegistry([flow])
-        qm, db, _, rm = _make_queue_manager(registry=registry)
+        qm, db, _, rm = _make_queue_manager(registry=registry, project=default_project)
 
         params = {"branch": "main", "priority": 5}
         db.create_task(
@@ -338,7 +373,7 @@ class TestProcessQueues:
         assert task is not None
         assert task.status == "queued"
 
-    async def test_reenabled_flow_processes_tasks(self) -> None:
+    async def test_reenabled_flow_processes_tasks(self, default_project: Project) -> None:
         """After re-enabling a flow, queued tasks are picked up again."""
         flow = MockDiscoveredFlow(
             id="test_flow",
@@ -348,7 +383,7 @@ class TestProcessQueues:
             status="valid",
         )
         registry = MockFlowRegistry([flow])
-        qm, db, _, rm = _make_queue_manager(registry=registry)
+        qm, db, _, rm = _make_queue_manager(registry=registry, project=default_project)
 
         # Disable the flow and create a task
         db.set_flow_enabled("test_flow", False)
@@ -369,7 +404,9 @@ class TestProcessQueues:
         assert task is not None
         assert task.status == "running"
 
-    async def test_disabled_flow_does_not_affect_other_flows(self) -> None:
+    async def test_disabled_flow_does_not_affect_other_flows(
+        self, default_project: Project
+    ) -> None:
         """Disabling one flow does not affect other flows."""
         flow_a = MockDiscoveredFlow(
             id="flow_a",
@@ -386,7 +423,9 @@ class TestProcessQueues:
             status="valid",
         )
         registry = MockFlowRegistry([flow_a, flow_b])
-        qm, db, _, rm = _make_queue_manager(registry=registry, max_concurrent=1)
+        qm, db, _, rm = _make_queue_manager(
+            registry=registry, max_concurrent=1, project=default_project
+        )
 
         # Disable flow_a only
         db.set_flow_enabled("flow_a", False)
@@ -451,7 +490,7 @@ flow parallel_flow {
 
 
 class TestPerFlowMaxParallel:
-    async def test_per_flow_max_parallel_allows_multiple(self) -> None:
+    async def test_per_flow_max_parallel_allows_multiple(self, default_project: Project) -> None:
         """A flow with max_parallel=3 allows 3 concurrent tasks."""
         flow = MockDiscoveredFlow(
             id="parallel_flow",
@@ -462,7 +501,9 @@ class TestPerFlowMaxParallel:
         )
         registry = MockFlowRegistry([flow])
         # Global max_concurrent=1 but flow AST says max_parallel=3
-        qm, db, _, rm = _make_queue_manager(registry=registry, max_concurrent=1)
+        qm, db, _, rm = _make_queue_manager(
+            registry=registry, max_concurrent=1, project=default_project
+        )
 
         # Create 4 queued tasks
         db.create_task("parallel_flow", "Task 1")
@@ -486,7 +527,7 @@ class TestPerFlowMaxParallel:
         await qm._process_queues()
         assert len(rm.started_runs) == 3
 
-    async def test_per_flow_max_parallel_default_1(self) -> None:
+    async def test_per_flow_max_parallel_default_1(self, default_project: Project) -> None:
         """A flow without explicit max_parallel defaults to 1."""
         flow = MockDiscoveredFlow(
             id="test_flow",
@@ -496,7 +537,9 @@ class TestPerFlowMaxParallel:
             status="valid",
         )
         registry = MockFlowRegistry([flow])
-        qm, db, _, rm = _make_queue_manager(registry=registry, max_concurrent=5)
+        qm, db, _, rm = _make_queue_manager(
+            registry=registry, max_concurrent=5, project=default_project
+        )
 
         db.create_task("test_flow", "Task 1")
         db.create_task("test_flow", "Task 2")
@@ -534,7 +577,7 @@ class TestPerFlowMaxParallel:
 
 
 class TestScheduledTaskTransition:
-    async def test_due_scheduled_tasks_transition_to_queued(self) -> None:
+    async def test_due_scheduled_tasks_transition_to_queued(self, default_project: Project) -> None:
         """Scheduled tasks whose scheduled_at has passed get transitioned to queued."""
         from datetime import UTC, datetime
 
@@ -546,7 +589,7 @@ class TestScheduledTaskTransition:
             status="valid",
         )
         registry = MockFlowRegistry([flow])
-        qm, db, _, rm = _make_queue_manager(registry=registry)
+        qm, db, _, rm = _make_queue_manager(registry=registry, project=default_project)
 
         # Create a scheduled task with scheduled_at in the past
         past_time = datetime(2020, 1, 1, tzinfo=UTC).isoformat()
@@ -599,7 +642,7 @@ class TestScheduledTaskTransition:
 
 
 class TestRecurringTaskCreation:
-    async def test_recurring_task_creates_next_occurrence(self) -> None:
+    async def test_recurring_task_creates_next_occurrence(self, default_project: Project) -> None:
         """When a recurring (cron) task is due, the next occurrence is created."""
         from datetime import UTC, datetime
 
@@ -611,7 +654,7 @@ class TestRecurringTaskCreation:
             status="valid",
         )
         registry = MockFlowRegistry([flow])
-        qm, db, _, rm = _make_queue_manager(registry=registry)
+        qm, db, _, rm = _make_queue_manager(registry=registry, project=default_project)
 
         # Create a recurring task with cron and scheduled_at in the past
         past_time = datetime(2020, 1, 1, tzinfo=UTC).isoformat()
@@ -637,7 +680,7 @@ class TestRecurringTaskCreation:
         assert new_task.cron_expression == "0 9 * * *"
         assert new_task.scheduled_at is not None
 
-    async def test_non_recurring_task_no_next_occurrence(self) -> None:
+    async def test_non_recurring_task_no_next_occurrence(self, default_project: Project) -> None:
         """A non-recurring scheduled task does not create a next occurrence."""
         from datetime import UTC, datetime
 
@@ -649,7 +692,7 @@ class TestRecurringTaskCreation:
             status="valid",
         )
         registry = MockFlowRegistry([flow])
-        qm, db, _, _rm = _make_queue_manager(registry=registry)
+        qm, db, _, _rm = _make_queue_manager(registry=registry, project=default_project)
 
         past_time = datetime(2020, 1, 1, tzinfo=UTC).isoformat()
         db.create_task(
@@ -663,3 +706,166 @@ class TestRecurringTaskCreation:
         # Only the original task should exist
         all_tasks = db.list_tasks("test_flow")
         assert len(all_tasks) == 1
+
+
+# ---------------------------------------------------------------------------
+# Tests: Per-project workspace isolation (ENGINE-080)
+# ---------------------------------------------------------------------------
+
+
+# ``SIMPLE_FLOW_DSL`` has no explicit ``workspace``, so it triggers the
+# auto-gen fallback — exactly what ENGINE-080 is about.
+_NO_WORKSPACE_FLOW_DSL = """\
+flow demo {
+    budget = 60m
+    on_error = pause
+    context = handoff
+
+    entry start {
+        prompt = "Start"
+    }
+
+    exit finish {
+        prompt = "Finish"
+    }
+
+    start -> finish
+}
+"""
+
+
+def _make_project(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, slug_suffix: str) -> Project:
+    """Spin up an isolated Project rooted under ``tmp_path / slug_suffix``."""
+    from tests.server.conftest import make_project_fixture
+
+    sub_tmp = tmp_path / slug_suffix
+    sub_tmp.mkdir(parents=True, exist_ok=True)
+    fixture = make_project_fixture(sub_tmp, monkeypatch)
+    return fixture.project
+
+
+class TestAutoWorkspacePerProject:
+    async def test_auto_workspace_uses_project_workspaces_dir(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Auto-generated workspace lives under project.workspaces_dir."""
+        # Write the .flow file under the project's flows_dir so DiscoveredFlow
+        # has a real flow_file path to resolve against (ENGINE-079 plumbing).
+        project = _make_project(tmp_path, monkeypatch, "proj_a")
+        flow_file_path = project.flows_dir / "demo.flow"
+        flow_file_path.write_text(_NO_WORKSPACE_FLOW_DSL)
+
+        flow = MockDiscoveredFlow(
+            id="demo",
+            name="demo",
+            file_path=str(flow_file_path),
+            source_dsl=_NO_WORKSPACE_FLOW_DSL,
+            status="valid",
+        )
+        # Patch flow_file (the Path field used by queue_manager) post-init.
+        flow.flow_file = flow_file_path  # type: ignore[attr-defined]
+
+        registry = MockFlowRegistry([flow])
+        qm, db, _, _rm = _make_queue_manager(registry=registry, project=project)
+
+        db.create_task("demo", "auto-ws task")
+
+        await qm._process_queues()
+
+        # Inspect the started run: the execute coro has been closed by
+        # MockRunManager, but the workspace directory should exist on disk
+        # under project.workspaces_dir/demo/.
+        demo_ws_root = project.workspaces_dir / "demo"
+        assert demo_ws_root.exists(), "Expected workspaces_dir/demo to be created"
+        children = list(demo_ws_root.iterdir())
+        assert len(children) == 1, f"Expected one auto-gen workspace; found {children}"
+        auto_ws = children[0]
+        assert auto_ws.is_dir()
+        # run_id[:8] prefix — 8 hex chars.
+        assert len(auto_ws.name) == 8
+        # The legacy path must NOT have been touched.
+        legacy = Path.home() / ".flowstate" / "workspaces" / "demo"
+        # We can't assert the legacy path doesn't exist (user may have prior
+        # installs), but we can assert *our* auto_ws is not under it.
+        assert legacy not in auto_ws.parents
+
+    async def test_same_flow_name_in_two_projects_does_not_collide(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Two projects with a flow called 'demo' each get their own workspace tree."""
+        project_a = _make_project(tmp_path, monkeypatch, "proj_a")
+        project_b = _make_project(tmp_path, monkeypatch, "proj_b")
+
+        flow_a_path = project_a.flows_dir / "demo.flow"
+        flow_a_path.write_text(_NO_WORKSPACE_FLOW_DSL)
+        flow_b_path = project_b.flows_dir / "demo.flow"
+        flow_b_path.write_text(_NO_WORKSPACE_FLOW_DSL)
+
+        flow_a = MockDiscoveredFlow(
+            id="demo",
+            name="demo",
+            file_path=str(flow_a_path),
+            source_dsl=_NO_WORKSPACE_FLOW_DSL,
+            status="valid",
+        )
+        flow_a.flow_file = flow_a_path  # type: ignore[attr-defined]
+        flow_b = MockDiscoveredFlow(
+            id="demo",
+            name="demo",
+            file_path=str(flow_b_path),
+            source_dsl=_NO_WORKSPACE_FLOW_DSL,
+            status="valid",
+        )
+        flow_b.flow_file = flow_b_path  # type: ignore[attr-defined]
+
+        qm_a, db_a, _, _rm_a = _make_queue_manager(
+            registry=MockFlowRegistry([flow_a]), project=project_a
+        )
+        qm_b, db_b, _, _rm_b = _make_queue_manager(
+            registry=MockFlowRegistry([flow_b]), project=project_b
+        )
+
+        db_a.create_task("demo", "a")
+        db_b.create_task("demo", "b")
+
+        await asyncio.gather(qm_a._process_queues(), qm_b._process_queues())
+
+        ws_a = list((project_a.workspaces_dir / "demo").iterdir())
+        ws_b = list((project_b.workspaces_dir / "demo").iterdir())
+        assert len(ws_a) == 1
+        assert len(ws_b) == 1
+
+        # Crucially: the two workspace roots must be disjoint.
+        assert project_a.workspaces_dir != project_b.workspaces_dir
+        assert not str(ws_a[0]).startswith(str(project_b.workspaces_dir))
+        assert not str(ws_b[0]).startswith(str(project_a.workspaces_dir))
+
+    async def test_auto_workspace_without_project_raises(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """When project is None and the flow has no workspace, auto-gen must fail loudly."""
+        project = _make_project(tmp_path, monkeypatch, "proj_no_project")
+        flow_file_path = project.flows_dir / "demo.flow"
+        flow_file_path.write_text(_NO_WORKSPACE_FLOW_DSL)
+
+        flow = MockDiscoveredFlow(
+            id="demo",
+            name="demo",
+            file_path=str(flow_file_path),
+            source_dsl=_NO_WORKSPACE_FLOW_DSL,
+            status="valid",
+        )
+        flow.flow_file = flow_file_path  # type: ignore[attr-defined]
+
+        registry = MockFlowRegistry([flow])
+        # Deliberately construct the QueueManager with project=None.
+        qm, db, _, _rm = _make_queue_manager(registry=registry, project=None)
+
+        db.create_task("demo", "should-fail")
+
+        # _process_queues catches and logs exceptions; directly call _start_task
+        # to see the raised error.
+        task = db.get_next_queued_task("demo")
+        assert task is not None
+        with pytest.raises(RuntimeError, match="no Project context"):
+            await qm._start_task(task)
