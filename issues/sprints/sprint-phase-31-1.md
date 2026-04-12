@@ -154,3 +154,7 @@ This sprint is complete when:
 - **Restart discipline**: TEST-6, TEST-7, and TEST-9 only prove the invariant if the evaluator restarts the server between CWD changes. Domain agents must explicitly document server PID / restart commands in their E2E Verification Logs.
 - **Legacy data**: Developers running this sprint locally may already have `~/.flowstate/flowstate.db` and `~/.flowstate/workspaces/` from prior installs. The sprint is greenfield — leave those alone, but evaluator should assert no **new** writes go there.
 - **Same-name project slugs**: Two different `/tmp/fs-sprint-a/` directories on the same machine (e.g., across worktrees) may produce colliding slugs. SHARED-007's slug derivation uses a path hash suffix, so this should be safe; TEST-8 depends on that behavior.
+
+---
+
+**Eval verdict: PASS (issues/evals/sprint-phase-31-1-eval.md)** — 10/10 tests pass against the real running server (2026-04-11). TEST-1 carries a caveat that `GET /` returns 404 in this worktree because `ui/dist/` has never been built; the SERVER-026 `/api/flows` + walk-up portion of TEST-1 passes. UI packaging is Phase 31.3 (SHARED-008 / SERVER-032), out of scope for this sprint.
