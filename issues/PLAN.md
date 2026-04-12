@@ -529,10 +529,10 @@ Make Flowstate installable from PyPI via `pipx` / `uv tool install` and runnable
 
 | Issue      | Title                                                               | Domain | Priority | Depends On   | Status |
 | ---------- | ------------------------------------------------------------------- | ------ | -------- | ------------ | ------ |
-| SERVER-028 | `flowstate init` command with project-type detection                | server | P0       | SERVER-026, SERVER-027 | todo   |
-| SERVER-029 | Clear error when no `flowstate.toml` found                          | server | P0       | SERVER-026   | todo   |
-| SERVER-030 | Loud warning on non-127.0.0.1 bind; default host to 127.0.0.1       | server | P1       | SERVER-026   | todo   |
-| SERVER-031 | `GET /health` endpoint returning project slug + version             | server | P1       | SERVER-026   | todo   |
+| SERVER-028 | `flowstate init` command with project-type detection                | server | P0       | SERVER-026, SERVER-027 | done   |
+| SERVER-029 | Clear error when no `flowstate.toml` found                          | server | P0       | SERVER-026   | done   |
+| SERVER-030 | Loud warning on non-127.0.0.1 bind; default host to 127.0.0.1       | server | P1       | SERVER-026   | done   |
+| SERVER-031 | `GET /health` endpoint returning project slug + version             | server | P1       | SERVER-026   | done   |
 
 #### Phase 31.3 — Packaging & distribution
 

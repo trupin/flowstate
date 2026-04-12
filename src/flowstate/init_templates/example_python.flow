@@ -1,0 +1,40 @@
+// Example Flowstate flow for a Python project.
+// This flow walks a Python codebase through install, lint, and test using uv/pip.
+// Run `flowstate check flows/example.flow` to validate, then `flowstate server`.
+flow example_python {
+    budget = 30m
+    on_error = pause
+    context = session
+
+    input {
+        project_name: string = "my-python-app"
+    }
+
+    entry install {
+        prompt = """
+        Install dependencies for the Python project {{project_name}}.
+        Prefer `uv sync` if a uv.lock or [tool.uv] section is present;
+        otherwise fall back to `pip install -e .`. Report any resolution
+        failures.
+        """
+    }
+
+    task lint {
+        prompt = """
+        Run ruff on {{project_name}} with `uv run ruff check .` (or
+        `ruff check .` if uv is unavailable). Fix any easy issues and
+        report the rest.
+        """
+    }
+
+    exit test {
+        prompt = """
+        Run the pytest suite for {{project_name}} with
+        `uv run pytest` (or plain `pytest`). Summarize pass/fail counts
+        and list any failing tests.
+        """
+    }
+
+    install -> lint
+    lint -> test
+}

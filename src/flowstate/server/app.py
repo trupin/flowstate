@@ -83,14 +83,17 @@ def mount_static_files(app: FastAPI, dist_dir: Path | None = None) -> None:
             return FileResponse(str(favicon_path))
         return FileResponse(str(index_html))  # fallback
 
-    # SPA fallback: any GET request not matching /api/* or /ws returns index.html
-    # This must be registered AFTER all API routes
+    # SPA fallback: any GET request not matching /api/*, /ws, or /health
+    # returns index.html. This must be registered AFTER all API routes.
     index_content = index_html.read_text()
 
     @app.get("/{full_path:path}", response_model=None, include_in_schema=False)
     async def spa_fallback(full_path: str) -> Response:
-        # Never intercept API or WebSocket paths
-        if full_path.startswith("api/") or full_path == "ws":
+        # Never intercept API, WebSocket, or unauthenticated readiness paths.
+        # ``/health`` is registered as a real FastAPI route in ``create_app``;
+        # the check here is a belt-and-braces guard in case a future refactor
+        # moves router registration order around.
+        if full_path.startswith("api/") or full_path == "ws" or full_path == "health":
             return JSONResponse(
                 status_code=404,
                 content={"error": "Not found", "details": []},
@@ -317,6 +320,14 @@ def create_app(
             status_code=exc.status_code,
             content={"error": exc.message, "detail": exc.message, "details": exc.details},
         )
+
+    # Register the unauthenticated readiness endpoint. SERVER-031: this must
+    # go BEFORE the SPA catch-all mounted by ``mount_static_files`` so the
+    # wildcard route doesn't shadow it. Including it before the ``/api``
+    # router is fine because the two namespaces don't overlap.
+    from flowstate.server.health import router as health_router
+
+    app.include_router(health_router)
 
     # Include REST API routes
     from flowstate.server.routes import router

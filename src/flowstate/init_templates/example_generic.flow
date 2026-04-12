@@ -1,0 +1,27 @@
+// Example Flowstate flow — a minimal "hello flowstate" starter to get started.
+// Run `flowstate check flows/example.flow` to validate, then `flowstate server`.
+flow example_hello {
+    budget = 10m
+    on_error = pause
+    context = session
+
+    input {
+        greeting: string = "hello flowstate"
+    }
+
+    entry greet {
+        prompt = """
+        Print the following greeting verbatim and explain in one sentence
+        what this example flow demonstrates: {{greeting}}
+        """
+    }
+
+    exit done {
+        prompt = """
+        Summarize what happened in the `greet` step so the user can see
+        the full flow executed end-to-end.
+        """
+    }
+
+    greet -> done
+}

@@ -787,12 +787,15 @@ class TestAutoWorkspaceWhenOmitted:
         # Verify executor.execute was called with the auto-generated workspace
         call_args = mock_executor.execute.call_args
         workspace_arg = call_args[0][2] if len(call_args[0]) > 2 else call_args[1]["workspace"]
-        import os
 
-        expected_prefix = os.path.expanduser("~/.flowstate/workspaces/no_workspace_flow/")
-        assert workspace_arg.startswith(
-            expected_prefix
-        ), f"Expected workspace to start with {expected_prefix}, got {workspace_arg}"
+        # Per STATE-012 / ENGINE-080, auto-workspaces live under the per-project
+        # data directory: <FLOWSTATE_DATA_DIR>/projects/<slug>/workspaces/<flow>/<run[:8]>
+        assert (
+            "/projects/" in workspace_arg
+        ), f"Expected workspace under per-project data dir, got {workspace_arg}"
+        assert (
+            "/workspaces/no_workspace_flow/" in workspace_arg
+        ), f"Expected workspace under workspaces/no_workspace_flow/, got {workspace_arg}"
         # The suffix should be the first 8 chars of the run_id
         assert workspace_arg.endswith(run_id[:8])
 

@@ -21,23 +21,23 @@ P0 (critical path)
 Add a `flowstate init` subcommand that bootstraps a new Flowstate project inside an existing user repo. It writes a minimal `flowstate.toml`, creates `flows/`, and seeds an example `.flow` file whose content is tailored to the detected project type (Node / Python / Rust / generic). This is the first thing a pipx-installed user does after `uv tool install flowstate`, so it has to just work.
 
 ## Acceptance Criteria
-- [ ] `flowstate init` creates `./flowstate.toml` with sane defaults: `host = "127.0.0.1"`, `port = 9090`, `watch_dir = "flows"`, plus commented-out harness examples.
-- [ ] `flowstate init` creates `./flows/` if missing.
-- [ ] `flowstate init` writes `./flows/example.flow` with content picked by project-type detection:
+- [x] `flowstate init` creates `./flowstate.toml` with sane defaults: `host = "127.0.0.1"`, `port = 9090`, `watch_dir = "flows"`, plus commented-out harness examples.
+- [x] `flowstate init` creates `./flows/` if missing.
+- [x] `flowstate init` writes `./flows/example.flow` with content picked by project-type detection:
   - `package.json` present → Node-flavored `install → build → test` flow
   - `pyproject.toml` present → Python `install → lint → test` flow
   - `Cargo.toml` present → Rust `build → test` flow
   - None of the above → generic "hello flowstate" single-node flow
-- [ ] If `flowstate.toml` already exists, `flowstate init` refuses to run unless `--force` is passed, in which case it overwrites `flowstate.toml` only (never overwrites existing flow files).
-- [ ] If `flows/example.flow` already exists, it is not overwritten — the command prints a note and continues.
-- [ ] After success, the command prints a "next steps" message:
+- [x] If `flowstate.toml` already exists, `flowstate init` refuses to run unless `--force` is passed, in which case it overwrites `flowstate.toml` only (never overwrites existing flow files).
+- [x] If `flows/example.flow` already exists, it is not overwritten — the command prints a note and continues.
+- [x] After success, the command prints a "next steps" message:
   ```
   Created flowstate.toml and flows/example.flow.
   Next:
     flowstate check flows/example.flow
     flowstate server
   ```
-- [ ] Exit code is 0 on success, non-zero on any failure (including "file exists without --force").
+- [x] Exit code is 0 on success, non-zero on any failure (including "file exists without --force").
 
 ## Technical Design
 
@@ -127,13 +127,92 @@ Each example flow should be a **valid** flow that `flowstate check` passes. It d
 6. In a directory with no recognizable manifest: generic template is used.
 
 ## E2E Verification Log
-_Filled in by the implementing agent._
+
+### Post-Implementation Verification (2026-04-11)
+
+Canonical TEST-17 journey executed against the real CLI (`uv --project
+<worktree> run flowstate ...`) in a fresh `/tmp` scratch directory.
+Full transcript of every step and the observed output:
+
+```
+===== STEP 1: SERVER-029 outside project (expect exit 2) =====
+exit_code=2
+---stderr---
+No flowstate.toml found in / or any parent directory.
+Run `flowstate init` to create one, or cd into a Flowstate project.
+---end---
+STEP 1 PASS
+
+===== STEP 2: SERVER-028 init with Node detection =====
+Created flowstate.toml and flows/example.flow.
+Next:
+  flowstate check flows/example.flow
+  flowstate server
+STEP 2 PASS
+
+===== STEP 3: SERVER-028 check passes on scaffolded flow =====
+OK
+STEP 3 PASS
+
+===== STEP 4: SERVER-031 /health endpoint =====
+server pid=95999
+ready after 2s
+{"status":"ok","version":"0.1.0","project":{"slug":"fs-phase312-proj-687706de","root":"/private/tmp/fs-phase312-proj"}}
+STEP 4 PASS
+
+===== STEP 5: SERVER-030 non-loopback warning =====
+server pid=96073
+---warn.log---
+============================================================
+WARNING: Flowstate is binding to 0.0.0.0:9098.
+Flowstate v0.1 has NO AUTHENTICATION. Anyone who can reach
+this address can execute code on this machine via Flowstate's
+subprocess harnesses.
+Only use non-loopback binds in trusted networks.
+============================================================
+Starting Flowstate server on 0.0.0.0:9098
+Project: /private/tmp/fs-phase312-proj (slug=fs-phase312-proj-687706de)
+INFO:     Uvicorn running on http://0.0.0.0:9098 (Press CTRL+C to quit)
+---end---
+server reachable on 9098
+STEP 5 PASS
+
+===== STEP 6: init without --force when toml exists => exit 1 =====
+exit_code=1
+flowstate.toml already exists at /private/tmp/fs-phase312-proj/flowstate.toml. Use --force to overwrite.
+STEP 6 PASS
+
+===== STEP 7: --force rewrites toml, preserves example.flow =====
+Note: /private/tmp/fs-phase312-proj/flows/example.flow already exists; not overwriting.
+Created flowstate.toml and flows/example.flow.
+Next:
+  flowstate check flows/example.flow
+  flowstate server
+stat before=1767243600 after=1767243600
+STEP 7 PASS
+
+ALL STEPS PASSED
+```
+
+Notes:
+- `project.root` resolves to `/private/tmp/fs-phase312-proj` on macOS
+  because `/tmp` is a symlink to `/private/tmp` and `Project.root` is
+  always `.resolve()`-d. This is per the Phase 31.1 Project contract
+  in `src/flowstate/config.py`, and satisfies TEST-17's "resolved
+  absolute path" requirement.
+- The scaffolded flow (`flows/example.flow`) was type-checked via the
+  real CLI in STEP 3 — the Node template is parseable and type-safe.
+- STEP 7 proves `--force` rewrote `flowstate.toml` while leaving
+  `flows/example.flow` untouched (mtime byte-equal before/after).
+- Initial init (STEP 2) detected Node via `package.json` and produced
+  an `example.flow` containing the string `npm` (grepped inside the
+  test script, not shown above).
 
 ## Completion Checklist
-- [ ] `init` command implemented
-- [ ] Four `.flow` templates + `flowstate.toml.tmpl` bundled in the wheel
-- [ ] Project-type detection works
-- [ ] `--force` semantics correct
-- [ ] Unit tests passing
-- [ ] `/lint` passes
-- [ ] E2E steps above verified
+- [x] `init` command implemented
+- [x] Four `.flow` templates + `flowstate.toml.tmpl` bundled in the wheel
+- [x] Project-type detection works
+- [x] `--force` semantics correct
+- [x] Unit tests passing
+- [x] `/lint` passes
+- [x] E2E steps above verified

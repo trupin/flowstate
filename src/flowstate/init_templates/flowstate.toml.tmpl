@@ -1,0 +1,18 @@
+# Flowstate project config — created by `flowstate init`.
+# Every directory containing a flowstate.toml is a Flowstate project.
+# All runtime state (database, worktrees, artifacts) lives under
+# ~/.flowstate/projects/<slug>/ — nothing is written inside this repo.
+
+[server]
+host = "127.0.0.1"
+port = 9090
+
+[flows]
+watch_dir = "flows"
+
+# Optional: define additional agent harnesses (ACP protocol).
+# Uncomment and customize to wire up non-default backends.
+#
+# [harnesses.gemini]
+# command = ["gemini"]
+# env = { GEMINI_API_KEY = "..." }
