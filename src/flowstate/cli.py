@@ -161,7 +161,7 @@ def run(
     server_base_url = server or f"http://{cfg.server_host}:{cfg.server_port}"
 
     async def _run() -> str:
-        db = FlowstateDB(str(project.db_path))
+        db = FlowstateDB(project.db_path)
         try:
             # Store the flow definition so we have a reference
             flow_def_id = db.create_flow_definition(
@@ -196,7 +196,7 @@ def runs(
     from flowstate.state.repository import FlowstateDB
 
     project = _resolve_project_or_exit()
-    db = FlowstateDB(str(project.db_path))
+    db = FlowstateDB(project.db_path)
 
     try:
         all_runs = db.list_flow_runs(status=status)
@@ -229,7 +229,7 @@ def status(
     from flowstate.state.repository import FlowstateDB
 
     project = _resolve_project_or_exit()
-    db = FlowstateDB(str(project.db_path))
+    db = FlowstateDB(project.db_path)
 
     try:
         # Try exact match first
@@ -273,7 +273,7 @@ def schedules() -> None:
     from flowstate.state.repository import FlowstateDB
 
     project = _resolve_project_or_exit()
-    db = FlowstateDB(str(project.db_path))
+    db = FlowstateDB(project.db_path)
 
     try:
         all_schedules = db.list_flow_schedules()
@@ -305,7 +305,7 @@ def trigger(
     from flowstate.state.repository import FlowstateDB
 
     project = _resolve_project_or_exit()
-    db = FlowstateDB(str(project.db_path))
+    db = FlowstateDB(project.db_path)
 
     try:
         # Find the flow definition by name

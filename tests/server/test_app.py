@@ -34,8 +34,6 @@ class TestDefaultConfig:
         assert config.judge_model == "sonnet"
         assert config.judge_confidence_threshold == 0.5
         assert config.judge_max_retries == 1
-        assert config.database_path == "~/.flowstate/flowstate.db"
-        assert config.database_wal_mode is True
         assert config.watch_dir == "flows"
         assert config.log_level == "info"
         assert config.harnesses == {}
@@ -56,7 +54,6 @@ class TestLoadConfigFromFile:
         assert config.max_concurrent_tasks == 4
         assert config.default_budget == "1h"
         assert config.judge_model == "sonnet"
-        assert config.database_path == "~/.flowstate/flowstate.db"
 
     def test_full_toml(self, tmp_path: Path) -> None:
         """Complete TOML with all sections -- every field is loaded."""
@@ -93,8 +90,13 @@ class TestLoadConfigFromFile:
         assert config.judge_model == "opus"
         assert config.judge_confidence_threshold == 0.8
         assert config.judge_max_retries == 3
-        assert config.database_path == "/tmp/test.db"
-        assert config.database_wal_mode is False
+        # STATE-012: the legacy [database] section in the TOML above is
+        # silently ignored by the parser — the DB path is no longer
+        # configurable via config, it's derived from Project.db_path. The
+        # section's presence in the fixture is intentional: we want to prove
+        # that old user configs don't break.
+        assert not hasattr(config, "database_path")
+        assert not hasattr(config, "database_wal_mode")
         assert config.watch_dir == "/opt/flows"
         assert config.log_level == "warning"
 

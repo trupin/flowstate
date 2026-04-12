@@ -120,9 +120,9 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None]:
     project: Project = app.state.project
     config: FlowstateConfig = app.state.config
 
-    # Initialize database (STATE-012 will harden the constructor to require a
-    # Path; for now pass the project-owned db_path as a string).
-    db = FlowstateDB(str(project.db_path))
+    # Initialize database (STATE-012: FlowstateDB now requires an explicit
+    # db_path; the project-owned Path is passed directly).
+    db = FlowstateDB(project.db_path)
     app.state.db = db
 
     # Initialize run manager

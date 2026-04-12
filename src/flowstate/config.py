@@ -46,8 +46,6 @@ class FlowstateConfig:
     judge_model: str = "sonnet"
     judge_confidence_threshold: float = 0.5
     judge_max_retries: int = 1
-    database_path: str = "~/.flowstate/flowstate.db"
-    database_wal_mode: bool = True
     watch_dir: str = "flows"
     log_level: str = "info"
     worktree_cleanup: bool = True
@@ -266,11 +264,11 @@ def _parse_toml(path: Path) -> FlowstateConfig:
     if "max_retries" in judge:
         kwargs["judge_max_retries"] = judge["max_retries"]
 
-    database = data.get("database", {})
-    if "path" in database:
-        kwargs["database_path"] = database["path"]
-    if "wal_mode" in database:
-        kwargs["database_wal_mode"] = database["wal_mode"]
+    # STATE-012: the ``[database]`` section is no longer part of the schema —
+    # per-project DB paths are derived from ``Project.db_path``. Any
+    # ``[database]`` block in an existing user config is **silently ignored**
+    # (we do not want to break previously-working tomls), but it has no effect.
+    _ = data.get("database", None)
 
     flows = data.get("flows", {})
     if "watch_dir" in flows:

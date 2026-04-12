@@ -175,7 +175,6 @@ def _create_integration_client(
             (watch_dir / filename).write_text(content)
 
     config = FlowstateConfig(
-        database_path=":memory:",
         watch_dir=str(watch_dir),
         server_host="127.0.0.1",
         server_port=8080,
