@@ -107,10 +107,21 @@ class FlowRegistry:
         self._event_callback = callback
 
     async def start(self) -> None:
-        """Scan flows_dir and start background file watcher."""
+        """Scan flows_dir and start background file watcher.
+
+        Yields control after creating the watch task so ``awatch()`` has a
+        chance to register its OS-level handler before ``start()`` returns.
+        Without this, the first ``.flow`` file written immediately after
+        ``start()`` can be dropped on platforms where ``watchfiles`` has a
+        non-trivial setup delay (e.g. macOS fsevents).
+        """
         self._flows_dir.mkdir(parents=True, exist_ok=True)
         self._scan_all()
         self._watch_task = asyncio.create_task(self._watch_loop())
+        # Let the event loop tick at least once so the watch task enters
+        # its async-for; give it a small head-start to finish the rust-notify
+        # handshake. Empirically 50ms is enough on macOS in a loaded dev env.
+        await asyncio.sleep(0.05)
 
     async def stop(self) -> None:
         """Stop the background file watcher."""

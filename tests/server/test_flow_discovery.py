@@ -25,10 +25,16 @@ if TYPE_CHECKING:
 
 async def _wait_for(
     predicate: Callable[[], bool],
-    timeout: float = 5.0,
-    interval: float = 0.2,
+    timeout: float = 15.0,
+    interval: float = 0.1,
 ) -> None:
-    """Poll until predicate returns True, or raise after timeout."""
+    """Poll until predicate returns True, or raise after timeout.
+
+    Timeout is generous (15s) because macOS ``fsevents`` has notification
+    coalescing delays when the system is under load — watchfiles can take
+    several seconds to surface a newly-created file. The interval is small
+    so we catch the event promptly once it lands.
+    """
     elapsed = 0.0
     while elapsed < timeout:
         if predicate():

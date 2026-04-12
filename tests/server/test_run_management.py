@@ -522,7 +522,12 @@ class TestGetRunNotFound:
 
 class TestPauseRun:
     def test_pause_run(self) -> None:
-        """POST /api/runs/:id/pause delegates to executor.pause() and returns 200."""
+        """POST /api/runs/:id/pause delegates to executor.pause() and returns 200.
+
+        Per ENGINE-078 the first pause response is the intermediate ``pausing``
+        state — the run transitions to ``paused`` only once the currently
+        executing task yields control.
+        """
         mock_executor = MagicMock()
         mock_executor.pause = AsyncMock()
 
@@ -533,7 +538,7 @@ class TestPauseRun:
         response = client.post("/api/runs/run-1/pause")
 
         assert response.status_code == 200
-        assert response.json() == {"status": "paused"}
+        assert response.json() == {"status": "pausing"}
         mock_executor.pause.assert_called_once()
 
 

@@ -321,7 +321,8 @@ class TestRetrySkipErrorCases:
         A run in status ``running`` but without an active executor is treated as
         orphaned (e.g., the server was restarted mid-flight). ``running`` is in
         ``_RUN_RESTARTABLE_STATUSES`` so retry reconstructs a fresh executor and
-        restarts from the failed task.
+        restarts from the failed task. (UI-072 added this positive test;
+        the prior `test_retry_running_run_returns_409` was obsolete.)
         """
         mock_db = MagicMock()
         mock_db.get_flow_run.return_value = _make_flow_run_row(status="running")
