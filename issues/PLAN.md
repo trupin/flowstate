@@ -544,6 +544,17 @@ Make Flowstate installable from PyPI via `pipx` / `uv tool install` and runnable
 | SHARED-010 | PyPI release pipeline + `pyproject.toml` metadata                    | shared | P1       | SHARED-008, SHARED-009  | done   |
 | SHARED-011 | Deployment docs in README + `specs.md §13` cross-ref                 | shared | P1       | SHARED-010              | done   |
 
+
+### Phase 32 — Dev/deployed isolation hygiene
+
+Three small engine-domain fixes for paths and URLs that bypass the `Project` contract, surfaced while reviewing dev-vs-deployed conflict surfaces. No spec changes required.
+
+| Issue      | Title                                                               | Domain | Priority | Depends On            | Status |
+| ---------- | ------------------------------------------------------------------- | ------ | -------- | --------------------- | ------ |
+| ENGINE-081 | Scheduler: scheduled flow runs use per-project `data_dir`           | engine | P0       | SHARED-007, ENGINE-080 | todo   |
+| ENGINE-082 | Executor: derive subprocess `FLOWSTATE_SERVER_URL` from `Project`   | engine | P1       | SHARED-007, SERVER-026 | todo   |
+| ENGINE-083 | Lumon: global plugins path honors `FLOWSTATE_DATA_DIR`              | engine | P2       | SHARED-007             | todo   |
+
 ---
 
 ## Cross-Domain Coordination
