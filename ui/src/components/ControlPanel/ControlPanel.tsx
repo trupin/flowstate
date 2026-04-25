@@ -1,5 +1,6 @@
 import { useState } from 'react';
 import type { FlowRunStatus, TaskStatus } from '../../api/types';
+import type { PendingAction } from '../../hooks/useFlowRun';
 import './ControlPanel.css';
 
 export interface ControlPanelProps {
@@ -9,6 +10,8 @@ export interface ControlPanelProps {
   budgetSeconds: number;
   selectedTaskId?: string | null;
   selectedTaskStatus?: TaskStatus | null;
+  /** Currently pending WebSocket control action, tracked by useFlowRun. */
+  pendingAction?: PendingAction | null;
   onPause: () => void | Promise<void>;
   onResume: () => void | Promise<void>;
   onCancel: () => void | Promise<void>;
@@ -31,13 +34,15 @@ export function ControlPanel({
   budgetSeconds,
   selectedTaskId,
   selectedTaskStatus,
+  pendingAction,
   onPause,
   onResume,
   onCancel,
   onRetry,
   onSkip,
 }: ControlPanelProps) {
-  const [pending, setPending] = useState<string | null>(null);
+  // Resume uses REST, not WebSocket, so it has its own local pending flag.
+  const [localPending, setLocalPending] = useState<string | null>(null);
 
   const isRunning = flowStatus === 'running';
   const isPaused =
@@ -61,14 +66,27 @@ export function ControlPanel({
           ? 'var(--warning)'
           : 'var(--accent)';
 
-  async function handleAction(name: string, fn: () => void | Promise<void>) {
-    setPending(name);
+  async function handleLocal(name: string, fn: () => void | Promise<void>) {
+    setLocalPending(name);
     try {
       await fn();
     } finally {
-      setPending(null);
+      setLocalPending(null);
     }
   }
+
+  // Disabled whenever any action is in-flight (websocket-tracked or local REST).
+  const anyDisabled = pendingAction != null || localPending !== null;
+
+  const pausePending = pendingAction?.action === 'pause';
+  const cancelPending =
+    pendingAction?.action === 'cancel' || pendingAction?.action === 'abort';
+  const isTaskActionPending = (kind: 'retry_task' | 'skip_task'): boolean =>
+    pendingAction?.action === kind &&
+    (pendingAction.task_execution_id === undefined ||
+      pendingAction.task_execution_id === selectedTaskId);
+  const retryPending = isTaskActionPending('retry_task');
+  const skipPending = isTaskActionPending('skip_task');
 
   return (
     <div className="control-panel">
@@ -80,54 +98,54 @@ export function ControlPanel({
           {isRunning && (
             <button
               data-testid="btn-pause"
-              disabled={pending !== null}
-              onClick={() => handleAction('pause', onPause)}
+              data-pending={pausePending || undefined}
+              disabled={anyDisabled}
+              onClick={() => void onPause()}
             >
-              Pause
+              {pausePending ? 'Pausing...' : 'Pause'}
             </button>
           )}
           {isPaused && (
             <button
               data-testid="btn-resume"
-              disabled={pending !== null}
-              onClick={() => handleAction('resume', onResume)}
+              disabled={anyDisabled}
+              onClick={() => handleLocal('resume', onResume)}
             >
-              Resume
+              {localPending === 'resume' ? 'Resuming...' : 'Resume'}
             </button>
           )}
           {isActive && (
             <button
               data-testid="btn-cancel"
+              data-pending={cancelPending || undefined}
               className="control-btn-danger"
-              disabled={pending !== null}
+              disabled={anyDisabled}
               onClick={() => {
                 if (window.confirm('Cancel this flow run?')) {
-                  void handleAction('cancel', onCancel);
+                  void onCancel();
                 }
               }}
             >
-              Cancel
+              {cancelPending ? 'Cancelling...' : 'Cancel'}
             </button>
           )}
           {hasFailedTask && (
             <>
               <button
                 data-testid="btn-retry"
-                disabled={pending !== null}
-                onClick={() =>
-                  handleAction('retry', () => onRetry(selectedTaskId))
-                }
+                data-pending={retryPending || undefined}
+                disabled={anyDisabled}
+                onClick={() => onRetry(selectedTaskId)}
               >
-                Retry Task
+                {retryPending ? 'Retrying...' : 'Retry Task'}
               </button>
               <button
                 data-testid="btn-skip"
-                disabled={pending !== null}
-                onClick={() =>
-                  handleAction('skip', () => onSkip(selectedTaskId))
-                }
+                data-pending={skipPending || undefined}
+                disabled={anyDisabled}
+                onClick={() => onSkip(selectedTaskId)}
               >
-                Skip Task
+                {skipPending ? 'Skipping...' : 'Skip Task'}
               </button>
             </>
           )}

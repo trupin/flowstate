@@ -283,6 +283,49 @@ export interface FlowEvent {
   payload: Record<string, unknown>;
 }
 
+// --- WebSocket server-to-client control messages ---
+//
+// Unlike flow events, these are addressed to the originating websocket
+// (not broadcast) and omit top-level flow_run_id/timestamp.
+
+export type ControlActionType =
+  | 'pause'
+  | 'cancel'
+  | 'abort'
+  | 'retry_task'
+  | 'skip_task';
+
+export interface ActionAckMessage {
+  type: 'action_ack';
+  payload: {
+    action: ControlActionType;
+    flow_run_id: string;
+    task_execution_id?: string;
+  };
+}
+
+export interface ActionErrorMessage {
+  type: 'error';
+  payload: {
+    // Legacy error shapes (e.g. "Invalid JSON") may omit everything
+    // except `message`, so these fields are optional.
+    action?: ControlActionType;
+    flow_run_id?: string;
+    task_execution_id?: string;
+    message: string;
+  };
+}
+
+export type ServerMessage = FlowEvent | ActionAckMessage | ActionErrorMessage;
+
+export function isActionAck(msg: ServerMessage): msg is ActionAckMessage {
+  return msg.type === 'action_ack';
+}
+
+export function isActionError(msg: ServerMessage): msg is ActionErrorMessage {
+  return msg.type === 'error';
+}
+
 // --- WebSocket client action types ---
 
 export interface ClientAction {

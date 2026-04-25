@@ -1850,6 +1850,21 @@ class FlowExecutor:
             )
             self._resume_event.set()
 
+        # Emit regardless of paused state so the UI always sees the new task.
+        self._emit(
+            FlowEvent(
+                type=EventType.TASK_RETRIED,
+                flow_run_id=flow_run_id,
+                timestamp=_now_iso(),
+                payload={
+                    "task_execution_id": new_task_id,
+                    "node_name": old_task.node_name,
+                    "generation": new_gen,
+                    "original_task_execution_id": task_execution_id,
+                },
+            )
+        )
+
     async def skip_task(self, flow_run_id: str, task_execution_id: str) -> None:
         """Skip a failed task and continue via first outgoing edge."""
         task = self._db.get_task_execution(task_execution_id)
@@ -1861,6 +1876,7 @@ class FlowExecutor:
         self._db.update_task_status(task_execution_id, "skipped")
 
         # Continue via first outgoing edge (if flow context is available)
+        next_task_id: str | None = None
         if self._flow is not None:
             outgoing = _get_outgoing_edges(self._flow, task.node_name)
             if outgoing:
@@ -1911,6 +1927,20 @@ class FlowExecutor:
                 )
             )
             self._resume_event.set()
+
+        # Emit regardless of paused state so the UI always sees the skip.
+        self._emit(
+            FlowEvent(
+                type=EventType.TASK_SKIPPED,
+                flow_run_id=flow_run_id,
+                timestamp=_now_iso(),
+                payload={
+                    "task_execution_id": task_execution_id,
+                    "node_name": task.node_name,
+                    "next_task_execution_id": next_task_id,
+                },
+            )
+        )
 
     async def restart_from_task(
         self,

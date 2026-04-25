@@ -200,7 +200,7 @@ class WebSocketHub:
                     },
                 )
                 return
-            await self._handle_control(action, flow_run_id)
+            await self._handle_control(action, flow_run_id, websocket)
         elif action in ("retry_task", "skip_task"):
             if not flow_run_id:
                 await self._send_safe(
@@ -245,46 +245,68 @@ class WebSocketHub:
         if websocket in self._client_subs:
             self._client_subs[websocket].discard(flow_run_id)
 
-    async def _handle_control(self, action: str, flow_run_id: str) -> None:
+    async def _handle_control(
+        self,
+        action: str,
+        flow_run_id: str,
+        websocket: WebSocket | None = None,
+    ) -> None:
         """Delegate pause/cancel/abort to the FlowExecutor.
 
-        Wraps the executor call in try/except so that if the executor raises
-        during cleanup, the client still receives a status_changed event.
-        Without this, an exception in cancel() would silently swallow the
-        status change, leaving the UI stuck showing the pre-cancel state.
+        Errors during cleanup are caught and surfaced via both an ``error``
+        message to the originating client and a fallback ``flow.status_changed``
+        broadcast, so the UI is never left stuck on the pre-action state.
         """
         if not self._run_manager:
+            await self._send_action_error(
+                websocket,
+                "Server not ready: no run manager",
+                action=action,
+                flow_run_id=flow_run_id,
+            )
             return
         executor = self._run_manager.get_executor(flow_run_id)
         if not executor:
+            await self._send_action_error(
+                websocket,
+                f"No active executor for run {flow_run_id}",
+                action=action,
+                flow_run_id=flow_run_id,
+            )
             return
-        # Use the executor's internal flow_run_id (the DB-generated ID) when
-        # available, matching the REST endpoint behavior.
+        # Prefer the executor's DB-generated flow_run_id to match REST behavior.
         actual_run_id = getattr(executor, "_flow_run_id", None) or flow_run_id
         try:
             if action == "pause":
                 await executor.pause(actual_run_id)
-            elif action == "cancel":
+            elif action in ("cancel", "abort"):
                 await executor.cancel(actual_run_id)
-            elif action == "abort":
-                # abort maps to cancel -- there is no separate abort method on FlowExecutor
-                await executor.cancel(actual_run_id)
-        except Exception:
+        except Exception as e:
             logger.exception("Control action '%s' failed for run %s", action, flow_run_id)
-            # Broadcast a status_changed event as a fallback so the UI updates
-            # even if the executor raised partway through.
+            await self._send_action_error(
+                websocket,
+                f"Control action '{action}' failed: {e}",
+                action=action,
+                flow_run_id=actual_run_id,
+            )
+            # Fallback status_changed so all subscribers see the transition even
+            # if the executor raised partway through.
             target_status = "cancelled" if action in ("cancel", "abort") else "pausing"
-            fallback_event: dict[str, Any] = {
-                "type": "flow.status_changed",
-                "flow_run_id": actual_run_id,
-                "timestamp": "",
-                "payload": {
-                    "old_status": "running",
-                    "new_status": target_status,
-                    "reason": f"Control action '{action}' completed with errors",
-                },
-            }
-            await self.broadcast_event(fallback_event)
+            await self.broadcast_event(
+                {
+                    "type": "flow.status_changed",
+                    "flow_run_id": actual_run_id,
+                    "timestamp": "",
+                    "payload": {
+                        "old_status": "running",
+                        "new_status": target_status,
+                        "reason": f"Control action '{action}' completed with errors",
+                    },
+                }
+            )
+            return
+
+        await self._send_action_ack(websocket, action, actual_run_id)
 
     async def _handle_task_control(
         self,
@@ -295,35 +317,27 @@ class WebSocketHub:
     ) -> None:
         """Delegate retry_task/skip_task to the FlowExecutor.
 
-        If no active executor exists and the run is in a terminal state,
+        If no active executor exists and the run is in a restartable state,
         attempts to reconstruct an executor via ``restart_from_task()``.
-        Sends error responses back to the client instead of silently failing.
+        Exceptions are caught and sent to the client instead of closing the
+        socket.
         """
         if not self._run_manager:
             return
         if not task_id:
-            if websocket:
-                await self._send_safe(
-                    websocket,
-                    {
-                        "type": "error",
-                        "payload": {"message": "task_execution_id is required"},
-                    },
-                )
+            await self._send_action_error(websocket, "task_execution_id is required")
             return
 
         executor = self._run_manager.get_executor(flow_run_id)
         if not executor:
-            # Attempt restart for terminal flows
-            restart_action = "retry" if action == "retry_task" else "skip"
-            ok = await self._try_restart_from_task(flow_run_id, task_id, restart_action, websocket)
-            if not ok and websocket:
-                await self._send_safe(
+            ok = await self._try_restart_from_task(flow_run_id, task_id, action, websocket)
+            if not ok:
+                await self._send_action_error(
                     websocket,
-                    {
-                        "type": "error",
-                        "payload": {"message": f"No active executor for run {flow_run_id}"},
-                    },
+                    f"No active executor for run {flow_run_id}",
+                    action=action,
+                    flow_run_id=flow_run_id,
+                    task_execution_id=task_id,
                 )
             return
 
@@ -332,16 +346,19 @@ class WebSocketHub:
                 await executor.retry_task(flow_run_id, task_id)
             elif action == "skip_task":
                 await executor.skip_task(flow_run_id, task_id)
-        except (ValueError, RuntimeError) as e:
-            logger.warning("Task control failed: %s", e)
-            if websocket:
-                await self._send_safe(
-                    websocket,
-                    {
-                        "type": "error",
-                        "payload": {"message": f"Task control failed: {e}"},
-                    },
-                )
+        except Exception as e:
+            # Broad except: propagating would close the socket with no UI feedback.
+            logger.exception("Task control '%s' failed for run %s", action, flow_run_id)
+            await self._send_action_error(
+                websocket,
+                f"Failed to {action.replace('_', ' ')}: {e}",
+                action=action,
+                flow_run_id=flow_run_id,
+                task_execution_id=task_id,
+            )
+            return
+
+        await self._send_action_ack(websocket, action, flow_run_id, task_execution_id=task_id)
 
     async def _try_restart_from_task(
         self,
@@ -352,7 +369,10 @@ class WebSocketHub:
     ) -> bool:
         """Attempt to reconstruct an executor for a terminal flow run.
 
-        Returns True if restart was successfully initiated, False otherwise.
+        ``action`` is the wire action name (``retry_task`` or ``skip_task``).
+        Validates the target task BEFORE constructing an executor; otherwise
+        ``restart_from_task`` would flip the run to ``running`` even for a
+        bogus task id. Returns True if restart was initiated, False otherwise.
         """
         if not self._db or not self._run_manager or not self._harness:
             return False
@@ -361,6 +381,28 @@ class WebSocketHub:
         from flowstate.server.routes import _RUN_RESTARTABLE_STATUSES
 
         if not run or run.status not in _RUN_RESTARTABLE_STATUSES:
+            return False
+
+        verb = "retry" if action == "retry_task" else "skip"
+
+        async def _err(message: str) -> None:
+            await self._send_action_error(
+                websocket,
+                message,
+                action=action,
+                flow_run_id=flow_run_id,
+                task_execution_id=task_id,
+            )
+
+        task = self._db.get_task_execution(task_id)
+        if task is None:
+            await _err(f"Task '{task_id}' not found")
+            return False
+        if task.flow_run_id != flow_run_id:
+            await _err(f"Task '{task_id}' does not belong to run '{flow_run_id}'")
+            return False
+        if task.status != "failed":
+            await _err(f"Can only {verb} failed tasks, got status: {task.status}")
             return False
 
         flow_def = self._db.get_flow_definition(run.flow_definition_id)
@@ -383,19 +425,12 @@ class WebSocketHub:
                 server_base_url=self._server_base_url,
             )
 
-            restart_coro = executor.restart_from_task(flow_ast, flow_run_id, task_id, action)
+            restart_coro = executor.restart_from_task(flow_ast, flow_run_id, task_id, verb)
             await self._run_manager.start_run(flow_run_id, executor, restart_coro)
             return True
         except Exception as e:
             logger.warning("Failed to restart flow run %s: %s", flow_run_id, e)
-            if websocket:
-                await self._send_safe(
-                    websocket,
-                    {
-                        "type": "error",
-                        "payload": {"message": f"Failed to restart flow: {e}"},
-                    },
-                )
+            await _err(f"Failed to restart flow: {e}")
             return False
 
     async def _replay_events(
@@ -447,3 +482,39 @@ class WebSocketHub:
             await websocket.send_json(data)
         except Exception:
             self._cleanup(websocket)
+
+    async def _send_action_ack(
+        self,
+        websocket: WebSocket | None,
+        action: str,
+        flow_run_id: str,
+        task_execution_id: str | None = None,
+    ) -> None:
+        """Send an ``action_ack`` to the originating client."""
+        if not websocket:
+            return
+        payload: dict[str, Any] = {"action": action, "flow_run_id": flow_run_id}
+        if task_execution_id is not None:
+            payload["task_execution_id"] = task_execution_id
+        await self._send_safe(websocket, {"type": "action_ack", "payload": payload})
+
+    async def _send_action_error(
+        self,
+        websocket: WebSocket | None,
+        message: str,
+        *,
+        action: str | None = None,
+        flow_run_id: str | None = None,
+        task_execution_id: str | None = None,
+    ) -> None:
+        """Send a structured ``error`` message to the originating client."""
+        if not websocket:
+            return
+        payload: dict[str, Any] = {"message": message}
+        if action is not None:
+            payload["action"] = action
+        if flow_run_id is not None:
+            payload["flow_run_id"] = flow_run_id
+        if task_execution_id is not None:
+            payload["task_execution_id"] = task_execution_id
+        await self._send_safe(websocket, {"type": "error", "payload": payload})

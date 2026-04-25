@@ -1,5 +1,11 @@
 import { useRef, useState, useEffect, useCallback } from 'react';
-import type { FlowEvent } from '../api/types';
+import type {
+  ActionAckMessage,
+  ActionErrorMessage,
+  FlowEvent,
+  ServerMessage,
+} from '../api/types';
+import { isActionAck, isActionError } from '../api/types';
 
 interface UseWebSocketReturn {
   send: (data: unknown) => void;
@@ -7,6 +13,8 @@ interface UseWebSocketReturn {
   unsubscribe: (flowRunId: string) => void;
   eventQueue: FlowEvent[];
   clearQueue: (processedCount: number) => void;
+  controlQueue: Array<ActionAckMessage | ActionErrorMessage>;
+  clearControlQueue: (processedCount: number) => void;
   isConnected: boolean;
 }
 
@@ -14,6 +22,9 @@ export function useWebSocket(url: string): UseWebSocketReturn {
   const wsRef = useRef<WebSocket | null>(null);
   const [isConnected, setIsConnected] = useState(false);
   const [eventQueue, setEventQueue] = useState<FlowEvent[]>([]);
+  const [controlQueue, setControlQueue] = useState<
+    Array<ActionAckMessage | ActionErrorMessage>
+  >([]);
   const lastTimestampRef = useRef<string | null>(null);
   const retryDelayRef = useRef(1000);
   const mountedRef = useRef(true);
@@ -46,7 +57,13 @@ export function useWebSocket(url: string): UseWebSocketReturn {
 
     ws.onmessage = (event: MessageEvent) => {
       try {
-        const data = JSON.parse(String(event.data)) as FlowEvent;
+        const data = JSON.parse(String(event.data)) as ServerMessage;
+        // Control ack/error → separate queue so flow-event consumers don't see
+        // them and action senders don't race the flow-event pipeline.
+        if (isActionAck(data) || isActionError(data)) {
+          setControlQueue((prev) => [...prev, data]);
+          return;
+        }
         lastTimestampRef.current = data.timestamp;
         setEventQueue((prev) => [...prev, data]);
       } catch {
@@ -105,6 +122,12 @@ export function useWebSocket(url: string): UseWebSocketReturn {
     [],
   );
 
+  const clearControlQueue = useCallback(
+    (processedCount: number) =>
+      setControlQueue((prev) => prev.slice(processedCount)),
+    [],
+  );
+
   const unsubscribe = useCallback(
     (flowRunId: string) => {
       subscribedRunsRef.current.delete(flowRunId);
@@ -117,5 +140,14 @@ export function useWebSocket(url: string): UseWebSocketReturn {
     [send],
   );
 
-  return { send, subscribe, unsubscribe, eventQueue, clearQueue, isConnected };
+  return {
+    send,
+    subscribe,
+    unsubscribe,
+    eventQueue,
+    clearQueue,
+    controlQueue,
+    clearControlQueue,
+    isConnected,
+  };
 }

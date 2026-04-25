@@ -17,6 +17,8 @@ Event types and their documented payload fields (from specs.md Section 10.3):
 | task.completed         | task_execution_id, node_name, exit_code, elapsed_seconds             |
 | task.failed            | task_execution_id, node_name, error_message                          |
 | task.interrupted       | task_execution_id, node_name                                         |
+| task.retried           | task_execution_id, node_name, generation, original_task_execution_id |
+| task.skipped           | task_execution_id, node_name, next_task_execution_id (None ok)       |
 | edge.transition        | from_node, to_node, edge_type, condition (None ok), judge_reasoning  |
 | fork.started           | fork_group_id, source_node, targets                                  |
 | fork.joined            | fork_group_id, join_node                                             |
@@ -36,7 +38,7 @@ from enum import StrEnum
 class EventType(StrEnum):
     """All event types emitted during flow execution.
 
-    16 engine event types plus 2 scheduling event types plus 1 subtask = 19 total.
+    18 engine event types plus 2 scheduling event types plus 1 subtask = 21 total.
     """
 
     # Flow lifecycle
@@ -51,6 +53,8 @@ class EventType(StrEnum):
     TASK_COMPLETED = "task.completed"
     TASK_FAILED = "task.failed"
     TASK_INTERRUPTED = "task.interrupted"
+    TASK_RETRIED = "task.retried"
+    TASK_SKIPPED = "task.skipped"
 
     # Edge traversal
     EDGE_TRANSITION = "edge.transition"
