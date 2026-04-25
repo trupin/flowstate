@@ -555,6 +555,31 @@ Three small engine-domain fixes for paths and URLs that bypass the `Project` con
 | ENGINE-082 | Executor: derive subprocess `FLOWSTATE_SERVER_URL` from `Project`   | engine | P1       | SHARED-007, SERVER-026 | todo   |
 | ENGINE-083 | Lumon: global plugins path honors `FLOWSTATE_DATA_DIR`              | engine | P2       | SHARED-007             | todo   |
 
+
+### Phase 33 — Agent task scheduling
+
+| Issue      | Title                                                               | Domain | Priority | Depends On  | Status |
+| ---------- | ------------------------------------------------------------------- | ------ | -------- | ----------- | ------ |
+| ENGINE-084 | Expose `schedule_task` to agents (lumon plugin + default prompt)    | engine | P1       | ENGINE-077  | done   |
+
+
+### Phase 34 — PWA install (cheap "feels like an app")
+
+Stepping stone before the full menubar app: add a PWA manifest + service worker so users can "Install Flowstate" from Chrome/Safari and get a standalone window. Validates the "users want an app" hypothesis at near-zero cost. Server still runs separately.
+
+| Issue   | Title                                              | Domain | Priority | Depends On  | Status |
+| ------- | -------------------------------------------------- | ------ | -------- | ----------- | ------ |
+| UI-073  | Make Flowstate UI installable as a PWA from the browser | ui | P2       | SHARED-008  | todo   |
+
+
+### Phase 35 — Tauri menubar app (macOS)
+
+Native menubar app that manages the `flowstate server` lifecycle and surfaces status / project switching from the system tray. Same UX category as Postgres.app, OrbStack, Tailscale. Bundles a portable Python so no system install needed. Phase 1 is macOS-only **and unsigned** (users right-click → Open on first launch); Apple Developer cert + notarization is a deferred follow-up. Windows/Linux are P2 follow-ups.
+
+| Issue   | Title                                              | Domain      | Priority | Depends On                                  | Status |
+| ------- | -------------------------------------------------- | ----------- | -------- | ------------------------------------------- | ------ |
+| UI-074  | Tauri menubar app for Flowstate                    | ui (+ shared) | P1     | SHARED-008, SHARED-010, SERVER-031, SERVER-028 | todo   |
+
 ---
 
 ## Cross-Domain Coordination

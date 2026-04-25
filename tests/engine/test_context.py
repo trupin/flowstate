@@ -684,3 +684,74 @@ class TestLumonPluginDir:
         import os
 
         assert os.path.isabs(lumon_plugin_dir())
+
+
+# ---------------------------------------------------------------------------
+# Tests: "Scheduling follow-up work" subsection (ENGINE-084)
+# ---------------------------------------------------------------------------
+
+
+class TestScheduleFollowUpSubsection:
+    """The default-mode prompt should advertise POST /api/flows/<name>/tasks
+    so agents can queue follow-up work without rediscovering the API."""
+
+    def test_non_lumon_handoff_documents_curl_endpoint(self) -> None:
+        node = _make_node(prompt="Implement the feature")
+        prompt = build_prompt_handoff(node=node, cwd="/project", predecessor_summary="prev")
+        assert "Scheduling follow-up work" in prompt
+        # Non-lumon branch must show the curl form against /api/flows/.../tasks
+        assert "curl" in prompt
+        assert "/api/flows/" in prompt
+        assert "/tasks" in prompt
+        assert "scheduled_at" in prompt
+        assert "cron" in prompt
+
+    def test_non_lumon_none_documents_curl_endpoint(self) -> None:
+        node = _make_node(prompt="Initialize")
+        prompt = build_prompt_none(node=node, cwd="/project")
+        assert "Scheduling follow-up work" in prompt
+        assert "/api/flows/" in prompt
+
+    def test_non_lumon_join_documents_curl_endpoint(self) -> None:
+        node = _make_node(name="merge", prompt="Merge")
+        prompt = build_prompt_join(
+            node=node,
+            cwd="/project",
+            member_summaries={"a": "x"},
+        )
+        assert "Scheduling follow-up work" in prompt
+        assert "/api/flows/" in prompt
+
+    def test_lumon_handoff_documents_plugin_call(self) -> None:
+        node = _make_node(prompt="Implement the feature")
+        prompt = build_prompt_handoff(
+            node=node,
+            cwd="/project",
+            predecessor_summary="prev",
+            lumon=True,
+        )
+        assert "Scheduling follow-up work" in prompt
+        # Lumon branch uses the plugin call, NOT curl
+        assert "flowstate.schedule_task" in prompt
+        assert "curl" not in prompt
+        assert "scheduled_at" in prompt
+        assert "cron" in prompt
+
+    def test_lumon_none_documents_plugin_call(self) -> None:
+        node = _make_node(prompt="Initialize")
+        prompt = build_prompt_none(node=node, cwd="/project", lumon=True)
+        assert "Scheduling follow-up work" in prompt
+        assert "flowstate.schedule_task" in prompt
+        assert "curl" not in prompt
+
+    def test_lumon_join_documents_plugin_call(self) -> None:
+        node = _make_node(name="merge", prompt="Merge")
+        prompt = build_prompt_join(
+            node=node,
+            cwd="/project",
+            member_summaries={"a": "x"},
+            lumon=True,
+        )
+        assert "Scheduling follow-up work" in prompt
+        assert "flowstate.schedule_task" in prompt
+        assert "curl" not in prompt

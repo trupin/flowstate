@@ -2092,6 +2092,19 @@ Subtask data is **not** included in the summary artifact or passed automatically
 
 A `SUBTASK_UPDATED` event is emitted when a subtask is created or updated. Payload includes the full subtask data and `flow_run_id` for client-side filtering.
 
+### 14.8 Scheduling Follow-up Tasks
+
+In addition to managing subtasks within its own execution, an agent can queue **a brand-new task on any flow** (the same flow or another) for the queue manager to pick up later. This lets agents wire flows together at runtime: a dispatcher task can fan work out to a worker flow, a periodic monitor can self-reschedule, etc.
+
+The capability is exposed two ways:
+
+- **REST**: `POST /api/flows/{flow_name}/tasks` (the same endpoint used by the UI's "Submit task" form). Body: `{"title": "...", "description": "...", "params": {...}, "scheduled_at": "<ISO-8601>" | null, "cron": "<cron expr>" | null}`. Returns 201 with the new task row. Returns 404 if the flow does not exist, 400 if `cron` fails to parse.
+- **Lumon plugin**: `flowstate.schedule_task(flow_name, title, description, params_json, scheduled_at, cron)` — the eighth action exposed by the bundled flowstate plugin (alongside `submit_summary`, `submit_decision`, `submit_output`, `create_subtask`, `update_subtask`, `list_subtasks`, and `guide`). `params_json` is a JSON-encoded object (or `""`); `scheduled_at` and `cron` are mutually-meaningful but only one is needed. Returns `:ok(<task_id>)` on success or `:error(<message>)` (the plugin surfaces 400/404 from the REST endpoint verbatim).
+
+The default-mode prompt (both lumon and non-lumon variants) includes a "Scheduling follow-up work" subsection so agents discover this capability without having to read the docs.
+
+**Out of scope**: rate limiting and self-scheduling-loop detection. The existing scheduler concurrency limits prevent runaway execution but not unbounded queue growth — flow authors are expected to design their cron schedules sensibly.
+
 ---
 
 ## 15. Appendices
