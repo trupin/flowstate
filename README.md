@@ -132,17 +132,20 @@ ui/           # React + React Flow frontend
 
 Dependency direction: `dsl <- state <- engine <- server`. The UI is fully independent.
 
-All runtime data lives in `~/.flowstate/` (database, run artifacts, config) — Flowstate never writes metadata to your project directories.
+All runtime data lives under `~/.flowstate/projects/<slug>/` (database, auto-generated run worktrees, logs) — one isolated subtree per project. Flowstate never writes metadata to your project directories beyond the files `flowstate init` scaffolds on first run.
 
 ## Core concepts
 
 | Concept | Description |
 |---------|-------------|
-| **Flow** | A named directed graph defining a workflow with budget, input/output fields, and error policy |
+| **Project** | A directory containing a `flowstate.toml` anchor file. Discovered by walking up from CWD (like `git`). Each project has its own SQLite DB and workspaces under `~/.flowstate/projects/<slug>/` |
+| **Flow** | A named directed graph defining a workflow with budget, input/output fields, and error policy. Lives in `flows/*.flow` inside the project |
 | **Node** | A vertex: `entry`, `task`, `exit`, `wait`, `fence`, or `atomic` |
-| **Edge** | A connection: unconditional (`->`), conditional (`when`), fork/join (`[A, B]`), or cross-flow (`files`, `awaits`) |
+| **Edge** | A connection: unconditional (`->`), conditional (`when`), fork/join (`[A, B]`), or cross-flow (`files`, `awaits`) — including delayed variants like `files X after 30m` |
 | **Judge** | A separate subprocess that evaluates routing conditions (or tasks can self-report via `DECISION.json`) |
 | **Context** | `handoff` (fresh session + summary), `session` (resumed conversation), or `none` |
+| **Task queue** | Tasks queued via `POST /api/flows/{name}/tasks` — supports immediate, deferred (`scheduled_at`), and recurring (`cron`). The queue manager respects per-flow `max_parallel` |
+| **Agent scheduling** | Running agents can queue follow-up tasks themselves: lumon-sandboxed agents call `flowstate.schedule_task(...)`, others curl the same REST endpoint |
 
 ## Development
 
@@ -218,6 +221,14 @@ The typical workflow with Claude Code:
 4. Run `/evaluate` to test the running app against specs
 
 You can also work on individual issues directly by telling Claude Code which issue to implement, or create new issues with `/issue`.
+
+## Roadmap
+
+Tracked in [`issues/PLAN.md`](./issues/PLAN.md). What's currently being worked on or planned next:
+
+- **Deployment hygiene** (Phase 32, in flight): tighten the per-project `Project` contract end-to-end — scheduler runs use per-project `data_dir`, executor derives the subprocess callback URL from the running server's bound port, lumon plugins honor `FLOWSTATE_DATA_DIR`.
+- **PWA install** (Phase 34, P2): add a manifest + service worker so users can "Install Flowstate" from the browser address bar and get a standalone app window — zero native packaging burden.
+- **Tauri menubar app** (Phase 35, P1): macOS menubar / system-tray app that supervises the `flowstate server` lifecycle, surfaces server status + recent runs, and lets users switch projects from a native dropdown. Bundles a portable Python so users don't need a system install. Distributed unsigned for v1 (right-click → Open on first launch); Apple Developer signing deferred until distribution friction warrants it.
 
 ## License
 
