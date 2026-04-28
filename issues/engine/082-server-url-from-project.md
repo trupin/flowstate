@@ -4,7 +4,9 @@
 engine
 
 ## Status
-todo
+done
+
+**Eval verdict: PASS (issues/evals/sprint-phase-32-eval.md, batch-level)**
 
 ## Priority
 P1 (important)

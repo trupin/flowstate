@@ -551,9 +551,9 @@ Three small engine-domain fixes for paths and URLs that bypass the `Project` con
 
 | Issue      | Title                                                               | Domain | Priority | Depends On            | Status |
 | ---------- | ------------------------------------------------------------------- | ------ | -------- | --------------------- | ------ |
-| ENGINE-081 | Scheduler: scheduled flow runs use per-project `data_dir`           | engine | P0       | SHARED-007, ENGINE-080 | todo   |
-| ENGINE-082 | Executor: derive subprocess `FLOWSTATE_SERVER_URL` from `Project`   | engine | P1       | SHARED-007, SERVER-026 | todo   |
-| ENGINE-083 | Lumon: global plugins path honors `FLOWSTATE_DATA_DIR`              | engine | P2       | SHARED-007             | todo   |
+| ENGINE-081 | Scheduler: scheduled flow runs use per-project `data_dir`           | engine | P0       | SHARED-007, ENGINE-080 | done   |
+| ENGINE-082 | Executor: derive subprocess `FLOWSTATE_SERVER_URL` from `Project`   | engine | P1       | SHARED-007, SERVER-026 | done   |
+| ENGINE-083 | Lumon: global plugins path honors `FLOWSTATE_DATA_DIR`              | engine | P2       | SHARED-007             | done   |
 
 
 ### Phase 33 — Agent task scheduling

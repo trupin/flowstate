@@ -314,3 +314,5 @@ This sprint is complete when ALL of the following are true:
 8. The orchestrator has committed each issue in a separate commit following the `[ENGINE-08x] ...` convention.
 
 The TEST-ALL integration test is the blocking gate: if TEST-ALL fails or its degradations cannot be justified, the sprint does not ship regardless of unit-test status.
+
+**Eval verdict: PASS (issues/evals/sprint-phase-32-eval.md)**
