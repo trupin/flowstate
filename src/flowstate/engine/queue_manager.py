@@ -147,13 +147,14 @@ class QueueManager:
         # Determine event callback -- ws_hub.on_flow_event if available
         event_callback = getattr(self._ws_hub, "on_flow_event", lambda _e: None)
 
-        # Build server base URL for subtask API instructions
-        host = getattr(self._config, "server_host", "127.0.0.1")
-        # Agents need 127.0.0.1 to reach the server, not 0.0.0.0
-        if host == "0.0.0.0":
-            host = "127.0.0.1"
+        # Build server base URL for subtask API instructions.
+        # ENGINE-082: subprocesses run on the same machine as the server,
+        # so they always loop back via 127.0.0.1 — even when the server
+        # binds 0.0.0.0 or another non-loopback interface. Sourcing the
+        # port from the (possibly CLI-overridden) config matches the port
+        # uvicorn actually bound to.
         port = getattr(self._config, "server_port", 9090)
-        server_base_url = f"http://{host}:{port}"
+        server_base_url = f"http://127.0.0.1:{port}"
 
         # ENGINE-079: resolve the .flow file's absolute path so flow-level
         # workspace and node-level cwd can be resolved relative to the flow

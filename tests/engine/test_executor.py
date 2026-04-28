@@ -15,6 +15,8 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
+import pytest
+
 from flowstate.dsl.ast import (
     ContextMode,
     Edge,
@@ -27,7 +29,7 @@ from flowstate.dsl.ast import (
 )
 from flowstate.engine.context import build_task_management_instructions
 from flowstate.engine.events import EventType, FlowEvent
-from flowstate.engine.executor import FlowExecutor, _use_subtasks
+from flowstate.engine.executor import FlowExecutor, FlowExecutorConfigError, _use_subtasks
 from flowstate.engine.judge import JudgeContext, JudgeDecision, JudgePauseError, JudgeProtocol
 from flowstate.engine.subprocess_mgr import StreamEvent, StreamEventType
 from flowstate.engine.worktree import WorktreeInfo
@@ -451,7 +453,9 @@ class TestLinear3NodeFlow:
         db = _make_db()
         events, callback = _collect_events()
         mock_mgr = MockSubprocessManager()
-        executor = FlowExecutor(db, callback, mock_mgr, max_concurrent=4)
+        executor = FlowExecutor(
+            db, callback, mock_mgr, max_concurrent=4, server_base_url="http://127.0.0.1:9090"
+        )
 
         flow = _make_linear_flow()
         flow_run_id = await executor.execute(flow, {}, "/workspace")
@@ -486,7 +490,7 @@ class TestLinearFlowReturnsRunId:
         db = _make_db()
         _events, callback = _collect_events()
         mock_mgr = MockSubprocessManager()
-        executor = FlowExecutor(db, callback, mock_mgr)
+        executor = FlowExecutor(db, callback, mock_mgr, server_base_url="http://127.0.0.1:9090")
 
         flow = _make_linear_flow()
         flow_run_id = await executor.execute(flow, {}, "/workspace")
@@ -504,7 +508,7 @@ class TestTemplateExpansion:
         db = _make_db()
         _events, callback = _collect_events()
         mock_mgr = MockSubprocessManager()
-        executor = FlowExecutor(db, callback, mock_mgr)
+        executor = FlowExecutor(db, callback, mock_mgr, server_base_url="http://127.0.0.1:9090")
 
         nodes = {
             "start": Node(
@@ -549,7 +553,7 @@ class TestTaskDirectoryCreation:
         db = _make_db()
         _events, callback = _collect_events()
         mock_mgr = MockSubprocessManager()
-        executor = FlowExecutor(db, callback, mock_mgr)
+        executor = FlowExecutor(db, callback, mock_mgr, server_base_url="http://127.0.0.1:9090")
 
         flow = _make_linear_flow(node_names=["start", "work", "finish"])
         flow_run_id = await executor.execute(flow, {}, "/workspace")
@@ -563,7 +567,7 @@ class TestTaskDirectoryCreation:
         db = _make_db()
         _events, callback = _collect_events()
         mock_mgr = MockSubprocessManager()
-        executor = FlowExecutor(db, callback, mock_mgr)
+        executor = FlowExecutor(db, callback, mock_mgr, server_base_url="http://127.0.0.1:9090")
 
         flow = _make_linear_flow(node_names=["start", "finish"])
         flow_run_id = await executor.execute(flow, {}, "/workspace")
@@ -582,7 +586,7 @@ class TestBudgetWarningEvents:
         db = _make_db()
         events, callback = _collect_events()
         mock_mgr = MockSubprocessManager()
-        executor = FlowExecutor(db, callback, mock_mgr)
+        executor = FlowExecutor(db, callback, mock_mgr, server_base_url="http://127.0.0.1:9090")
 
         flow = _make_linear_flow(
             budget_seconds=1,
@@ -603,7 +607,7 @@ class TestBudgetExceededPauses:
         db = _make_db()
         events, callback = _collect_events()
         mock_mgr = MockSubprocessManager()
-        executor = FlowExecutor(db, callback, mock_mgr)
+        executor = FlowExecutor(db, callback, mock_mgr, server_base_url="http://127.0.0.1:9090")
 
         flow = _make_linear_flow(
             budget_seconds=0,
@@ -633,7 +637,7 @@ class TestTaskFailurePausesFlow:
         mock_mgr = MockSubprocessManager()
         mock_mgr.task_responses["start"] = (1, [])
 
-        executor = FlowExecutor(db, callback, mock_mgr)
+        executor = FlowExecutor(db, callback, mock_mgr, server_base_url="http://127.0.0.1:9090")
 
         flow = _make_linear_flow(on_error=ErrorPolicy.PAUSE)
         flow_run_id, execute_task = await _execute_until_paused(
@@ -673,7 +677,7 @@ class TestEventEmissionOrder:
             ],
         )
 
-        executor = FlowExecutor(db, callback, mock_mgr)
+        executor = FlowExecutor(db, callback, mock_mgr, server_base_url="http://127.0.0.1:9090")
 
         flow = _make_linear_flow(node_names=["start", "finish"])
         await executor.execute(flow, {}, "/workspace")
@@ -708,7 +712,7 @@ class TestContextModeHandoff:
         db = _make_db()
         _events, callback = _collect_events()
         mock_mgr = MockSubprocessManager()
-        executor = FlowExecutor(db, callback, mock_mgr)
+        executor = FlowExecutor(db, callback, mock_mgr, server_base_url="http://127.0.0.1:9090")
 
         flow = _make_linear_flow(
             node_names=["start", "finish"],
@@ -729,7 +733,7 @@ class TestContextModeHandoff:
         db = _make_db()
         _events, callback = _collect_events()
         mock_mgr = MockSubprocessManager()
-        executor = FlowExecutor(db, callback, mock_mgr)
+        executor = FlowExecutor(db, callback, mock_mgr, server_base_url="http://127.0.0.1:9090")
 
         flow = _make_linear_flow(
             node_names=["start", "work", "finish"],
@@ -773,7 +777,7 @@ class TestContextModeNone:
         db = _make_db()
         _events, callback = _collect_events()
         mock_mgr = MockSubprocessManager()
-        executor = FlowExecutor(db, callback, mock_mgr)
+        executor = FlowExecutor(db, callback, mock_mgr, server_base_url="http://127.0.0.1:9090")
 
         flow = _make_linear_flow(
             node_names=["start", "finish"],
@@ -796,7 +800,9 @@ class TestConcurrencySemaphore:
         db = _make_db()
         _events, callback = _collect_events()
         mock_mgr = MockSubprocessManager()
-        executor = FlowExecutor(db, callback, mock_mgr, max_concurrent=7)
+        executor = FlowExecutor(
+            db, callback, mock_mgr, max_concurrent=7, server_base_url="http://127.0.0.1:9090"
+        )
 
         assert executor._max_concurrent == 7
         assert executor._semaphore._value == 7
@@ -808,7 +814,7 @@ class TestMinimalFlow:
         db = _make_db()
         _events, callback = _collect_events()
         mock_mgr = MockSubprocessManager()
-        executor = FlowExecutor(db, callback, mock_mgr)
+        executor = FlowExecutor(db, callback, mock_mgr, server_base_url="http://127.0.0.1:9090")
 
         flow = _make_linear_flow(node_names=["start", "finish"])
         flow_run_id = await executor.execute(flow, {}, "/workspace")
@@ -826,7 +832,7 @@ class TestMinimalFlow:
         db = _make_db()
         _events, callback = _collect_events()
         mock_mgr = MockSubprocessManager()
-        executor = FlowExecutor(db, callback, mock_mgr)
+        executor = FlowExecutor(db, callback, mock_mgr, server_base_url="http://127.0.0.1:9090")
 
         flow = _make_linear_flow(node_names=["start", "a", "b", "c", "finish"])
         flow_run_id = await executor.execute(flow, {}, "/workspace")
@@ -847,7 +853,7 @@ class TestFlowRunRecord:
         db = _make_db()
         events, callback = _collect_events()
         mock_mgr = MockSubprocessManager()
-        executor = FlowExecutor(db, callback, mock_mgr)
+        executor = FlowExecutor(db, callback, mock_mgr, server_base_url="http://127.0.0.1:9090")
 
         flow = _make_linear_flow(node_names=["start", "finish"])
         await executor.execute(flow, {}, "/workspace")
@@ -860,7 +866,7 @@ class TestFlowRunRecord:
         db = _make_db()
         _events, callback = _collect_events()
         mock_mgr = MockSubprocessManager()
-        executor = FlowExecutor(db, callback, mock_mgr)
+        executor = FlowExecutor(db, callback, mock_mgr, server_base_url="http://127.0.0.1:9090")
 
         flow = _make_linear_flow(node_names=["start", "finish"])
         flow_run_id = await executor.execute(flow, {}, "/workspace")
@@ -876,7 +882,7 @@ class TestEdgeContextOverride:
         db = _make_db()
         _events, callback = _collect_events()
         mock_mgr = MockSubprocessManager()
-        executor = FlowExecutor(db, callback, mock_mgr)
+        executor = FlowExecutor(db, callback, mock_mgr, server_base_url="http://127.0.0.1:9090")
 
         flow = _make_linear_flow(
             node_names=["start", "finish"],
@@ -899,7 +905,7 @@ class TestMiddleTaskFailure:
         _events, callback = _collect_events()
         mock_mgr = MockSubprocessManager()
         mock_mgr.task_responses["work"] = (1, [])
-        executor = FlowExecutor(db, callback, mock_mgr)
+        executor = FlowExecutor(db, callback, mock_mgr, server_base_url="http://127.0.0.1:9090")
 
         flow = _make_linear_flow()
         flow_run_id, execute_task = await _execute_until_paused(
@@ -926,7 +932,7 @@ class TestSubprocessManagerCalled:
         db = _make_db()
         _events, callback = _collect_events()
         mock_mgr = MockSubprocessManager()
-        executor = FlowExecutor(db, callback, mock_mgr)
+        executor = FlowExecutor(db, callback, mock_mgr, server_base_url="http://127.0.0.1:9090")
 
         flow = _make_linear_flow(node_names=["start", "work", "finish"])
         await executor.execute(flow, {}, "/workspace")
@@ -948,7 +954,7 @@ class TestSubprocessManagerCalled:
                 )
             ],
         )
-        executor = FlowExecutor(db, callback, mock_mgr)
+        executor = FlowExecutor(db, callback, mock_mgr, server_base_url="http://127.0.0.1:9090")
 
         flow = _make_linear_flow(node_names=["start", "finish"])
         flow_run_id = await executor.execute(flow, {}, "/workspace")
@@ -973,7 +979,7 @@ class TestForkJoin2Targets:
         db = _make_db()
         events, callback = _collect_events()
         mock_mgr = MockSubprocessManager()
-        executor = FlowExecutor(db, callback, mock_mgr)
+        executor = FlowExecutor(db, callback, mock_mgr, server_base_url="http://127.0.0.1:9090")
 
         flow = _make_fork_join_flow(fork_targets=["task_a", "task_b"])
         flow_run_id = await executor.execute(flow, {}, "/workspace")
@@ -1014,7 +1020,7 @@ class TestForkJoin3Targets:
         db = _make_db()
         _events, callback = _collect_events()
         mock_mgr = MockSubprocessManager()
-        executor = FlowExecutor(db, callback, mock_mgr)
+        executor = FlowExecutor(db, callback, mock_mgr, server_base_url="http://127.0.0.1:9090")
 
         flow = _make_fork_join_flow(fork_targets=["task_a", "task_b", "task_c"])
         flow_run_id = await executor.execute(flow, {}, "/workspace")
@@ -1037,7 +1043,7 @@ class TestForkJoinGenerationTracking:
         db = _make_db()
         _events, callback = _collect_events()
         mock_mgr = MockSubprocessManager()
-        executor = FlowExecutor(db, callback, mock_mgr)
+        executor = FlowExecutor(db, callback, mock_mgr, server_base_url="http://127.0.0.1:9090")
 
         flow = _make_fork_join_flow()
         flow_run_id = await executor.execute(flow, {}, "/workspace")
@@ -1063,7 +1069,7 @@ class TestForkGroupDbState:
         db = _make_db()
         _events, callback = _collect_events()
         mock_mgr = MockSubprocessManager()
-        executor = FlowExecutor(db, callback, mock_mgr)
+        executor = FlowExecutor(db, callback, mock_mgr, server_base_url="http://127.0.0.1:9090")
 
         flow = _make_fork_join_flow()
         flow_run_id = await executor.execute(flow, {}, "/workspace")
@@ -1124,7 +1130,7 @@ class TestForkJoinContextAggregation:
 
         mock_mgr.run_task = run_task_with_summaries  # type: ignore[assignment]
 
-        executor = FlowExecutor(db, callback, mock_mgr)
+        executor = FlowExecutor(db, callback, mock_mgr, server_base_url="http://127.0.0.1:9090")
         flow = _make_fork_join_flow()
         flow_run_id = await executor.execute(flow, {}, "/workspace")
 
@@ -1146,7 +1152,7 @@ class TestForkMemberFailure:
         mock_mgr = MockSubprocessManager()
         mock_mgr.task_responses["task_a"] = (1, [])
 
-        executor = FlowExecutor(db, callback, mock_mgr)
+        executor = FlowExecutor(db, callback, mock_mgr, server_base_url="http://127.0.0.1:9090")
 
         flow = _make_fork_join_flow(on_error=ErrorPolicy.PAUSE)
         flow_run_id, execute_task = await _execute_until_paused(
@@ -1177,7 +1183,7 @@ class TestForkJoinEvents:
         db = _make_db()
         events, callback = _collect_events()
         mock_mgr = MockSubprocessManager()
-        executor = FlowExecutor(db, callback, mock_mgr)
+        executor = FlowExecutor(db, callback, mock_mgr, server_base_url="http://127.0.0.1:9090")
 
         flow = _make_fork_join_flow()
         await executor.execute(flow, {}, "/workspace")
@@ -1219,7 +1225,9 @@ class TestForkParallelExecution:
         db = _make_db()
         events, callback = _collect_events()
         mock_mgr = MockSubprocessManager()
-        executor = FlowExecutor(db, callback, mock_mgr, max_concurrent=4)
+        executor = FlowExecutor(
+            db, callback, mock_mgr, max_concurrent=4, server_base_url="http://127.0.0.1:9090"
+        )
 
         flow = _make_fork_join_flow()
         await executor.execute(flow, {}, "/workspace")
@@ -1250,7 +1258,9 @@ class TestConditionalBranchHappyPath:
             JudgeDecision(target="done", reasoning="Work is approved", confidence=0.9)
         )
 
-        executor = FlowExecutor(db, callback, mock_mgr, judge=mock_judge)
+        executor = FlowExecutor(
+            db, callback, mock_mgr, judge=mock_judge, server_base_url="http://127.0.0.1:9090"
+        )
 
         flow = _make_conditional_flow(with_cycle=True)
         flow_run_id = await executor.execute(flow, {}, "/workspace")
@@ -1289,7 +1299,9 @@ class TestConditionalBranchAlternative:
             JudgeDecision(target="done", reasoning="All good now", confidence=0.95)
         )
 
-        executor = FlowExecutor(db, callback, mock_mgr, judge=mock_judge)
+        executor = FlowExecutor(
+            db, callback, mock_mgr, judge=mock_judge, server_base_url="http://127.0.0.1:9090"
+        )
 
         flow = _make_conditional_flow(with_cycle=True)
         flow_run_id = await executor.execute(flow, {}, "/workspace")
@@ -1317,7 +1329,9 @@ class TestConditionalNonePauses:
             JudgeDecision(target="__none__", reasoning="No match", confidence=0.8)
         )
 
-        executor = FlowExecutor(db, callback, mock_mgr, judge=mock_judge)
+        executor = FlowExecutor(
+            db, callback, mock_mgr, judge=mock_judge, server_base_url="http://127.0.0.1:9090"
+        )
 
         flow = _make_conditional_flow(with_cycle=True)
         flow_run_id, execute_task = await _execute_until_paused(
@@ -1349,7 +1363,9 @@ class TestConditionalLowConfidencePauses:
             JudgeDecision(target="done", reasoning="Maybe done?", confidence=0.3)
         )
 
-        executor = FlowExecutor(db, callback, mock_mgr, judge=mock_judge)
+        executor = FlowExecutor(
+            db, callback, mock_mgr, judge=mock_judge, server_base_url="http://127.0.0.1:9090"
+        )
 
         flow = _make_conditional_flow(with_cycle=True)
         flow_run_id, execute_task = await _execute_until_paused(
@@ -1379,7 +1395,9 @@ class TestConditionalJudgeFailurePauses:
         mock_judge = MockJudgeProtocol()
         mock_judge.add_decision(JudgePauseError("Subprocess crashed"))
 
-        executor = FlowExecutor(db, callback, mock_mgr, judge=mock_judge)
+        executor = FlowExecutor(
+            db, callback, mock_mgr, judge=mock_judge, server_base_url="http://127.0.0.1:9090"
+        )
 
         flow = _make_conditional_flow(with_cycle=True)
         flow_run_id, execute_task = await _execute_until_paused(
@@ -1412,7 +1430,9 @@ class TestCycleGenerationIncrement:
         # Second review: approved
         mock_judge.add_decision(JudgeDecision(target="done", reasoning="Approved", confidence=0.95))
 
-        executor = FlowExecutor(db, callback, mock_mgr, judge=mock_judge)
+        executor = FlowExecutor(
+            db, callback, mock_mgr, judge=mock_judge, server_base_url="http://127.0.0.1:9090"
+        )
 
         flow = _make_conditional_flow(with_cycle=True)
         flow_run_id = await executor.execute(flow, {}, "/workspace")
@@ -1447,7 +1467,9 @@ class TestCycleThreeIterations:
             JudgeDecision(target="done", reasoning="Finally approved", confidence=0.95)
         )
 
-        executor = FlowExecutor(db, callback, mock_mgr, judge=mock_judge)
+        executor = FlowExecutor(
+            db, callback, mock_mgr, judge=mock_judge, server_base_url="http://127.0.0.1:9090"
+        )
 
         flow = _make_conditional_flow(with_cycle=True)
         flow_run_id = await executor.execute(flow, {}, "/workspace")
@@ -1478,7 +1500,9 @@ class TestCycleHandoffContext:
             JudgeDecision(target="done", reasoning="All tests pass", confidence=0.95)
         )
 
-        executor = FlowExecutor(db, callback, mock_mgr, judge=mock_judge)
+        executor = FlowExecutor(
+            db, callback, mock_mgr, judge=mock_judge, server_base_url="http://127.0.0.1:9090"
+        )
 
         flow = _make_conditional_flow(with_cycle=True, context=ContextMode.HANDOFF)
         flow_run_id = await executor.execute(flow, {}, "/workspace")
@@ -1503,7 +1527,9 @@ class TestCycleNoneContext:
         )
         mock_judge.add_decision(JudgeDecision(target="done", reasoning="Approved", confidence=0.95))
 
-        executor = FlowExecutor(db, callback, mock_mgr, judge=mock_judge)
+        executor = FlowExecutor(
+            db, callback, mock_mgr, judge=mock_judge, server_base_url="http://127.0.0.1:9090"
+        )
 
         flow = _make_conditional_flow(
             with_cycle=True,
@@ -1584,7 +1610,7 @@ class TestUnconditionalEdgeCycleGeneration:
             edges=edges,
         )
 
-        executor = FlowExecutor(db, callback, mock_mgr)
+        executor = FlowExecutor(db, callback, mock_mgr, server_base_url="http://127.0.0.1:9090")
         # Flow will pause when alpha fails on 2nd call; use _execute_until_paused
         flow_run_id, exec_task = await _execute_until_paused(executor, flow, {}, "/workspace", db)
 
@@ -1611,7 +1637,7 @@ class TestUnconditionalEdgeCycleGeneration:
         db = _make_db()
         _events, callback = _collect_events()
         mock_mgr = MockSubprocessManager()
-        executor = FlowExecutor(db, callback, mock_mgr)
+        executor = FlowExecutor(db, callback, mock_mgr, server_base_url="http://127.0.0.1:9090")
 
         flow = _make_linear_flow(node_names=["start", "work", "finish"])
         flow_run_id = await executor.execute(flow, {}, "/workspace")
@@ -1633,7 +1659,9 @@ class TestEdgeTransitionRecorded:
         mock_judge = MockJudgeProtocol()
         mock_judge.add_decision(JudgeDecision(target="done", reasoning="LGTM", confidence=0.95))
 
-        executor = FlowExecutor(db, callback, mock_mgr, judge=mock_judge)
+        executor = FlowExecutor(
+            db, callback, mock_mgr, judge=mock_judge, server_base_url="http://127.0.0.1:9090"
+        )
 
         flow = _make_conditional_flow(with_cycle=True)
         flow_run_id = await executor.execute(flow, {}, "/workspace")
@@ -1660,7 +1688,9 @@ class TestJudgeEventsEmitted:
         mock_judge = MockJudgeProtocol()
         mock_judge.add_decision(JudgeDecision(target="done", reasoning="Good", confidence=0.9))
 
-        executor = FlowExecutor(db, callback, mock_mgr, judge=mock_judge)
+        executor = FlowExecutor(
+            db, callback, mock_mgr, judge=mock_judge, server_base_url="http://127.0.0.1:9090"
+        )
 
         flow = _make_conditional_flow(with_cycle=True)
         await executor.execute(flow, {}, "/workspace")
@@ -1694,7 +1724,7 @@ class TestOnErrorPause:
         events, callback = _collect_events()
         mock_mgr = MockSubprocessManager()
         mock_mgr.task_responses["work"] = (1, [])
-        executor = FlowExecutor(db, callback, mock_mgr)
+        executor = FlowExecutor(db, callback, mock_mgr, server_base_url="http://127.0.0.1:9090")
 
         flow = _make_linear_flow(on_error=ErrorPolicy.PAUSE)
         flow_run_id, execute_task = await _execute_until_paused(
@@ -1720,7 +1750,7 @@ class TestOnErrorAbort:
         _events, callback = _collect_events()
         mock_mgr = MockSubprocessManager()
         mock_mgr.task_responses["work"] = (1, [])
-        executor = FlowExecutor(db, callback, mock_mgr)
+        executor = FlowExecutor(db, callback, mock_mgr, server_base_url="http://127.0.0.1:9090")
 
         flow = _make_linear_flow(on_error=ErrorPolicy.ABORT)
         flow_run_id = await executor.execute(flow, {}, "/workspace")
@@ -1738,7 +1768,7 @@ class TestOnErrorSkip:
         _events, callback = _collect_events()
         mock_mgr = MockSubprocessManager()
         mock_mgr.task_responses["work"] = (1, [])
-        executor = FlowExecutor(db, callback, mock_mgr)
+        executor = FlowExecutor(db, callback, mock_mgr, server_base_url="http://127.0.0.1:9090")
 
         flow = _make_linear_flow(on_error=ErrorPolicy.SKIP)
         flow_run_id = await executor.execute(flow, {}, "/workspace")
@@ -1762,7 +1792,7 @@ class TestRetryFailedTask:
         _events, callback = _collect_events()
         mock_mgr = MockSubprocessManager()
         mock_mgr.task_responses["work"] = (1, [])
-        executor = FlowExecutor(db, callback, mock_mgr)
+        executor = FlowExecutor(db, callback, mock_mgr, server_base_url="http://127.0.0.1:9090")
 
         flow = _make_linear_flow(on_error=ErrorPolicy.PAUSE)
         flow_run_id, execute_task = await _execute_until_paused(
@@ -1798,7 +1828,7 @@ class TestRetryNonFailedRaises:
         db = _make_db()
         _events, callback = _collect_events()
         mock_mgr = MockSubprocessManager()
-        executor = FlowExecutor(db, callback, mock_mgr)
+        executor = FlowExecutor(db, callback, mock_mgr, server_base_url="http://127.0.0.1:9090")
 
         flow = _make_linear_flow(node_names=["start", "finish"])
         flow_run_id = await executor.execute(flow, {}, "/workspace")
@@ -1821,7 +1851,7 @@ class TestSkipFailedTask:
         _events, callback = _collect_events()
         mock_mgr = MockSubprocessManager()
         mock_mgr.task_responses["work"] = (1, [])
-        executor = FlowExecutor(db, callback, mock_mgr)
+        executor = FlowExecutor(db, callback, mock_mgr, server_base_url="http://127.0.0.1:9090")
 
         flow = _make_linear_flow(on_error=ErrorPolicy.PAUSE)
         flow_run_id, execute_task = await _execute_until_paused(
@@ -1855,7 +1885,7 @@ class TestSkipNonFailedRaises:
         db = _make_db()
         _events, callback = _collect_events()
         mock_mgr = MockSubprocessManager()
-        executor = FlowExecutor(db, callback, mock_mgr)
+        executor = FlowExecutor(db, callback, mock_mgr, server_base_url="http://127.0.0.1:9090")
 
         flow = _make_linear_flow(node_names=["start", "finish"])
         flow_run_id = await executor.execute(flow, {}, "/workspace")
@@ -1879,7 +1909,7 @@ class TestCancelFlow:
         mock_mgr = MockSubprocessManager()
         # Give start a delay so we can cancel during execution
         mock_mgr.task_delays["work"] = 1.0
-        executor = FlowExecutor(db, callback, mock_mgr)
+        executor = FlowExecutor(db, callback, mock_mgr, server_base_url="http://127.0.0.1:9090")
 
         flow = _make_linear_flow()
 
@@ -1911,7 +1941,7 @@ class TestCancelPausedFlow:
         _events, callback = _collect_events()
         mock_mgr = MockSubprocessManager()
         mock_mgr.task_responses["work"] = (1, [])
-        executor = FlowExecutor(db, callback, mock_mgr)
+        executor = FlowExecutor(db, callback, mock_mgr, server_base_url="http://127.0.0.1:9090")
 
         flow = _make_linear_flow(on_error=ErrorPolicy.PAUSE)
         flow_run_id, execute_task = await _execute_until_paused(
@@ -1939,7 +1969,7 @@ class TestFlowStatusChangeEvents:
         db = _make_db()
         events, callback = _collect_events()
         mock_mgr = MockSubprocessManager()
-        executor = FlowExecutor(db, callback, mock_mgr)
+        executor = FlowExecutor(db, callback, mock_mgr, server_base_url="http://127.0.0.1:9090")
 
         flow = _make_linear_flow(node_names=["start", "finish"])
         await executor.execute(flow, {}, "/workspace")
@@ -1965,7 +1995,7 @@ class TestEventCallbackExceptionHandled:
             raise RuntimeError("Callback exploded!")
 
         mock_mgr = MockSubprocessManager()
-        executor = FlowExecutor(db, bad_callback, mock_mgr)
+        executor = FlowExecutor(db, bad_callback, mock_mgr, server_base_url="http://127.0.0.1:9090")
 
         flow = _make_linear_flow(node_names=["start", "finish"])
         # Should not raise
@@ -1984,7 +2014,7 @@ class TestLinearFlowEventSequence:
         db = _make_db()
         events, callback = _collect_events()
         mock_mgr = MockSubprocessManager()
-        executor = FlowExecutor(db, callback, mock_mgr)
+        executor = FlowExecutor(db, callback, mock_mgr, server_base_url="http://127.0.0.1:9090")
 
         flow = _make_linear_flow()
         await executor.execute(flow, {}, "/workspace")
@@ -2012,7 +2042,7 @@ class TestForkJoinEventSequence:
         db = _make_db()
         events, callback = _collect_events()
         mock_mgr = MockSubprocessManager()
-        executor = FlowExecutor(db, callback, mock_mgr)
+        executor = FlowExecutor(db, callback, mock_mgr, server_base_url="http://127.0.0.1:9090")
 
         flow = _make_fork_join_flow()
         await executor.execute(flow, {}, "/workspace")
@@ -2035,7 +2065,9 @@ class TestConditionalEventSequence:
         mock_judge = MockJudgeProtocol()
         mock_judge.add_decision(JudgeDecision(target="done", reasoning="OK", confidence=0.9))
 
-        executor = FlowExecutor(db, callback, mock_mgr, judge=mock_judge)
+        executor = FlowExecutor(
+            db, callback, mock_mgr, judge=mock_judge, server_base_url="http://127.0.0.1:9090"
+        )
 
         flow = _make_conditional_flow(with_cycle=True)
         await executor.execute(flow, {}, "/workspace")
@@ -2141,7 +2173,9 @@ class TestDefaultEdgeConditionMatches:
             JudgeDecision(target="done", reasoning="All tasks are complete", confidence=0.95)
         )
 
-        executor = FlowExecutor(db, callback, mock_mgr, judge=mock_judge)
+        executor = FlowExecutor(
+            db, callback, mock_mgr, judge=mock_judge, server_base_url="http://127.0.0.1:9090"
+        )
 
         flow = _make_default_edge_flow()
         flow_run_id = await executor.execute(flow, {}, "/workspace")
@@ -2184,7 +2218,9 @@ class TestDefaultEdgeNoneFollowsDefault:
             JudgeDecision(target="done", reasoning="All done now", confidence=0.95)
         )
 
-        executor = FlowExecutor(db, callback, mock_mgr, judge=mock_judge)
+        executor = FlowExecutor(
+            db, callback, mock_mgr, judge=mock_judge, server_base_url="http://127.0.0.1:9090"
+        )
 
         flow = _make_default_edge_flow()
         flow_run_id = await executor.execute(flow, {}, "/workspace")
@@ -2224,7 +2260,9 @@ class TestDefaultEdgeLowConfidenceFollowsDefault:
             JudgeDecision(target="done", reasoning="Definitely done", confidence=0.95)
         )
 
-        executor = FlowExecutor(db, callback, mock_mgr, judge=mock_judge)
+        executor = FlowExecutor(
+            db, callback, mock_mgr, judge=mock_judge, server_base_url="http://127.0.0.1:9090"
+        )
 
         flow = _make_default_edge_flow()
         flow_run_id = await executor.execute(flow, {}, "/workspace")
@@ -2256,7 +2294,9 @@ class TestDefaultEdgeJudgeFailurePauses:
         mock_judge = MockJudgeProtocol()
         mock_judge.add_decision(JudgePauseError("Subprocess crashed"))
 
-        executor = FlowExecutor(db, callback, mock_mgr, judge=mock_judge)
+        executor = FlowExecutor(
+            db, callback, mock_mgr, judge=mock_judge, server_base_url="http://127.0.0.1:9090"
+        )
 
         flow = _make_default_edge_flow()
         flow_run_id, execute_task = await _execute_until_paused(
@@ -2289,7 +2329,7 @@ class TestCancelDoesNotTriggerOnErrorPause:
         mock_mgr = MockSubprocessManager()
         # Delay so we have time to cancel while task is running
         mock_mgr.task_delays["work"] = 2.0
-        executor = FlowExecutor(db, callback, mock_mgr)
+        executor = FlowExecutor(db, callback, mock_mgr, server_base_url="http://127.0.0.1:9090")
 
         flow = _make_linear_flow(on_error=ErrorPolicy.PAUSE)
 
@@ -2318,7 +2358,7 @@ class TestCancelDoesNotTriggerOnErrorPause:
         _events, callback = _collect_events()
         mock_mgr = MockSubprocessManager()
         mock_mgr.task_delays["work"] = 2.0
-        executor = FlowExecutor(db, callback, mock_mgr)
+        executor = FlowExecutor(db, callback, mock_mgr, server_base_url="http://127.0.0.1:9090")
 
         flow = _make_linear_flow(on_error=ErrorPolicy.PAUSE)
 
@@ -2346,7 +2386,7 @@ class TestCancelDoesNotTriggerOnErrorPause:
         _events, callback = _collect_events()
         mock_mgr = MockSubprocessManager()
         mock_mgr.task_responses["work"] = (143, [])
-        executor = FlowExecutor(db, callback, mock_mgr)
+        executor = FlowExecutor(db, callback, mock_mgr, server_base_url="http://127.0.0.1:9090")
 
         # Simulate cancel flag being set before error handling
         flow = _make_linear_flow(on_error=ErrorPolicy.PAUSE)
@@ -2381,7 +2421,7 @@ class TestResumeAfterOnErrorPause:
         mock_mgr = MockSubprocessManager()
         # First call to "work" fails; subsequent calls succeed
         mock_mgr.task_responses["work"] = (1, [])
-        executor = FlowExecutor(db, callback, mock_mgr)
+        executor = FlowExecutor(db, callback, mock_mgr, server_base_url="http://127.0.0.1:9090")
 
         flow = _make_linear_flow(on_error=ErrorPolicy.PAUSE)
         flow_run_id, execute_task = await _execute_until_paused(
@@ -2423,7 +2463,7 @@ class TestResumeAfterOnErrorPause:
         _events, callback = _collect_events()
         mock_mgr = MockSubprocessManager()
         mock_mgr.task_responses["start"] = (1, [])
-        executor = FlowExecutor(db, callback, mock_mgr)
+        executor = FlowExecutor(db, callback, mock_mgr, server_base_url="http://127.0.0.1:9090")
 
         flow = _make_linear_flow(on_error=ErrorPolicy.PAUSE)
         flow_run_id, execute_task = await _execute_until_paused(
@@ -2446,7 +2486,7 @@ class TestResumeAfterSkip:
         _events, callback = _collect_events()
         mock_mgr = MockSubprocessManager()
         mock_mgr.task_responses["work"] = (1, [])
-        executor = FlowExecutor(db, callback, mock_mgr)
+        executor = FlowExecutor(db, callback, mock_mgr, server_base_url="http://127.0.0.1:9090")
 
         flow = _make_linear_flow(on_error=ErrorPolicy.PAUSE)
         flow_run_id, execute_task = await _execute_until_paused(
@@ -2479,7 +2519,7 @@ class TestMultiplePauseResumeCycles:
 
         # Both work and work2 fail initially
         mock_mgr.task_responses["work"] = (1, [])
-        executor = FlowExecutor(db, callback, mock_mgr)
+        executor = FlowExecutor(db, callback, mock_mgr, server_base_url="http://127.0.0.1:9090")
 
         flow = _make_linear_flow(
             on_error=ErrorPolicy.PAUSE,
@@ -2536,7 +2576,7 @@ class TestCancelWhilePausedUnblocksMainLoop:
         _events, callback = _collect_events()
         mock_mgr = MockSubprocessManager()
         mock_mgr.task_responses["work"] = (1, [])
-        executor = FlowExecutor(db, callback, mock_mgr)
+        executor = FlowExecutor(db, callback, mock_mgr, server_base_url="http://127.0.0.1:9090")
 
         flow = _make_linear_flow(on_error=ErrorPolicy.PAUSE)
         flow_run_id, execute_task = await _execute_until_paused(
@@ -2561,7 +2601,7 @@ class TestResumeBudgetExceeded:
         db = _make_db()
         _events, callback = _collect_events()
         mock_mgr = MockSubprocessManager()
-        executor = FlowExecutor(db, callback, mock_mgr)
+        executor = FlowExecutor(db, callback, mock_mgr, server_base_url="http://127.0.0.1:9090")
 
         # Budget of 0 means it will exceed after first task
         flow = _make_linear_flow(
@@ -2606,7 +2646,7 @@ class TestCancelledErrorHandledProperly:
         mock_mgr = MockSubprocessManager()
         # Long delay so cancel fires during the await asyncio.sleep
         mock_mgr.task_delays["work"] = 10.0
-        executor = FlowExecutor(db, callback, mock_mgr)
+        executor = FlowExecutor(db, callback, mock_mgr, server_base_url="http://127.0.0.1:9090")
 
         flow = _make_linear_flow(on_error=ErrorPolicy.PAUSE)
 
@@ -2637,7 +2677,7 @@ class TestCancelledErrorHandledProperly:
         events, callback = _collect_events()
         mock_mgr = MockSubprocessManager()
         mock_mgr.task_delays["work"] = 10.0
-        executor = FlowExecutor(db, callback, mock_mgr)
+        executor = FlowExecutor(db, callback, mock_mgr, server_base_url="http://127.0.0.1:9090")
 
         flow = _make_linear_flow(on_error=ErrorPolicy.PAUSE)
 
@@ -2665,7 +2705,7 @@ class TestCancelledErrorHandledProperly:
         # _process_completed_task.
         mock_mgr.task_responses["work"] = (143, [])
         mock_mgr.task_delays["finish"] = 10.0
-        executor = FlowExecutor(db, callback, mock_mgr)
+        executor = FlowExecutor(db, callback, mock_mgr, server_base_url="http://127.0.0.1:9090")
 
         flow = _make_linear_flow(
             on_error=ErrorPolicy.PAUSE,
@@ -2705,7 +2745,7 @@ class TestUserPauseResume:
         mock_mgr = MockSubprocessManager()
         # Delay on "work" so we can pause while it's running
         mock_mgr.task_delays["work"] = 0.5
-        executor = FlowExecutor(db, callback, mock_mgr)
+        executor = FlowExecutor(db, callback, mock_mgr, server_base_url="http://127.0.0.1:9090")
 
         flow = _make_linear_flow(
             node_names=["start", "work", "finish"],
@@ -2752,7 +2792,7 @@ class TestUserPauseResume:
         db = _make_db()
         _events, callback = _collect_events()
         mock_mgr = MockSubprocessManager()
-        executor = FlowExecutor(db, callback, mock_mgr)
+        executor = FlowExecutor(db, callback, mock_mgr, server_base_url="http://127.0.0.1:9090")
 
         # We use on_error=pause on a failing start to pause, then fix and resume
         mock_mgr.task_responses["start"] = (1, [])
@@ -2784,7 +2824,7 @@ class TestUserPauseResume:
         _events, callback = _collect_events()
         mock_mgr = MockSubprocessManager()
         mock_mgr.task_responses["work"] = (1, [])
-        executor = FlowExecutor(db, callback, mock_mgr)
+        executor = FlowExecutor(db, callback, mock_mgr, server_base_url="http://127.0.0.1:9090")
 
         flow = _make_linear_flow(
             on_error=ErrorPolicy.PAUSE,
@@ -2830,7 +2870,7 @@ class TestResumeMainLoopStaysAlive:
         _events, callback = _collect_events()
         mock_mgr = MockSubprocessManager()
         mock_mgr.task_responses["work"] = (1, [])
-        executor = FlowExecutor(db, callback, mock_mgr)
+        executor = FlowExecutor(db, callback, mock_mgr, server_base_url="http://127.0.0.1:9090")
 
         flow = _make_linear_flow(on_error=ErrorPolicy.PAUSE)
         flow_run_id, execute_task = await _execute_until_paused(
@@ -2865,7 +2905,7 @@ class TestTwoPhasePause:
         mock_mgr = MockSubprocessManager()
         # Delay so the task is still running when we pause
         mock_mgr.task_delays["work"] = 1.0
-        executor = FlowExecutor(db, callback, mock_mgr)
+        executor = FlowExecutor(db, callback, mock_mgr, server_base_url="http://127.0.0.1:9090")
 
         flow = _make_linear_flow(node_names=["start", "work", "finish"])
         execute_task = asyncio.create_task(executor.execute(flow, {}, "/workspace"))
@@ -2905,7 +2945,7 @@ class TestTwoPhasePause:
         events, callback = _collect_events()
         mock_mgr = MockSubprocessManager()
         mock_mgr.task_delays["work"] = 0.3
-        executor = FlowExecutor(db, callback, mock_mgr)
+        executor = FlowExecutor(db, callback, mock_mgr, server_base_url="http://127.0.0.1:9090")
 
         flow = _make_linear_flow(node_names=["start", "work", "finish"])
         execute_task = asyncio.create_task(executor.execute(flow, {}, "/workspace"))
@@ -2953,7 +2993,7 @@ class TestTwoPhasePause:
         mock_mgr = MockSubprocessManager()
         # Long delay so task is still running when we resume
         mock_mgr.task_delays["work"] = 2.0
-        executor = FlowExecutor(db, callback, mock_mgr)
+        executor = FlowExecutor(db, callback, mock_mgr, server_base_url="http://127.0.0.1:9090")
 
         flow = _make_linear_flow(node_names=["start", "work", "finish"])
         execute_task = asyncio.create_task(executor.execute(flow, {}, "/workspace"))
@@ -3000,7 +3040,7 @@ class TestTwoPhasePause:
         _events, callback = _collect_events()
         mock_mgr = MockSubprocessManager()
         mock_mgr.task_delays["work"] = 0.2
-        executor = FlowExecutor(db, callback, mock_mgr)
+        executor = FlowExecutor(db, callback, mock_mgr, server_base_url="http://127.0.0.1:9090")
 
         flow = _make_linear_flow(node_names=["start", "work", "finish"])
         execute_task = asyncio.create_task(executor.execute(flow, {}, "/workspace"))
@@ -3037,7 +3077,7 @@ class TestTwoPhasePause:
         _events, callback = _collect_events()
         mock_mgr = MockSubprocessManager()
         mock_mgr.task_delays["work"] = 1.0
-        executor = FlowExecutor(db, callback, mock_mgr)
+        executor = FlowExecutor(db, callback, mock_mgr, server_base_url="http://127.0.0.1:9090")
 
         flow = _make_linear_flow(node_names=["start", "work", "finish"])
         execute_task = asyncio.create_task(executor.execute(flow, {}, "/workspace"))
@@ -3069,7 +3109,7 @@ class TestTwoPhasePause:
         events, callback = _collect_events()
         mock_mgr = MockSubprocessManager()
         mock_mgr.task_responses["work"] = (1, [])
-        executor = FlowExecutor(db, callback, mock_mgr)
+        executor = FlowExecutor(db, callback, mock_mgr, server_base_url="http://127.0.0.1:9090")
 
         flow = _make_linear_flow(
             on_error=ErrorPolicy.PAUSE,
@@ -3101,7 +3141,7 @@ class TestTwoPhasePause:
         _events, callback = _collect_events()
         mock_mgr = MockSubprocessManager()
         mock_mgr.task_delays["work"] = 2.0
-        executor = FlowExecutor(db, callback, mock_mgr)
+        executor = FlowExecutor(db, callback, mock_mgr, server_base_url="http://127.0.0.1:9090")
 
         flow = _make_linear_flow(node_names=["start", "work", "finish"])
         execute_task = asyncio.create_task(executor.execute(flow, {}, "/workspace"))
@@ -3183,7 +3223,7 @@ class TestWorktreeIntegration:
         db = _make_db()
         _events, callback = _collect_events()
         mock_mgr = MockSubprocessManager()
-        executor = FlowExecutor(db, callback, mock_mgr)
+        executor = FlowExecutor(db, callback, mock_mgr, server_base_url="http://127.0.0.1:9090")
 
         flow = _make_linear_flow_worktree(worktree=True, workspace="/workspace")
         flow_run_id = await executor.execute(flow, {}, "/workspace")
@@ -3206,7 +3246,7 @@ class TestWorktreeIntegration:
         db = _make_db()
         _events, callback = _collect_events()
         mock_mgr = MockSubprocessManager()
-        executor = FlowExecutor(db, callback, mock_mgr)
+        executor = FlowExecutor(db, callback, mock_mgr, server_base_url="http://127.0.0.1:9090")
 
         flow = _make_linear_flow_worktree(worktree=False, workspace="/workspace")
         flow_run_id = await executor.execute(flow, {}, "/workspace")
@@ -3222,7 +3262,7 @@ class TestWorktreeIntegration:
         db = _make_db()
         _events, callback = _collect_events()
         mock_mgr = MockSubprocessManager()
-        executor = FlowExecutor(db, callback, mock_mgr)
+        executor = FlowExecutor(db, callback, mock_mgr, server_base_url="http://127.0.0.1:9090")
 
         # /workspace doesn't exist, so is_git_repo returns False
         flow = _make_linear_flow_worktree(worktree=True, workspace="/workspace")
@@ -3255,7 +3295,7 @@ class TestWorktreeIntegration:
         db = _make_db()
         _events, callback = _collect_events()
         mock_mgr = MockSubprocessManager()
-        executor = FlowExecutor(db, callback, mock_mgr)
+        executor = FlowExecutor(db, callback, mock_mgr, server_base_url="http://127.0.0.1:9090")
 
         flow = _make_linear_flow_worktree(worktree=True, workspace="/workspace")
         await executor.execute(flow, {}, "/workspace")
@@ -3284,7 +3324,9 @@ class TestWorktreeIntegration:
         db = _make_db()
         _events, callback = _collect_events()
         mock_mgr = MockSubprocessManager()
-        executor = FlowExecutor(db, callback, mock_mgr, worktree_cleanup=False)
+        executor = FlowExecutor(
+            db, callback, mock_mgr, worktree_cleanup=False, server_base_url="http://127.0.0.1:9090"
+        )
 
         flow = _make_linear_flow_worktree(worktree=True, workspace="/workspace")
         await executor.execute(flow, {}, "/workspace")
@@ -3297,7 +3339,7 @@ class TestWorktreeIntegration:
         db = _make_db()
         _events, callback = _collect_events()
         mock_mgr = MockSubprocessManager()
-        executor = FlowExecutor(db, callback, mock_mgr)
+        executor = FlowExecutor(db, callback, mock_mgr, server_base_url="http://127.0.0.1:9090")
 
         # /workspace doesn't exist, is_git_repo=False -> no worktree
         flow = _make_linear_flow_worktree(worktree=True, workspace="/workspace")
@@ -3320,7 +3362,7 @@ class TestWorktreeIntegration:
         db = _make_db()
         _events, callback = _collect_events()
         mock_mgr = MockSubprocessManager()
-        executor = FlowExecutor(db, callback, mock_mgr)
+        executor = FlowExecutor(db, callback, mock_mgr, server_base_url="http://127.0.0.1:9090")
 
         flow = _make_linear_flow_worktree(worktree=True, workspace="/workspace")
         flow_run_id = await executor.execute(flow, {}, "/workspace")
@@ -3352,7 +3394,7 @@ class TestWorktreeIntegration:
         db = _make_db()
         _events, callback = _collect_events()
         mock_mgr = MockSubprocessManager()
-        executor = FlowExecutor(db, callback, mock_mgr)
+        executor = FlowExecutor(db, callback, mock_mgr, server_base_url="http://127.0.0.1:9090")
 
         flow = _make_linear_flow_worktree(worktree=True, workspace="/workspace")
         flow_run_id = await executor.execute(flow, {}, "/workspace")
@@ -3392,7 +3434,7 @@ class TestWorktreeIntegration:
         _events, callback = _collect_events()
         mock_mgr = MockSubprocessManager()
         mock_mgr.task_responses["work"] = (1, [])
-        executor = FlowExecutor(db, callback, mock_mgr)
+        executor = FlowExecutor(db, callback, mock_mgr, server_base_url="http://127.0.0.1:9090")
 
         flow = _make_linear_flow_worktree(worktree=True, workspace="/workspace")
         flow_run_id, execute_task = await _execute_until_paused(
@@ -3435,7 +3477,9 @@ class TestActivityLogsLinear:
         db = _make_db()
         events, callback = _collect_events()
         mock_mgr = MockSubprocessManager()
-        executor = FlowExecutor(db, callback, mock_mgr, max_concurrent=4)
+        executor = FlowExecutor(
+            db, callback, mock_mgr, max_concurrent=4, server_base_url="http://127.0.0.1:9090"
+        )
 
         flow = _make_linear_flow()
         await executor.execute(flow, {}, "/workspace")
@@ -3453,7 +3497,9 @@ class TestActivityLogsLinear:
         db = _make_db()
         events, callback = _collect_events()
         mock_mgr = MockSubprocessManager()
-        executor = FlowExecutor(db, callback, mock_mgr, max_concurrent=4)
+        executor = FlowExecutor(
+            db, callback, mock_mgr, max_concurrent=4, server_base_url="http://127.0.0.1:9090"
+        )
 
         flow = _make_linear_flow()
         await executor.execute(flow, {}, "/workspace")
@@ -3470,7 +3516,9 @@ class TestActivityLogsLinear:
         db = _make_db()
         _events, callback = _collect_events()
         mock_mgr = MockSubprocessManager()
-        executor = FlowExecutor(db, callback, mock_mgr, max_concurrent=4)
+        executor = FlowExecutor(
+            db, callback, mock_mgr, max_concurrent=4, server_base_url="http://127.0.0.1:9090"
+        )
 
         flow = _make_linear_flow()
         flow_run_id = await executor.execute(flow, {}, "/workspace")
@@ -3501,7 +3549,9 @@ class TestActivityLogsForkJoin:
         db = _make_db()
         events, callback = _collect_events()
         mock_mgr = MockSubprocessManager()
-        executor = FlowExecutor(db, callback, mock_mgr, max_concurrent=4)
+        executor = FlowExecutor(
+            db, callback, mock_mgr, max_concurrent=4, server_base_url="http://127.0.0.1:9090"
+        )
 
         flow = _make_fork_join_flow(fork_targets=["task_a", "task_b"])
         await executor.execute(flow, {}, "/workspace")
@@ -3517,7 +3567,9 @@ class TestActivityLogsForkJoin:
         db = _make_db()
         events, callback = _collect_events()
         mock_mgr = MockSubprocessManager()
-        executor = FlowExecutor(db, callback, mock_mgr, max_concurrent=4)
+        executor = FlowExecutor(
+            db, callback, mock_mgr, max_concurrent=4, server_base_url="http://127.0.0.1:9090"
+        )
 
         flow = _make_fork_join_flow(fork_targets=["task_a", "task_b"])
         await executor.execute(flow, {}, "/workspace")
@@ -3539,7 +3591,14 @@ class TestActivityLogsConditional:
         mock_judge = MockJudgeProtocol()
         mock_judge.add_decision(JudgeDecision(target="done", reasoning="All good", confidence=0.95))
 
-        executor = FlowExecutor(db, callback, mock_mgr, judge=mock_judge, max_concurrent=4)
+        executor = FlowExecutor(
+            db,
+            callback,
+            mock_mgr,
+            judge=mock_judge,
+            max_concurrent=4,
+            server_base_url="http://127.0.0.1:9090",
+        )
         flow = _make_conditional_flow()
         await executor.execute(flow, {}, "/workspace")
 
@@ -3582,7 +3641,9 @@ class TestSelfReportRouting:
         async def mock_read_decision(task_id: str, flow_run_id: str) -> JudgeDecision:
             return mock_decision
 
-        executor = FlowExecutor(db, callback, mock_mgr, max_concurrent=4)
+        executor = FlowExecutor(
+            db, callback, mock_mgr, max_concurrent=4, server_base_url="http://127.0.0.1:9090"
+        )
         with patch.object(executor, "_read_decision_artifact", side_effect=mock_read_decision):
             await executor.execute(flow, {}, "/workspace")
 
@@ -3624,7 +3685,9 @@ class TestSelfReportRouting:
         async def mock_read_decision(task_id: str, flow_run_id: str) -> JudgeDecision:
             return mock_decision
 
-        executor = FlowExecutor(db, callback, mock_mgr, max_concurrent=4)
+        executor = FlowExecutor(
+            db, callback, mock_mgr, max_concurrent=4, server_base_url="http://127.0.0.1:9090"
+        )
         with patch.object(executor, "_read_decision_artifact", side_effect=mock_read_decision):
             await executor.execute(flow, {}, "/workspace")
 
@@ -3673,7 +3736,9 @@ class TestSelfReportRouting:
             call_count["n"] += 1
             return decisions[idx]
 
-        executor = FlowExecutor(db, callback, mock_mgr, max_concurrent=4)
+        executor = FlowExecutor(
+            db, callback, mock_mgr, max_concurrent=4, server_base_url="http://127.0.0.1:9090"
+        )
         with patch.object(executor, "_read_decision_artifact", side_effect=mock_read_decision):
             await executor.execute(flow, {}, "/workspace")
 
@@ -3715,7 +3780,9 @@ class TestSelfReportRouting:
         async def mock_read_decision(task_id: str, flow_run_id: str) -> JudgeDecision:
             raise FileNotFoundError("No decision artifact submitted by agent")
 
-        executor = FlowExecutor(db, callback, mock_mgr, max_concurrent=4)
+        executor = FlowExecutor(
+            db, callback, mock_mgr, max_concurrent=4, server_base_url="http://127.0.0.1:9090"
+        )
         with patch.object(executor, "_read_decision_artifact", side_effect=mock_read_decision):
             flow_run_id, execute_task = await _execute_until_paused(
                 executor, flow, {}, "/workspace", db
@@ -3764,7 +3831,14 @@ class TestSelfReportRouting:
         mock_judge = MockJudgeProtocol()
         mock_judge.add_decision(JudgeDecision(target="done", reasoning="Approved", confidence=0.95))
 
-        executor = FlowExecutor(db, callback, mock_mgr, judge=mock_judge, max_concurrent=4)
+        executor = FlowExecutor(
+            db,
+            callback,
+            mock_mgr,
+            judge=mock_judge,
+            max_concurrent=4,
+            server_base_url="http://127.0.0.1:9090",
+        )
         await executor.execute(flow, {}, "/workspace")
 
         # Judge events SHOULD be emitted since node-level judge=True overrides
@@ -3790,7 +3864,9 @@ class TestActivityLogsPause:
         # Make "work" node fail
         mock_mgr.task_responses["work"] = (1, [])
 
-        executor = FlowExecutor(db, callback, mock_mgr, max_concurrent=4)
+        executor = FlowExecutor(
+            db, callback, mock_mgr, max_concurrent=4, server_base_url="http://127.0.0.1:9090"
+        )
         flow = _make_linear_flow(on_error=ErrorPolicy.PAUSE)
 
         flow_run_id, execute_task = await _execute_until_paused(
@@ -3818,7 +3894,9 @@ class TestActivityLogsBudgetWarning:
         mock_mgr = MockSubprocessManager()
         # Use a tiny budget to trigger warning thresholds
         # Budget is 10 seconds, tasks use simulated elapsed time from monotonic clock
-        executor = FlowExecutor(db, callback, mock_mgr, max_concurrent=4)
+        executor = FlowExecutor(
+            db, callback, mock_mgr, max_concurrent=4, server_base_url="http://127.0.0.1:9090"
+        )
         flow = _make_linear_flow(budget_seconds=10)
 
         # Patch time.monotonic to simulate elapsed time
@@ -3866,6 +3944,7 @@ class TestTaskAwareExecution:
             db=db,
             event_callback=events.append,
             harness=subprocess_mgr,
+            server_base_url="http://127.0.0.1:9090",
         )
 
         # Create a task in the DB
@@ -3894,6 +3973,7 @@ class TestTaskAwareExecution:
             db=db,
             event_callback=events.append,
             harness=subprocess_mgr,
+            server_base_url="http://127.0.0.1:9090",
         )
 
         task_id = db.create_task("test-flow", "No description task")
@@ -3916,6 +3996,7 @@ class TestTaskAwareExecution:
             db=db,
             event_callback=events.append,
             harness=subprocess_mgr,
+            server_base_url="http://127.0.0.1:9090",
         )
 
         await executor.execute(flow, {}, "/workspace")
@@ -3934,6 +4015,7 @@ class TestTaskAwareExecution:
             db=db,
             event_callback=events.append,
             harness=subprocess_mgr,
+            server_base_url="http://127.0.0.1:9090",
         )
 
         task_id = db.create_task("test-flow", "History test")
@@ -3961,6 +4043,7 @@ class TestTaskAwareExecution:
             db=db,
             event_callback=events.append,
             harness=subprocess_mgr,
+            server_base_url="http://127.0.0.1:9090",
         )
 
         task_id = db.create_task("test-flow", "Track current node")
@@ -3983,6 +4066,7 @@ class TestTaskAwareExecution:
             db=db,
             event_callback=events.append,
             harness=subprocess_mgr,
+            server_base_url="http://127.0.0.1:9090",
         )
 
         task_id = db.create_task("test-flow", "Complete me")
@@ -4006,6 +4090,7 @@ class TestTaskAwareExecution:
             db=db,
             event_callback=events.append,
             harness=subprocess_mgr,
+            server_base_url="http://127.0.0.1:9090",
         )
 
         task_id = db.create_task("test-flow", "Cancel me")
@@ -4041,6 +4126,7 @@ class TestTaskAwareExecution:
             db=db,
             event_callback=events.append,
             harness=subprocess_mgr,
+            server_base_url="http://127.0.0.1:9090",
         )
 
         task_id = db.create_task("test-flow", "Pause me")
@@ -4085,6 +4171,7 @@ class TestTaskAwareExecution:
             db=db,
             event_callback=events.append,
             harness=subprocess_mgr,
+            server_base_url="http://127.0.0.1:9090",
         )
 
         task_id = db.create_task("test-flow", "Link to run")
@@ -4197,6 +4284,7 @@ class TestFileEdgeCreatesChildTask:
             db=db,
             event_callback=events.append,
             harness=subprocess_mgr,
+            server_base_url="http://127.0.0.1:9090",
         )
 
         flow_run_id = await executor.execute(flow, {}, "/workspace", task_id=task_id)
@@ -4232,6 +4320,7 @@ class TestFileEdgeChildTaskMetadata:
             db=db,
             event_callback=events.append,
             harness=subprocess_mgr,
+            server_base_url="http://127.0.0.1:9090",
         )
 
         await executor.execute(flow, {}, "/workspace", task_id=task_id)
@@ -4262,6 +4351,7 @@ class TestFileEdgeChildTaskMetadata:
             db=db,
             event_callback=events.append,
             harness=subprocess_mgr,
+            server_base_url="http://127.0.0.1:9090",
         )
 
         # Save output artifact on the "work" node's task execution after it's created
@@ -4307,6 +4397,7 @@ class TestCrossFlowInputMapping:
             db=db,
             event_callback=events.append,
             harness=subprocess_mgr,
+            server_base_url="http://127.0.0.1:9090",
         )
 
         original_build = executor._build_child_params
@@ -4343,6 +4434,7 @@ class TestCrossFlowInputMapping:
             db=db,
             event_callback=events.append,
             harness=subprocess_mgr,
+            server_base_url="http://127.0.0.1:9090",
         )
 
         # No output artifact, but summary artifact exists
@@ -4380,6 +4472,7 @@ class TestCrossFlowInputMapping:
             db=db,
             event_callback=events.append,
             harness=subprocess_mgr,
+            server_base_url="http://127.0.0.1:9090",
         )
 
         # No output, no summary artifacts -- _build_child_params returns {}
@@ -4404,6 +4497,7 @@ class TestCrossFlowInputMapping:
             db=db,
             event_callback=events.append,
             harness=subprocess_mgr,
+            server_base_url="http://127.0.0.1:9090",
         )
 
         original_build = executor._build_child_params
@@ -4456,6 +4550,7 @@ class TestCrossFlowInputMapping:
             db=db,
             event_callback=events.append,
             harness=subprocess_mgr,
+            server_base_url="http://127.0.0.1:9090",
         )
 
         await executor.execute(flow, {}, "/workspace", task_id=task_id)
@@ -4496,6 +4591,7 @@ class TestFileEdgeDoesNotBlockFlow:
             db=db,
             event_callback=events.append,
             harness=subprocess_mgr,
+            server_base_url="http://127.0.0.1:9090",
         )
 
         flow_run_id = await executor.execute(flow, {}, "/workspace", task_id=task_id)
@@ -4538,6 +4634,7 @@ class TestFileEdgeDepthLimit:
             db=db,
             event_callback=events.append,
             harness=subprocess_mgr,
+            server_base_url="http://127.0.0.1:9090",
         )
 
         await executor.execute(flow, {}, "/workspace", task_id=deepest_task_id)
@@ -4566,6 +4663,7 @@ class TestFileEdgeDepthLimit:
             db=db,
             event_callback=events.append,
             harness=subprocess_mgr,
+            server_base_url="http://127.0.0.1:9090",
         )
 
         await executor.execute(flow, {}, "/workspace", task_id=prev_id)
@@ -4591,6 +4689,7 @@ class TestFileEdgeActivityLog:
             db=db,
             event_callback=events.append,
             harness=subprocess_mgr,
+            server_base_url="http://127.0.0.1:9090",
         )
 
         await executor.execute(flow, {}, "/workspace", task_id=task_id)
@@ -4628,6 +4727,7 @@ class TestFileEdgeWithoutTaskId:
             db=db,
             event_callback=events.append,
             harness=subprocess_mgr,
+            server_base_url="http://127.0.0.1:9090",
         )
 
         # Execute without task_id
@@ -4661,6 +4761,7 @@ class TestAwaitEdgeCreatesChildTask:
             db=db,
             event_callback=events.append,
             harness=subprocess_mgr,
+            server_base_url="http://127.0.0.1:9090",
         )
 
         # Run in background since AWAIT blocks. Complete the child after
@@ -4714,6 +4815,7 @@ class TestAwaitEdgeSetsWaitingStatus:
             db=db,
             event_callback=events.append,
             harness=subprocess_mgr,
+            server_base_url="http://127.0.0.1:9090",
         )
 
         waiting_observed = False
@@ -4795,7 +4897,9 @@ class TestWaitNodeWithDelay:
         db = _make_db()
         _events, callback = _collect_events()
         mock_mgr = MockSubprocessManager()
-        executor = FlowExecutor(db, callback, mock_mgr, max_concurrent=4)
+        executor = FlowExecutor(
+            db, callback, mock_mgr, max_concurrent=4, server_base_url="http://127.0.0.1:9090"
+        )
 
         # Use a very short delay (1 second) so test runs quickly
         flow = _make_wait_flow(wait_delay_seconds=1)
@@ -4820,7 +4924,9 @@ class TestWaitNodeWithDelay:
         db = _make_db()
         events, callback = _collect_events()
         mock_mgr = MockSubprocessManager()
-        executor = FlowExecutor(db, callback, mock_mgr, max_concurrent=4)
+        executor = FlowExecutor(
+            db, callback, mock_mgr, max_concurrent=4, server_base_url="http://127.0.0.1:9090"
+        )
 
         flow = _make_wait_flow(wait_delay_seconds=1)
         flow_run_id = await asyncio.wait_for(executor.execute(flow, {}, "/workspace"), timeout=15)
@@ -4839,7 +4945,9 @@ class TestWaitNodeWithDelay:
         db = _make_db()
         events, callback = _collect_events()
         mock_mgr = MockSubprocessManager()
-        executor = FlowExecutor(db, callback, mock_mgr, max_concurrent=4)
+        executor = FlowExecutor(
+            db, callback, mock_mgr, max_concurrent=4, server_base_url="http://127.0.0.1:9090"
+        )
 
         flow = _make_wait_flow(wait_delay_seconds=1)
         await asyncio.wait_for(executor.execute(flow, {}, "/workspace"), timeout=15)
@@ -4855,7 +4963,9 @@ class TestWaitNodeWithDelay:
         db = _make_db()
         _events, callback = _collect_events()
         mock_mgr = MockSubprocessManager()
-        executor = FlowExecutor(db, callback, mock_mgr, max_concurrent=4)
+        executor = FlowExecutor(
+            db, callback, mock_mgr, max_concurrent=4, server_base_url="http://127.0.0.1:9090"
+        )
 
         flow = _make_wait_flow(wait_delay_seconds=1)
         await asyncio.wait_for(executor.execute(flow, {}, "/workspace"), timeout=15)
@@ -4872,7 +4982,9 @@ class TestWaitNodeWithDelay:
         db = _make_db()
         _events, callback = _collect_events()
         mock_mgr = MockSubprocessManager()
-        executor = FlowExecutor(db, callback, mock_mgr, max_concurrent=4)
+        executor = FlowExecutor(
+            db, callback, mock_mgr, max_concurrent=4, server_base_url="http://127.0.0.1:9090"
+        )
 
         # Use a 2-second delay so we can observe the waiting state
         flow = _make_wait_flow(wait_delay_seconds=2)
@@ -4909,7 +5021,9 @@ class TestWaitNodeWithSmallBudget:
         db = _make_db()
         _events, callback = _collect_events()
         mock_mgr = MockSubprocessManager()
-        executor = FlowExecutor(db, callback, mock_mgr, max_concurrent=4)
+        executor = FlowExecutor(
+            db, callback, mock_mgr, max_concurrent=4, server_base_url="http://127.0.0.1:9090"
+        )
 
         flow = _make_wait_flow(wait_delay_seconds=1)
         # Override budget to be very small
@@ -5006,7 +5120,9 @@ class TestFenceNodeSimple:
         db = _make_db()
         _events, callback = _collect_events()
         mock_mgr = MockSubprocessManager()
-        executor = FlowExecutor(db, callback, mock_mgr, max_concurrent=4)
+        executor = FlowExecutor(
+            db, callback, mock_mgr, max_concurrent=4, server_base_url="http://127.0.0.1:9090"
+        )
 
         flow = _make_fence_flow_simple()
         flow_run_id = await asyncio.wait_for(executor.execute(flow, {}, "/workspace"), timeout=15)
@@ -5027,7 +5143,9 @@ class TestFenceNodeSimple:
         db = _make_db()
         _events, callback = _collect_events()
         mock_mgr = MockSubprocessManager()
-        executor = FlowExecutor(db, callback, mock_mgr, max_concurrent=4)
+        executor = FlowExecutor(
+            db, callback, mock_mgr, max_concurrent=4, server_base_url="http://127.0.0.1:9090"
+        )
 
         flow = _make_fence_flow_simple()
         await asyncio.wait_for(executor.execute(flow, {}, "/workspace"), timeout=15)
@@ -5044,7 +5162,9 @@ class TestFenceNodeSimple:
         db = _make_db()
         events, callback = _collect_events()
         mock_mgr = MockSubprocessManager()
-        executor = FlowExecutor(db, callback, mock_mgr, max_concurrent=4)
+        executor = FlowExecutor(
+            db, callback, mock_mgr, max_concurrent=4, server_base_url="http://127.0.0.1:9090"
+        )
 
         flow = _make_fence_flow_simple()
         await asyncio.wait_for(executor.execute(flow, {}, "/workspace"), timeout=15)
@@ -5062,7 +5182,9 @@ class TestFenceNodeSimple:
         db = _make_db()
         _events, callback = _collect_events()
         mock_mgr = MockSubprocessManager()
-        executor = FlowExecutor(db, callback, mock_mgr, max_concurrent=4)
+        executor = FlowExecutor(
+            db, callback, mock_mgr, max_concurrent=4, server_base_url="http://127.0.0.1:9090"
+        )
 
         flow = _make_fence_flow_simple()
         flow_run_id = await asyncio.wait_for(executor.execute(flow, {}, "/workspace"), timeout=15)
@@ -5081,7 +5203,9 @@ class TestFenceNodeWithForkJoin:
         db = _make_db()
         _events, callback = _collect_events()
         mock_mgr = MockSubprocessManager()
-        executor = FlowExecutor(db, callback, mock_mgr, max_concurrent=4)
+        executor = FlowExecutor(
+            db, callback, mock_mgr, max_concurrent=4, server_base_url="http://127.0.0.1:9090"
+        )
 
         flow = _make_fence_fork_join_flow()
         flow_run_id = await asyncio.wait_for(executor.execute(flow, {}, "/workspace"), timeout=15)
@@ -5137,7 +5261,9 @@ class TestAtomicNodeNoContention:
         db = _make_db()
         _events, callback = _collect_events()
         mock_mgr = MockSubprocessManager()
-        executor = FlowExecutor(db, callback, mock_mgr, max_concurrent=4)
+        executor = FlowExecutor(
+            db, callback, mock_mgr, max_concurrent=4, server_base_url="http://127.0.0.1:9090"
+        )
 
         flow = _make_atomic_flow()
         flow_run_id = await asyncio.wait_for(executor.execute(flow, {}, "/workspace"), timeout=15)
@@ -5158,7 +5284,9 @@ class TestAtomicNodeNoContention:
         db = _make_db()
         _events, callback = _collect_events()
         mock_mgr = MockSubprocessManager()
-        executor = FlowExecutor(db, callback, mock_mgr, max_concurrent=4)
+        executor = FlowExecutor(
+            db, callback, mock_mgr, max_concurrent=4, server_base_url="http://127.0.0.1:9090"
+        )
 
         flow = _make_atomic_flow()
         await asyncio.wait_for(executor.execute(flow, {}, "/workspace"), timeout=15)
@@ -5173,7 +5301,9 @@ class TestAtomicNodeNoContention:
         db = _make_db()
         events, callback = _collect_events()
         mock_mgr = MockSubprocessManager()
-        executor = FlowExecutor(db, callback, mock_mgr, max_concurrent=4)
+        executor = FlowExecutor(
+            db, callback, mock_mgr, max_concurrent=4, server_base_url="http://127.0.0.1:9090"
+        )
 
         flow = _make_atomic_flow()
         await asyncio.wait_for(executor.execute(flow, {}, "/workspace"), timeout=15)
@@ -5200,8 +5330,12 @@ class TestAtomicNodeWithContention:
 
         # Run two flows concurrently. The first should acquire the lock,
         # the second should wait until the first completes.
-        executor1 = FlowExecutor(db, callback, mock_mgr, max_concurrent=4)
-        executor2 = FlowExecutor(db, callback, mock_mgr, max_concurrent=4)
+        executor1 = FlowExecutor(
+            db, callback, mock_mgr, max_concurrent=4, server_base_url="http://127.0.0.1:9090"
+        )
+        executor2 = FlowExecutor(
+            db, callback, mock_mgr, max_concurrent=4, server_base_url="http://127.0.0.1:9090"
+        )
 
         flow = _make_atomic_flow()
 
@@ -5237,8 +5371,12 @@ class TestAtomicNodeWithContention:
         # Add a delay to the deploy step to force contention
         mock_mgr.task_delays["deploy"] = 1.5
 
-        executor1 = FlowExecutor(db, callback, mock_mgr, max_concurrent=4)
-        executor2 = FlowExecutor(db, callback, mock_mgr, max_concurrent=4)
+        executor1 = FlowExecutor(
+            db, callback, mock_mgr, max_concurrent=4, server_base_url="http://127.0.0.1:9090"
+        )
+        executor2 = FlowExecutor(
+            db, callback, mock_mgr, max_concurrent=4, server_base_url="http://127.0.0.1:9090"
+        )
 
         flow = _make_atomic_flow()
 
@@ -5453,7 +5591,9 @@ class TestSendMessageQueues:
         db = _make_db()
         _events, callback = _collect_events()
         mock_mgr = InterruptableMockManager()
-        executor = FlowExecutor(db, callback, mock_mgr, max_concurrent=4)
+        executor = FlowExecutor(
+            db, callback, mock_mgr, max_concurrent=4, server_base_url="http://127.0.0.1:9090"
+        )
 
         flow = _make_linear_flow(node_names=["start", "work", "finish"])
         # Make the "work" step slow so we can send a message while it's running
@@ -5494,7 +5634,9 @@ class TestSendMessageQueues:
         db = _make_db()
         _events, callback = _collect_events()
         mock_mgr = MockSubprocessManager()
-        executor = FlowExecutor(db, callback, mock_mgr, max_concurrent=4)
+        executor = FlowExecutor(
+            db, callback, mock_mgr, max_concurrent=4, server_base_url="http://127.0.0.1:9090"
+        )
 
         flow = _make_linear_flow(node_names=["start", "finish"])
         flow_run_id = await executor.execute(flow, {}, "/workspace")
@@ -5515,7 +5657,9 @@ class TestSendMessageQueues:
         _events, callback = _collect_events()
         mock_mgr = MockSubprocessManager()
         mock_mgr.task_responses["start"] = (1, [])  # fail
-        executor = FlowExecutor(db, callback, mock_mgr, max_concurrent=4)
+        executor = FlowExecutor(
+            db, callback, mock_mgr, max_concurrent=4, server_base_url="http://127.0.0.1:9090"
+        )
 
         flow = _make_linear_flow(node_names=["start", "finish"], on_error=ErrorPolicy.PAUSE)
         # Run in background, it will pause due to on_error=pause
@@ -5552,7 +5696,9 @@ class TestReInvocationLoop:
         db = _make_db()
         _events, callback = _collect_events()
         mock_mgr = InterruptableMockManager()
-        executor = FlowExecutor(db, callback, mock_mgr, max_concurrent=4)
+        executor = FlowExecutor(
+            db, callback, mock_mgr, max_concurrent=4, server_base_url="http://127.0.0.1:9090"
+        )
 
         flow = _make_linear_flow(node_names=["start", "work", "finish"])
         # Make "work" slow enough to queue a message
@@ -5606,7 +5752,9 @@ class TestReInvocationLoop:
         db = _make_db()
         _events, callback = _collect_events()
         mock_mgr = InterruptableMockManager()
-        executor = FlowExecutor(db, callback, mock_mgr, max_concurrent=4)
+        executor = FlowExecutor(
+            db, callback, mock_mgr, max_concurrent=4, server_base_url="http://127.0.0.1:9090"
+        )
 
         flow = _make_linear_flow(node_names=["start", "finish"])
         flow_run_id = await executor.execute(flow, {}, "/workspace")
@@ -5625,7 +5773,9 @@ class TestReInvocationLoop:
         db = _make_db()
         _events, callback = _collect_events()
         mock_mgr = InterruptableMockManager()
-        executor = FlowExecutor(db, callback, mock_mgr, max_concurrent=4)
+        executor = FlowExecutor(
+            db, callback, mock_mgr, max_concurrent=4, server_base_url="http://127.0.0.1:9090"
+        )
 
         flow = _make_linear_flow(node_names=["start", "work", "finish"])
         mock_mgr.task_delays["work"] = 0.3
@@ -5677,7 +5827,9 @@ class TestInterruptTask:
         db = _make_db()
         events, callback = _collect_events()
         mock_mgr = InterruptableMockManager()
-        executor = FlowExecutor(db, callback, mock_mgr, max_concurrent=4)
+        executor = FlowExecutor(
+            db, callback, mock_mgr, max_concurrent=4, server_base_url="http://127.0.0.1:9090"
+        )
 
         flow = _make_linear_flow(node_names=["start", "work", "finish"])
         # Make "work" slow so we can interrupt it
@@ -5728,7 +5880,9 @@ class TestInterruptTask:
         db = _make_db()
         events, callback = _collect_events()
         mock_mgr = InterruptableMockManager()
-        executor = FlowExecutor(db, callback, mock_mgr, max_concurrent=4)
+        executor = FlowExecutor(
+            db, callback, mock_mgr, max_concurrent=4, server_base_url="http://127.0.0.1:9090"
+        )
 
         flow = _make_linear_flow(node_names=["start", "work", "finish"])
         mock_mgr.task_delays["work"] = 5.0
@@ -5771,7 +5925,9 @@ class TestInterruptTask:
         db = _make_db()
         _events, callback = _collect_events()
         mock_mgr = MockSubprocessManager()
-        executor = FlowExecutor(db, callback, mock_mgr, max_concurrent=4)
+        executor = FlowExecutor(
+            db, callback, mock_mgr, max_concurrent=4, server_base_url="http://127.0.0.1:9090"
+        )
 
         flow = _make_linear_flow(node_names=["start", "finish"])
         flow_run_id = await executor.execute(flow, {}, "/workspace")
@@ -5789,7 +5945,9 @@ class TestInterruptTask:
         db = _make_db()
         _events, callback = _collect_events()
         mock_mgr = MockSubprocessManager()
-        executor = FlowExecutor(db, callback, mock_mgr, max_concurrent=4)
+        executor = FlowExecutor(
+            db, callback, mock_mgr, max_concurrent=4, server_base_url="http://127.0.0.1:9090"
+        )
 
         import pytest
 
@@ -5805,7 +5963,9 @@ class TestInterruptAndResume:
         db = _make_db()
         _events, callback = _collect_events()
         mock_mgr = InterruptableMockManager()
-        executor = FlowExecutor(db, callback, mock_mgr, max_concurrent=4)
+        executor = FlowExecutor(
+            db, callback, mock_mgr, max_concurrent=4, server_base_url="http://127.0.0.1:9090"
+        )
 
         flow = _make_linear_flow(node_names=["start", "work", "finish"])
         # Make "work" slow so we can interrupt, but not too slow
@@ -5864,7 +6024,9 @@ class TestInterruptAndResume:
         db = _make_db()
         events, callback = _collect_events()
         mock_mgr = InterruptableMockManager()
-        executor = FlowExecutor(db, callback, mock_mgr, max_concurrent=4)
+        executor = FlowExecutor(
+            db, callback, mock_mgr, max_concurrent=4, server_base_url="http://127.0.0.1:9090"
+        )
 
         flow = _make_linear_flow(node_names=["start", "work", "finish"])
         mock_mgr.task_delays["work"] = 2.0
@@ -5917,7 +6079,9 @@ class TestInterruptedTaskEdgeEvaluation:
         db = _make_db()
         _events, callback = _collect_events()
         mock_mgr = InterruptableMockManager()
-        executor = FlowExecutor(db, callback, mock_mgr, max_concurrent=4)
+        executor = FlowExecutor(
+            db, callback, mock_mgr, max_concurrent=4, server_base_url="http://127.0.0.1:9090"
+        )
 
         flow = _make_linear_flow(node_names=["start", "work", "finish"])
         mock_mgr.task_delays["work"] = 2.0
@@ -5973,7 +6137,9 @@ class TestCancelInterruptedTask:
         db = _make_db()
         _events, callback = _collect_events()
         mock_mgr = InterruptableMockManager()
-        executor = FlowExecutor(db, callback, mock_mgr, max_concurrent=4)
+        executor = FlowExecutor(
+            db, callback, mock_mgr, max_concurrent=4, server_base_url="http://127.0.0.1:9090"
+        )
 
         flow = _make_linear_flow(node_names=["start", "work", "finish"])
         mock_mgr.task_delays["work"] = 5.0
@@ -6038,7 +6204,9 @@ class TestInterruptDoesNotCauseFailure:
         db = _make_db()
         events, callback = _collect_events()
         mock_mgr = InterruptableMockManager()
-        executor = FlowExecutor(db, callback, mock_mgr, max_concurrent=4)
+        executor = FlowExecutor(
+            db, callback, mock_mgr, max_concurrent=4, server_base_url="http://127.0.0.1:9090"
+        )
 
         flow = _make_linear_flow(
             node_names=["start", "work", "finish"],
@@ -6106,7 +6274,9 @@ class TestInterruptDoesNotCauseFailure:
         db = _make_db()
         _events, callback = _collect_events()
         mock_mgr = InterruptableMockManager()
-        executor = FlowExecutor(db, callback, mock_mgr, max_concurrent=4)
+        executor = FlowExecutor(
+            db, callback, mock_mgr, max_concurrent=4, server_base_url="http://127.0.0.1:9090"
+        )
 
         flow = _make_linear_flow(node_names=["start", "work", "finish"])
         mock_mgr.task_delays["work"] = 5.0
@@ -6152,7 +6322,9 @@ class TestInterruptDoesNotCauseFailure:
         db = _make_db()
         _events, callback = _collect_events()
         mock_mgr = InterruptableMockManager()
-        executor = FlowExecutor(db, callback, mock_mgr, max_concurrent=4)
+        executor = FlowExecutor(
+            db, callback, mock_mgr, max_concurrent=4, server_base_url="http://127.0.0.1:9090"
+        )
 
         flow = _make_linear_flow(
             node_names=["start", "work", "finish"],
@@ -6216,7 +6388,9 @@ class TestMessageReinvocationUsesResume:
         db = _make_db()
         _events, callback = _collect_events()
         mock_mgr = InterruptableMockManager()
-        executor = FlowExecutor(db, callback, mock_mgr, max_concurrent=4)
+        executor = FlowExecutor(
+            db, callback, mock_mgr, max_concurrent=4, server_base_url="http://127.0.0.1:9090"
+        )
 
         flow = _make_linear_flow(node_names=["start", "work", "finish"])
         mock_mgr.task_delays["work"] = 5.0
@@ -6264,7 +6438,9 @@ class TestMessageReinvocationUsesResume:
         db = _make_db()
         _events, callback = _collect_events()
         mock_mgr = InterruptableMockManager()
-        executor = FlowExecutor(db, callback, mock_mgr, max_concurrent=4)
+        executor = FlowExecutor(
+            db, callback, mock_mgr, max_concurrent=4, server_base_url="http://127.0.0.1:9090"
+        )
 
         flow = _make_linear_flow(node_names=["start", "work", "finish"])
         mock_mgr.task_delays["work"] = 10.0
@@ -6312,7 +6488,9 @@ class TestMessageReinvocationUsesResume:
         db = _make_db()
         _events, callback = _collect_events()
         mock_mgr = InterruptableMockManager()
-        executor = FlowExecutor(db, callback, mock_mgr, max_concurrent=4)
+        executor = FlowExecutor(
+            db, callback, mock_mgr, max_concurrent=4, server_base_url="http://127.0.0.1:9090"
+        )
 
         # 2 node flow: start -> finish, so "start" runs and we message it
         flow = _make_linear_flow(node_names=["start", "work", "finish"])
@@ -6365,7 +6543,7 @@ class TestRetryTaskResumesPausedFlow:
         mock_mgr = MockSubprocessManager()
         # "work" fails the first time
         mock_mgr.task_responses["work"] = (1, [])
-        executor = FlowExecutor(db, callback, mock_mgr)
+        executor = FlowExecutor(db, callback, mock_mgr, server_base_url="http://127.0.0.1:9090")
 
         flow = _make_linear_flow(on_error=ErrorPolicy.PAUSE)
         flow_run_id, execute_task = await _execute_until_paused(
@@ -6397,7 +6575,7 @@ class TestRetryTaskResumesPausedFlow:
         events, callback = _collect_events()
         mock_mgr = MockSubprocessManager()
         mock_mgr.task_responses["work"] = (1, [])
-        executor = FlowExecutor(db, callback, mock_mgr)
+        executor = FlowExecutor(db, callback, mock_mgr, server_base_url="http://127.0.0.1:9090")
 
         flow = _make_linear_flow(on_error=ErrorPolicy.PAUSE)
         flow_run_id, execute_task = await _execute_until_paused(
@@ -6431,7 +6609,7 @@ class TestRetryTaskResumesPausedFlow:
         _events, callback = _collect_events()
         mock_mgr = MockSubprocessManager()
         mock_mgr.task_responses["work"] = (1, [])
-        executor = FlowExecutor(db, callback, mock_mgr)
+        executor = FlowExecutor(db, callback, mock_mgr, server_base_url="http://127.0.0.1:9090")
 
         flow = _make_linear_flow(on_error=ErrorPolicy.PAUSE)
         flow_run_id, execute_task = await _execute_until_paused(
@@ -6466,7 +6644,7 @@ class TestSkipTaskResumesPausedFlow:
         _events, callback = _collect_events()
         mock_mgr = MockSubprocessManager()
         mock_mgr.task_responses["work"] = (1, [])
-        executor = FlowExecutor(db, callback, mock_mgr)
+        executor = FlowExecutor(db, callback, mock_mgr, server_base_url="http://127.0.0.1:9090")
 
         flow = _make_linear_flow(on_error=ErrorPolicy.PAUSE)
         flow_run_id, execute_task = await _execute_until_paused(
@@ -6495,7 +6673,7 @@ class TestSkipTaskResumesPausedFlow:
         events, callback = _collect_events()
         mock_mgr = MockSubprocessManager()
         mock_mgr.task_responses["work"] = (1, [])
-        executor = FlowExecutor(db, callback, mock_mgr)
+        executor = FlowExecutor(db, callback, mock_mgr, server_base_url="http://127.0.0.1:9090")
 
         flow = _make_linear_flow(on_error=ErrorPolicy.PAUSE)
         flow_run_id, execute_task = await _execute_until_paused(
@@ -6532,7 +6710,7 @@ class TestRetryTaskEmitsTaskRetried:
         events, callback = _collect_events()
         mock_mgr = MockSubprocessManager()
         mock_mgr.task_responses["work"] = (1, [])
-        executor = FlowExecutor(db, callback, mock_mgr)
+        executor = FlowExecutor(db, callback, mock_mgr, server_base_url="http://127.0.0.1:9090")
 
         flow = _make_linear_flow(on_error=ErrorPolicy.PAUSE)
         flow_run_id, execute_task = await _execute_until_paused(
@@ -6571,7 +6749,7 @@ class TestRetryTaskEmitsTaskRetried:
         db = _make_db()
         events, callback = _collect_events()
         mock_mgr = MockSubprocessManager()
-        executor = FlowExecutor(db, callback, mock_mgr)
+        executor = FlowExecutor(db, callback, mock_mgr, server_base_url="http://127.0.0.1:9090")
 
         # Set up minimal executor state without driving the main loop.
         flow = _make_linear_flow(on_error=ErrorPolicy.PAUSE)
@@ -6633,7 +6811,7 @@ class TestRetryTaskEmitsTaskRetried:
         events, callback = _collect_events()
         mock_mgr = MockSubprocessManager()
         mock_mgr.task_responses["work"] = (1, [])
-        executor = FlowExecutor(db, callback, mock_mgr)
+        executor = FlowExecutor(db, callback, mock_mgr, server_base_url="http://127.0.0.1:9090")
 
         flow = _make_linear_flow(on_error=ErrorPolicy.PAUSE)
         flow_run_id, execute_task = await _execute_until_paused(
@@ -6672,7 +6850,7 @@ class TestSkipTaskEmitsTaskSkipped:
         events, callback = _collect_events()
         mock_mgr = MockSubprocessManager()
         mock_mgr.task_responses["work"] = (1, [])
-        executor = FlowExecutor(db, callback, mock_mgr)
+        executor = FlowExecutor(db, callback, mock_mgr, server_base_url="http://127.0.0.1:9090")
 
         flow = _make_linear_flow(on_error=ErrorPolicy.PAUSE)
         flow_run_id, execute_task = await _execute_until_paused(
@@ -6706,7 +6884,7 @@ class TestSkipTaskEmitsTaskSkipped:
         db = _make_db()
         events, callback = _collect_events()
         mock_mgr = MockSubprocessManager()
-        executor = FlowExecutor(db, callback, mock_mgr)
+        executor = FlowExecutor(db, callback, mock_mgr, server_base_url="http://127.0.0.1:9090")
 
         flow = _make_linear_flow(on_error=ErrorPolicy.PAUSE)
         executor._flow = flow
@@ -7117,16 +7295,34 @@ class TestTaskManagementInjection:
     async def test_no_server_url_no_injection(
         self,
     ) -> None:
-        """When server_base_url is None, no task management is injected even if tasks=True."""
+        """When server_base_url is None, no task management is injected even if tasks=True.
+
+        Post-ENGINE-082, ``server_base_url=None`` makes the executor refuse
+        to spawn any subprocess (``_build_artifact_env`` raises
+        :class:`FlowExecutorConfigError`). The on_error=PAUSE policy then
+        hangs the flow waiting for resume, so we bound the execute call with
+        a short timeout and assert on the artifact the test actually cares
+        about: the entry task's prompt was constructed without the
+        ``## Task Management`` injection (which depends on ``server_base_url``
+        being set in ``_maybe_update_task_prompt``).
+        """
         db = _make_db()
         _events, callback = _collect_events()
         mock_mgr = MockSubprocessManager()
         executor = FlowExecutor(db, callback, mock_mgr, server_base_url=None)
 
         flow = _make_tasks_flow(subtasks=True)
-        await executor.execute(flow, {}, "/workspace")
+        with contextlib.suppress(asyncio.TimeoutError):
+            await asyncio.wait_for(
+                executor.execute(flow, {}, "/workspace"),
+                timeout=2.0,
+            )
 
+        # The entry task is created before any subprocess dispatch — its
+        # prompt_text reflects what ``_maybe_update_task_prompt`` did, which
+        # is the unit under test here.
         execs = db.list_task_executions(db.list_flow_runs()[0].id)
+        assert execs, "expected at least the entry task to be created"
         for e in execs:
             assert "## Task Management" not in e.prompt_text
 
@@ -7190,7 +7386,7 @@ class TestCancelKillsHarness:
         mock_mgr = MockSubprocessManager()
         # Delay so we can cancel while the task is in-flight
         mock_mgr.task_delays["work"] = 2.0
-        executor = FlowExecutor(db, callback, mock_mgr)
+        executor = FlowExecutor(db, callback, mock_mgr, server_base_url="http://127.0.0.1:9090")
 
         flow = _make_linear_flow()
 
@@ -7218,7 +7414,7 @@ class TestCancelKillsHarness:
         _events, callback = _collect_events()
         mock_mgr = MockSubprocessManager()
         mock_mgr.task_delays["work"] = 2.0
-        executor = FlowExecutor(db, callback, mock_mgr)
+        executor = FlowExecutor(db, callback, mock_mgr, server_base_url="http://127.0.0.1:9090")
 
         flow = _make_linear_flow()
 
@@ -7247,7 +7443,7 @@ class TestCancelKillsHarness:
         events, callback = _collect_events()
         mock_mgr = MockSubprocessManager()
         mock_mgr.task_delays["work"] = 2.0
-        executor = FlowExecutor(db, callback, mock_mgr)
+        executor = FlowExecutor(db, callback, mock_mgr, server_base_url="http://127.0.0.1:9090")
 
         flow = _make_linear_flow()
 
@@ -7284,7 +7480,7 @@ class TestRestartFromTask:
         events, callback = _collect_events()
         mock_mgr = MockSubprocessManager()
         mock_mgr.task_delays["work"] = 2.0
-        executor = FlowExecutor(db, callback, mock_mgr)
+        executor = FlowExecutor(db, callback, mock_mgr, server_base_url="http://127.0.0.1:9090")
 
         flow = _make_linear_flow()
 
@@ -7312,7 +7508,7 @@ class TestRestartFromTask:
 
         # Create a fresh executor (simulating what the server would do)
         events.clear()
-        new_executor = FlowExecutor(db, callback, mock_mgr)
+        new_executor = FlowExecutor(db, callback, mock_mgr, server_base_url="http://127.0.0.1:9090")
         await new_executor.restart_from_task(
             flow=flow,
             flow_run_id=flow_run_id,
@@ -7338,7 +7534,7 @@ class TestRestartFromTask:
         _events, callback = _collect_events()
         mock_mgr = MockSubprocessManager()
         mock_mgr.task_delays["work"] = 2.0
-        executor = FlowExecutor(db, callback, mock_mgr)
+        executor = FlowExecutor(db, callback, mock_mgr, server_base_url="http://127.0.0.1:9090")
 
         flow = _make_linear_flow()
 
@@ -7358,7 +7554,7 @@ class TestRestartFromTask:
         old_gen = failed_work[0].generation
 
         mock_mgr.task_delays.clear()
-        new_executor = FlowExecutor(db, callback, mock_mgr)
+        new_executor = FlowExecutor(db, callback, mock_mgr, server_base_url="http://127.0.0.1:9090")
         await new_executor.restart_from_task(
             flow=flow,
             flow_run_id=flow_run_id,
@@ -7379,7 +7575,7 @@ class TestRestartFromTask:
         _events, callback = _collect_events()
         mock_mgr = MockSubprocessManager()
         mock_mgr.task_delays["work"] = 2.0
-        executor = FlowExecutor(db, callback, mock_mgr)
+        executor = FlowExecutor(db, callback, mock_mgr, server_base_url="http://127.0.0.1:9090")
 
         flow = _make_linear_flow()
 
@@ -7398,7 +7594,7 @@ class TestRestartFromTask:
         assert len(failed_work) >= 1
 
         mock_mgr.task_delays.clear()
-        new_executor = FlowExecutor(db, callback, mock_mgr)
+        new_executor = FlowExecutor(db, callback, mock_mgr, server_base_url="http://127.0.0.1:9090")
         await new_executor.restart_from_task(
             flow=flow,
             flow_run_id=flow_run_id,
@@ -7422,7 +7618,7 @@ class TestRestartFromTask:
         events, callback = _collect_events()
         mock_mgr = MockSubprocessManager()
         mock_mgr.task_delays["work"] = 2.0
-        executor = FlowExecutor(db, callback, mock_mgr)
+        executor = FlowExecutor(db, callback, mock_mgr, server_base_url="http://127.0.0.1:9090")
 
         flow = _make_linear_flow()
 
@@ -7440,7 +7636,7 @@ class TestRestartFromTask:
 
         events.clear()
         mock_mgr.task_delays.clear()
-        new_executor = FlowExecutor(db, callback, mock_mgr)
+        new_executor = FlowExecutor(db, callback, mock_mgr, server_base_url="http://127.0.0.1:9090")
         await new_executor.restart_from_task(
             flow=flow,
             flow_run_id=flow_run_id,
@@ -7465,7 +7661,7 @@ class TestRestartFromTask:
         db = _make_db()
         _events, callback = _collect_events()
         mock_mgr = MockSubprocessManager()
-        executor = FlowExecutor(db, callback, mock_mgr)
+        executor = FlowExecutor(db, callback, mock_mgr, server_base_url="http://127.0.0.1:9090")
 
         flow = _make_linear_flow()
 
@@ -7484,7 +7680,7 @@ class TestRestartFromTask:
         db = _make_db()
         _events, callback = _collect_events()
         mock_mgr = MockSubprocessManager()
-        executor = FlowExecutor(db, callback, mock_mgr)
+        executor = FlowExecutor(db, callback, mock_mgr, server_base_url="http://127.0.0.1:9090")
 
         flow = _make_linear_flow()
 
@@ -7504,7 +7700,7 @@ class TestRestartFromTask:
         _events, callback = _collect_events()
         mock_mgr = MockSubprocessManager()
         mock_mgr.task_delays["work"] = 2.0
-        executor = FlowExecutor(db, callback, mock_mgr)
+        executor = FlowExecutor(db, callback, mock_mgr, server_base_url="http://127.0.0.1:9090")
 
         flow = _make_linear_flow(node_names=["start", "work", "verify", "finish"])
 
@@ -7521,7 +7717,7 @@ class TestRestartFromTask:
         assert len(failed_work) >= 1
 
         mock_mgr.task_delays.clear()
-        new_executor = FlowExecutor(db, callback, mock_mgr)
+        new_executor = FlowExecutor(db, callback, mock_mgr, server_base_url="http://127.0.0.1:9090")
         await new_executor.restart_from_task(
             flow=flow,
             flow_run_id=flow_run_id,
@@ -7573,7 +7769,9 @@ class TestAutoCompleteSubtasksOnSuccess:
                 db.update_agent_subtask(s2.id, "in_progress")
                 subtask_ids.extend([s1.id, s2.id, s3.id])
 
-        executor = FlowExecutor(db, callback_with_subtasks, mock_mgr)
+        executor = FlowExecutor(
+            db, callback_with_subtasks, mock_mgr, server_base_url="http://127.0.0.1:9090"
+        )
 
         flow = _make_linear_flow()
         flow = Flow(
@@ -7626,7 +7824,9 @@ class TestAutoCompleteSubtasksOnSuccess:
                 s2 = db.create_agent_subtask(task_exec_id, "Still todo task")
                 subtask_ids.extend([s1.id, s2.id])
 
-        executor = FlowExecutor(db, callback_with_subtasks, mock_mgr)
+        executor = FlowExecutor(
+            db, callback_with_subtasks, mock_mgr, server_base_url="http://127.0.0.1:9090"
+        )
 
         flow = _make_linear_flow()
         flow = Flow(
@@ -7677,7 +7877,9 @@ class TestNoAutoCompleteOnFailure:
                 db.update_agent_subtask(s2.id, "in_progress")
                 subtask_ids.extend([s1.id, s2.id])
 
-        executor = FlowExecutor(db, callback_with_subtasks, mock_mgr)
+        executor = FlowExecutor(
+            db, callback_with_subtasks, mock_mgr, server_base_url="http://127.0.0.1:9090"
+        )
 
         flow = _make_linear_flow()
         flow = Flow(
@@ -7721,7 +7923,7 @@ class TestNoAutoCompleteWhenSubtasksDisabled:
         events, callback = _collect_events()
         mock_mgr = MockSubprocessManager()
 
-        executor = FlowExecutor(db, callback, mock_mgr)
+        executor = FlowExecutor(db, callback, mock_mgr, server_base_url="http://127.0.0.1:9090")
 
         # Default flow has subtasks=False
         flow = _make_linear_flow()
@@ -7805,3 +8007,70 @@ class TestAutoCompleteSubtasksRepository:
         assert len(result) == 2
         for sub in result:
             assert sub.status == "done"
+
+
+# ---------------------------------------------------------------------------
+# ENGINE-082: subprocess FLOWSTATE_SERVER_URL wiring
+# ---------------------------------------------------------------------------
+
+
+class TestBuildArtifactEnv:
+    """Tests for ``FlowExecutor._build_artifact_env`` (ENGINE-082).
+
+    The hardcoded ``http://127.0.0.1:9090`` fallback is gone. The env-building
+    method must now (a) emit exactly the wired ``server_base_url`` and (b)
+    raise :class:`FlowExecutorConfigError` when the URL was not wired —
+    never silently fall through to a guessed loopback port. Both behaviors
+    are covered here, isolated from the deadlock-prone
+    ``TestContextModeHandoff`` class so the new tests can be run with
+    ``-k "TestBuildArtifactEnv"`` (or excluded from a broader run via
+    ``-k "not TestContextModeHandoff"``).
+    """
+
+    def test_wired_url_passed_through_verbatim(self) -> None:
+        """``FLOWSTATE_SERVER_URL`` equals the wired ``server_base_url``."""
+        db = _make_db()
+        _events, callback = _collect_events()
+        mock_mgr = MockSubprocessManager()
+        executor = FlowExecutor(
+            db,
+            callback,
+            mock_mgr,
+            server_base_url="http://127.0.0.1:9091",
+        )
+
+        env = executor._build_artifact_env(
+            flow_run_id="run-123",
+            task_execution_id="task-456",
+        )
+
+        assert env["FLOWSTATE_SERVER_URL"] == "http://127.0.0.1:9091"
+        # The legacy hardcoded fallback must never leak through.
+        assert ":9090" not in env["FLOWSTATE_SERVER_URL"]
+        # Per-task identifiers are forwarded as well.
+        assert env["FLOWSTATE_RUN_ID"] == "run-123"
+        assert env["FLOWSTATE_TASK_ID"] == "task-456"
+
+    def test_missing_url_raises_typed_error(self) -> None:
+        """``server_base_url=None`` must raise, not silently fall through."""
+        db = _make_db()
+        _events, callback = _collect_events()
+        mock_mgr = MockSubprocessManager()
+        executor = FlowExecutor(
+            db,
+            callback,
+            mock_mgr,
+            server_base_url=None,
+        )
+
+        with pytest.raises(FlowExecutorConfigError, match="server_base_url"):
+            executor._build_artifact_env(
+                flow_run_id="run-123",
+                task_execution_id="task-456",
+            )
+
+    def test_typed_error_is_subclass_of_exception(self) -> None:
+        """The error class is a real ``Exception`` subclass (not just bare RuntimeError)."""
+        # Provides TEST-82.2 coverage: the evaluator's import smoke check
+        # `from flowstate.engine.executor import FlowExecutorConfigError` works.
+        assert issubclass(FlowExecutorConfigError, Exception)

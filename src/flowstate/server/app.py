@@ -216,7 +216,10 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None]:
         max_concurrent=config.max_concurrent_tasks,
         worktree_cleanup=config.worktree_cleanup,
         harness_mgr=harness_mgr,
-        server_base_url=f"http://{config.server_host}:{config.server_port}",
+        # ENGINE-082: subprocesses always loop back via 127.0.0.1 even when
+        # the server binds 0.0.0.0 — the server is on the same machine and
+        # using the bind host directly would route 0.0.0.0 callbacks wrong.
+        server_base_url=f"http://127.0.0.1:{config.server_port}",
     )
     app.state.ws_hub = ws_hub
 

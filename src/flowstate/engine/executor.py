@@ -218,6 +218,20 @@ def _get_fork_group_for_member(
     return None
 
 
+class FlowExecutorConfigError(Exception):
+    """Raised when the executor is missing wiring required to spawn a task subprocess.
+
+    The most common case (ENGINE-082) is a missing ``server_base_url``: every
+    subprocess receives ``FLOWSTATE_SERVER_URL`` so it can call back into the
+    Flowstate artifact API. If wiring is forgotten between ``create_app`` and
+    the executor, we refuse to fall through to a guessed loopback port (which
+    used to silently route a subprocess of one server back to a different
+    server bound to a hardcoded default port). Raising loudly here makes the
+    wiring bug visible at first task dispatch instead of producing wrong
+    artifact callbacks.
+    """
+
+
 class FlowExecutor:
     """Executes a flow by orchestrating subprocess launches, budget tracking, and state.
 
@@ -289,6 +303,29 @@ class FlowExecutor:
             self._raw_callback(event)
         except Exception:
             logger.exception("Event callback raised an exception for event %s", event.type)
+
+    def _build_artifact_env(self, flow_run_id: str, task_execution_id: str) -> dict[str, str]:
+        """Build the FLOWSTATE_* env vars injected into a task subprocess.
+
+        ENGINE-082: refuses to silently default to a hardcoded loopback port
+        if the executor was constructed without ``server_base_url``. The
+        legacy fallback caused a subprocess of a server bound to one port
+        to call back into a different server bound to another port when
+        wiring was missing — failing loudly here is the only way to make
+        the wiring bug visible at the first task dispatch instead of
+        silently corrupting artifact callbacks.
+        """
+        if self._server_base_url is None:
+            raise FlowExecutorConfigError(
+                "FlowExecutor was not given a server_base_url; cannot wire "
+                "FLOWSTATE_SERVER_URL into the subprocess environment. This "
+                "indicates a wiring bug between create_app and the executor."
+            )
+        return {
+            "FLOWSTATE_SERVER_URL": self._server_base_url,
+            "FLOWSTATE_RUN_ID": flow_run_id,
+            "FLOWSTATE_TASK_ID": task_execution_id,
+        }
 
     def _emit_activity(self, flow_run_id: str, task_id: str, message: str) -> None:
         """Emit a human-readable executor activity log entry.
@@ -2631,12 +2668,11 @@ class FlowExecutor:
             # Track task -> session for interrupt dispatch
             self._task_session[task_execution_id] = session_id
 
-            # Build artifact API env vars for the agent subprocess (ENGINE-067)
-            artifact_env = {
-                "FLOWSTATE_SERVER_URL": self._server_base_url or "http://127.0.0.1:9090",
-                "FLOWSTATE_RUN_ID": flow_run_id,
-                "FLOWSTATE_TASK_ID": task_execution_id,
-            }
+            # Build artifact API env vars for the agent subprocess (ENGINE-067).
+            # ENGINE-082: never fall back to a hardcoded loopback port — refuse
+            # loudly so a wiring bug between create_app and the executor cannot
+            # silently route subprocess callbacks to the wrong Flowstate server.
+            artifact_env = self._build_artifact_env(flow_run_id, task_execution_id)
 
             # Inject artifact env vars into process environment (ENGINE-067).
             # The env dict is already set at construction time, so we inject

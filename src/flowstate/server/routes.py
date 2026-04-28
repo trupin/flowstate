@@ -381,7 +381,8 @@ async def start_run(
         max_concurrent=config.max_concurrent_tasks,
         worktree_cleanup=config.worktree_cleanup,
         harness_mgr=harness_mgr,
-        server_base_url=f"http://{config.server_host}:{config.server_port}",
+        # ENGINE-082: loopback callback regardless of bind host (0.0.0.0 etc.).
+        server_base_url=f"http://127.0.0.1:{config.server_port}",
         flow_file_dir=flow_file_dir,
         flow_file=flow_file_path,
     )
@@ -791,7 +792,8 @@ def _create_restart_executor(request: Request) -> FlowExecutor:
         max_concurrent=config.max_concurrent_tasks,
         worktree_cleanup=config.worktree_cleanup,
         harness_mgr=harness_mgr,
-        server_base_url=f"http://{config.server_host}:{config.server_port}",
+        # ENGINE-082: loopback callback regardless of bind host (0.0.0.0 etc.).
+        server_base_url=f"http://127.0.0.1:{config.server_port}",
     )
 
 
@@ -1171,7 +1173,8 @@ async def trigger_schedule(request: Request, schedule_id: str) -> dict[str, str]
         max_concurrent=config.max_concurrent_tasks,
         worktree_cleanup=config.worktree_cleanup,
         harness_mgr=harness_mgr,
-        server_base_url=f"http://{config.server_host}:{config.server_port}",
+        # ENGINE-082: loopback callback regardless of bind host (0.0.0.0 etc.).
+        server_base_url=f"http://127.0.0.1:{config.server_port}",
         # flow_file_dir not available for scheduled flows (no DiscoveredFlow)
     )
 

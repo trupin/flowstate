@@ -488,6 +488,110 @@ class TestSetupLumon:
 
 
 # ---------------------------------------------------------------------------
+# ENGINE-083: FLOWSTATE_DATA_DIR honors global plugins lookup
+# ---------------------------------------------------------------------------
+
+
+class TestSetupLumonHonorsDataDirEnv:
+    """``setup_lumon`` must resolve global plugins under ``FLOWSTATE_DATA_DIR``.
+
+    Before ENGINE-083, ``setup_lumon`` hardcoded ``Path.home() / ".flowstate"
+    / "plugins"``, which silently bypassed the data-dir override. After the
+    fix, the lookup goes through ``flowstate.config._default_data_dir()``,
+    which honors ``FLOWSTATE_DATA_DIR``.
+    """
+
+    @pytest.fixture()
+    def worktree(self, tmp_path: Path) -> Path:
+        wt = tmp_path / "worktree"
+        wt.mkdir()
+        return wt
+
+    async def test_env_var_redirects_global_plugins_lookup(
+        self,
+        worktree: Path,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """``FLOWSTATE_DATA_DIR`` redirects the global plugins resolver.
+
+        We create the right plugin under ``<custom>/plugins/`` and a decoy
+        plugin under a fake ``Path.home() / ".flowstate" / "plugins"``. After
+        ``setup_lumon``, the worktree must contain only the right plugin.
+        """
+        # Wire FLOWSTATE_DATA_DIR to a custom location with a marker plugin.
+        custom_data = tmp_path / "fs-custom-data"
+        right_plugins = custom_data / "plugins"
+        right_plugins.mkdir(parents=True)
+        (right_plugins / "myplugin").mkdir()
+        (right_plugins / "myplugin" / "marker.txt").write_text("right")
+
+        # Fake home with a decoy plugin under the legacy location. If the
+        # lookup still went through Path.home(), this would (incorrectly)
+        # be picked up.
+        fake_home = tmp_path / "fake_home"
+        decoy_plugins = fake_home / ".flowstate" / "plugins"
+        decoy_plugins.mkdir(parents=True)
+        (decoy_plugins / "wrongplugin").mkdir()
+        (decoy_plugins / "wrongplugin" / "marker.txt").write_text("wrong")
+
+        monkeypatch.setenv("FLOWSTATE_DATA_DIR", str(custom_data))
+
+        flow = _make_flow(lumon=True)
+        node = _make_node()
+
+        with (
+            patch("flowstate.engine.lumon.asyncio.create_subprocess_exec") as mock_exec,
+            patch("flowstate.engine.lumon.Path.home", return_value=fake_home),
+        ):
+            mock_exec.return_value = _mock_successful_deploy()
+            await setup_lumon(str(worktree), flow, node)
+
+        plugins_dir = worktree / "plugins"
+        assert (plugins_dir / "myplugin").is_symlink(), (
+            f"Expected 'myplugin' from FLOWSTATE_DATA_DIR; "
+            f"actual contents: {sorted(p.name for p in plugins_dir.iterdir())}"
+        )
+        assert (plugins_dir / "myplugin").resolve() == right_plugins / "myplugin"
+        # Decoy must NOT have been picked up.
+        assert not (plugins_dir / "wrongplugin").exists(), (
+            "Decoy 'wrongplugin' from Path.home() leaked through; "
+            "the resolver is not honoring FLOWSTATE_DATA_DIR."
+        )
+
+    async def test_unset_env_var_falls_back_to_home(
+        self,
+        worktree: Path,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """With ``FLOWSTATE_DATA_DIR`` unset, the legacy default still works."""
+        monkeypatch.delenv("FLOWSTATE_DATA_DIR", raising=False)
+
+        # Build the default location under a fake home so we don't pollute
+        # the real ~/.flowstate/.
+        fake_home = tmp_path / "fake_home"
+        default_plugins = fake_home / ".flowstate" / "plugins"
+        default_plugins.mkdir(parents=True)
+        (default_plugins / "myplugin").mkdir()
+        (default_plugins / "myplugin" / "marker.txt").write_text("default")
+
+        flow = _make_flow(lumon=True)
+        node = _make_node()
+
+        with (
+            patch("flowstate.engine.lumon.asyncio.create_subprocess_exec") as mock_exec,
+            patch("flowstate.engine.lumon.Path.home", return_value=fake_home),
+        ):
+            mock_exec.return_value = _mock_successful_deploy()
+            await setup_lumon(str(worktree), flow, node)
+
+        plugins_dir = worktree / "plugins"
+        assert (plugins_dir / "myplugin").is_symlink()
+        assert (plugins_dir / "myplugin").resolve() == default_plugins / "myplugin"
+
+
+# ---------------------------------------------------------------------------
 # _builtin_plugin_dir tests
 # ---------------------------------------------------------------------------
 

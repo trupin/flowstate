@@ -9,16 +9,25 @@ Covers:
 - Disabled schedule handling
 - Missing flow definition handling
 - Invalid cron expression handling
+- Per-project data_dir routing for triggered runs (ENGINE-081)
 """
 
 from __future__ import annotations
 
 import asyncio
 from datetime import UTC, datetime, timedelta
+from typing import TYPE_CHECKING
 
+import pytest
+
+from flowstate.config import Project, build_project
 from flowstate.engine.events import EventType, FlowEvent
 from flowstate.engine.scheduler import FlowScheduler
 from flowstate.state.repository import FlowstateDB
+
+if TYPE_CHECKING:
+    from collections.abc import Callable
+    from pathlib import Path
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -30,7 +39,26 @@ def _make_db() -> FlowstateDB:
     return FlowstateDB(":memory:")
 
 
-def _collect_events() -> tuple[list[FlowEvent], object]:
+def _make_project(tmp_path: Path, slug_suffix: str = "proj") -> Project:
+    """Build a throwaway :class:`Project` rooted under ``tmp_path``.
+
+    Used by scheduler tests to satisfy the ``project: Project`` constructor
+    parameter introduced in ENGINE-081. ``create_dirs=True`` so that
+    ``project.data_dir`` is a real directory whose ``runs/`` subtree the
+    scheduler can later compose its `data_dir` strings against.
+    """
+    root = tmp_path / slug_suffix
+    root.mkdir(parents=True, exist_ok=True)
+    return build_project(root, data_dir=tmp_path / f"data-{slug_suffix}")
+
+
+@pytest.fixture()
+def project(tmp_path: Path) -> Project:
+    """Default scheduler-test project rooted under ``tmp_path``."""
+    return _make_project(tmp_path)
+
+
+def _collect_events() -> tuple[list[FlowEvent], Callable[[FlowEvent], None]]:
     """Return a list to collect events and the callback function."""
     events: list[FlowEvent] = []
 
@@ -83,13 +111,14 @@ def _create_active_run(db: FlowstateDB, flow_definition_id: str) -> str:
 
 
 class TestSchedulerLifecycle:
-    async def test_starts_and_stops(self) -> None:
+    async def test_starts_and_stops(self, project: Project) -> None:
         """Start the scheduler, verify it is running, then stop it."""
         db = _make_db()
         _events, callback = _collect_events()
 
         scheduler = FlowScheduler(
             db=db,
+            project=project,
             emit=callback,
             check_interval=0.1,
         )
@@ -101,12 +130,12 @@ class TestSchedulerLifecycle:
         await scheduler.stop()
         assert not scheduler.is_running
 
-    async def test_stop_without_start(self) -> None:
+    async def test_stop_without_start(self, project: Project) -> None:
         """Stop should be safe to call even if never started."""
         db = _make_db()
         _events, callback = _collect_events()
 
-        scheduler = FlowScheduler(db=db, emit=callback)
+        scheduler = FlowScheduler(db=db, project=project, emit=callback)
         await scheduler.stop()  # Should not raise
 
 
@@ -116,7 +145,7 @@ class TestSchedulerLifecycle:
 
 
 class TestTriggerDetection:
-    async def test_due_schedule_fires(self) -> None:
+    async def test_due_schedule_fires(self, project: Project) -> None:
         """Schedule with past next_trigger_at should be processed."""
         db = _make_db()
         events, callback = _collect_events()
@@ -125,14 +154,14 @@ class TestTriggerDetection:
         past_time = (datetime.now(UTC) - timedelta(minutes=5)).isoformat()
         _create_schedule(db, flow_def_id, cron_expression="0 9 * * MON", next_trigger_at=past_time)
 
-        scheduler = FlowScheduler(db=db, emit=callback)
+        scheduler = FlowScheduler(db=db, project=project, emit=callback)
         await scheduler.check_once()
 
         triggered_events = [e for e in events if e.type == EventType.SCHEDULE_TRIGGERED]
         assert len(triggered_events) == 1
         assert triggered_events[0].payload["flow_definition_id"] == flow_def_id
 
-    async def test_future_schedule_does_not_fire(self) -> None:
+    async def test_future_schedule_does_not_fire(self, project: Project) -> None:
         """Schedule with future next_trigger_at should NOT be processed."""
         db = _make_db()
         events, callback = _collect_events()
@@ -141,13 +170,13 @@ class TestTriggerDetection:
         future_time = (datetime.now(UTC) + timedelta(hours=1)).isoformat()
         _create_schedule(db, flow_def_id, next_trigger_at=future_time)
 
-        scheduler = FlowScheduler(db=db, emit=callback)
+        scheduler = FlowScheduler(db=db, project=project, emit=callback)
         await scheduler.check_once()
 
         triggered_events = [e for e in events if e.type == EventType.SCHEDULE_TRIGGERED]
         assert len(triggered_events) == 0
 
-    async def test_disabled_schedule_ignored(self) -> None:
+    async def test_disabled_schedule_ignored(self, project: Project) -> None:
         """Disabled schedule should not be processed even if due."""
         db = _make_db()
         events, callback = _collect_events()
@@ -156,7 +185,7 @@ class TestTriggerDetection:
         past_time = (datetime.now(UTC) - timedelta(minutes=5)).isoformat()
         _create_schedule(db, flow_def_id, next_trigger_at=past_time, enabled=False)
 
-        scheduler = FlowScheduler(db=db, emit=callback)
+        scheduler = FlowScheduler(db=db, project=project, emit=callback)
         await scheduler.check_once()
 
         assert len(events) == 0
@@ -168,7 +197,7 @@ class TestTriggerDetection:
 
 
 class TestOverlapPolicies:
-    async def test_skip_with_active_run(self) -> None:
+    async def test_skip_with_active_run(self, project: Project) -> None:
         """on_overlap=skip with active run: no new run, schedule.skipped emitted."""
         db = _make_db()
         events, callback = _collect_events()
@@ -185,7 +214,7 @@ class TestOverlapPolicies:
         # Create an active run
         _create_active_run(db, flow_def_id)
 
-        scheduler = FlowScheduler(db=db, emit=callback)
+        scheduler = FlowScheduler(db=db, project=project, emit=callback)
         await scheduler.check_once()
 
         # Should emit skipped event, not triggered
@@ -195,7 +224,7 @@ class TestOverlapPolicies:
         assert len(triggered_events) == 0
         assert "Active run exists" in str(skipped_events[0].payload["reason"])
 
-    async def test_skip_without_active_run(self) -> None:
+    async def test_skip_without_active_run(self, project: Project) -> None:
         """on_overlap=skip with no active run: new run started."""
         db = _make_db()
         events, callback = _collect_events()
@@ -209,13 +238,13 @@ class TestOverlapPolicies:
             next_trigger_at=past_time,
         )
 
-        scheduler = FlowScheduler(db=db, emit=callback)
+        scheduler = FlowScheduler(db=db, project=project, emit=callback)
         await scheduler.check_once()
 
         triggered_events = [e for e in events if e.type == EventType.SCHEDULE_TRIGGERED]
         assert len(triggered_events) == 1
 
-    async def test_queue_with_active_run(self) -> None:
+    async def test_queue_with_active_run(self, project: Project) -> None:
         """on_overlap=queue with active run: new run created with 'created' status."""
         db = _make_db()
         events, callback = _collect_events()
@@ -231,7 +260,7 @@ class TestOverlapPolicies:
 
         _create_active_run(db, flow_def_id)
 
-        scheduler = FlowScheduler(db=db, emit=callback)
+        scheduler = FlowScheduler(db=db, project=project, emit=callback)
         await scheduler.check_once()
 
         triggered_events = [e for e in events if e.type == EventType.SCHEDULE_TRIGGERED]
@@ -243,7 +272,7 @@ class TestOverlapPolicies:
         created_runs = [r for r in all_runs if r.status == "created"]
         assert len(created_runs) == 1
 
-    async def test_parallel_with_active_run(self) -> None:
+    async def test_parallel_with_active_run(self, project: Project) -> None:
         """on_overlap=parallel with active run: new run started immediately."""
         db = _make_db()
         events, callback = _collect_events()
@@ -274,6 +303,7 @@ class TestOverlapPolicies:
 
         scheduler = FlowScheduler(
             db=db,
+            project=project,
             emit=callback,
             start_flow_callback=mock_start,
         )
@@ -283,7 +313,7 @@ class TestOverlapPolicies:
         assert len(triggered_events) == 1
         assert len(started_flow_ids) == 1
 
-    async def test_no_active_runs_starts_regardless_of_policy(self) -> None:
+    async def test_no_active_runs_starts_regardless_of_policy(self, project: Project) -> None:
         """With no active runs, the trigger fires regardless of overlap policy."""
         db = _make_db()
 
@@ -299,7 +329,7 @@ class TestOverlapPolicies:
                 next_trigger_at=past_time,
             )
 
-            scheduler = FlowScheduler(db=db, emit=callback)
+            scheduler = FlowScheduler(db=db, project=project, emit=callback)
             await scheduler.check_once()
 
             triggered_events = [e for e in events if e.type == EventType.SCHEDULE_TRIGGERED]
@@ -312,7 +342,7 @@ class TestOverlapPolicies:
 
 
 class TestScheduleAdvancement:
-    async def test_next_trigger_computed(self) -> None:
+    async def test_next_trigger_computed(self, project: Project) -> None:
         """After trigger, next_trigger_at is updated to the next cron match."""
         db = _make_db()
         _events, callback = _collect_events()
@@ -326,7 +356,7 @@ class TestScheduleAdvancement:
             next_trigger_at=past_time,
         )
 
-        scheduler = FlowScheduler(db=db, emit=callback)
+        scheduler = FlowScheduler(db=db, project=project, emit=callback)
         await scheduler.check_once()
 
         schedule = db.get_flow_schedule(schedule_id)
@@ -341,7 +371,7 @@ class TestScheduleAdvancement:
         assert next_trigger.hour == 9
         assert next_trigger.minute == 0
 
-    async def test_last_triggered_updated(self) -> None:
+    async def test_last_triggered_updated(self, project: Project) -> None:
         """After trigger, last_triggered_at is set to approximately now."""
         db = _make_db()
         _events, callback = _collect_events()
@@ -356,7 +386,7 @@ class TestScheduleAdvancement:
         )
 
         before = datetime.now(UTC)
-        scheduler = FlowScheduler(db=db, emit=callback)
+        scheduler = FlowScheduler(db=db, project=project, emit=callback)
         await scheduler.check_once()
         after = datetime.now(UTC)
 
@@ -367,7 +397,7 @@ class TestScheduleAdvancement:
         last_triggered = datetime.fromisoformat(schedule.last_triggered_at)
         assert before <= last_triggered <= after
 
-    async def test_skip_still_advances_schedule(self) -> None:
+    async def test_skip_still_advances_schedule(self, project: Project) -> None:
         """Even when skipped due to overlap, next_trigger_at should advance."""
         db = _make_db()
         _events, callback = _collect_events()
@@ -384,7 +414,7 @@ class TestScheduleAdvancement:
 
         _create_active_run(db, flow_def_id)
 
-        scheduler = FlowScheduler(db=db, emit=callback)
+        scheduler = FlowScheduler(db=db, project=project, emit=callback)
         await scheduler.check_once()
 
         schedule = db.get_flow_schedule(schedule_id)
@@ -400,7 +430,7 @@ class TestScheduleAdvancement:
 
 
 class TestErrorHandling:
-    async def test_schedule_error_isolation(self) -> None:
+    async def test_schedule_error_isolation(self, project: Project) -> None:
         """One failing schedule should not prevent processing of others."""
         db = _make_db()
         events, callback = _collect_events()
@@ -445,6 +475,7 @@ class TestErrorHandling:
 
         scheduler = FlowScheduler(
             db=db,
+            project=project,
             emit=callback,
             start_flow_callback=failing_start,
         )
@@ -454,7 +485,7 @@ class TestErrorHandling:
         triggered_events = [e for e in events if e.type == EventType.SCHEDULE_TRIGGERED]
         assert len(triggered_events) >= 1
 
-    async def test_missing_flow_definition(self) -> None:
+    async def test_missing_flow_definition(self, project: Project) -> None:
         """Schedule referencing a non-existent flow definition: logged, no crash."""
         db = _make_db()
         events, callback = _collect_events()
@@ -483,7 +514,7 @@ class TestErrorHandling:
         db.connection.commit()
         db.connection.execute("PRAGMA foreign_keys=ON")
 
-        scheduler = FlowScheduler(db=db, emit=callback)
+        scheduler = FlowScheduler(db=db, project=project, emit=callback)
         # Should not raise
         await scheduler.check_once()
 
@@ -496,7 +527,7 @@ class TestErrorHandling:
         assert schedule is not None
         assert schedule.next_trigger_at is not None
 
-    async def test_invalid_cron_in_advance(self) -> None:
+    async def test_invalid_cron_in_advance(self, project: Project) -> None:
         """Invalid cron expression during advancement disables the schedule."""
         db = _make_db()
         _events, callback = _collect_events()
@@ -516,7 +547,7 @@ class TestErrorHandling:
         # Manually update the cron expression to be invalid
         db.update_flow_schedule(schedule_id, cron_expression="not valid cron")
 
-        scheduler = FlowScheduler(db=db, emit=callback)
+        scheduler = FlowScheduler(db=db, project=project, emit=callback)
         # Should not raise -- error is caught and logged
         await scheduler.check_once()
 
@@ -532,7 +563,7 @@ class TestErrorHandling:
 
 
 class TestStartFlowCallback:
-    async def test_callback_called_for_new_run(self) -> None:
+    async def test_callback_called_for_new_run(self, project: Project) -> None:
         """When a schedule fires with no overlap, the start callback is called."""
         db = _make_db()
         _events, callback = _collect_events()
@@ -555,6 +586,7 @@ class TestStartFlowCallback:
 
         scheduler = FlowScheduler(
             db=db,
+            project=project,
             emit=callback,
             start_flow_callback=mock_start,
         )
@@ -562,7 +594,7 @@ class TestStartFlowCallback:
 
         assert started_ids == [flow_def_id]
 
-    async def test_no_callback_creates_run_record(self) -> None:
+    async def test_no_callback_creates_run_record(self, project: Project) -> None:
         """Without a start callback, the scheduler creates a run record directly."""
         db = _make_db()
         _events, callback = _collect_events()
@@ -576,7 +608,7 @@ class TestStartFlowCallback:
             next_trigger_at=past_time,
         )
 
-        scheduler = FlowScheduler(db=db, emit=callback)
+        scheduler = FlowScheduler(db=db, project=project, emit=callback)
         await scheduler.check_once()
 
         # A flow run should have been created
@@ -591,7 +623,7 @@ class TestStartFlowCallback:
 
 
 class TestMultipleSchedules:
-    async def test_multiple_due_schedules(self) -> None:
+    async def test_multiple_due_schedules(self, project: Project) -> None:
         """Multiple due schedules should all be processed."""
         db = _make_db()
         events, callback = _collect_events()
@@ -604,7 +636,7 @@ class TestMultipleSchedules:
         _create_schedule(db, flow_def_id_1, next_trigger_at=past_time)
         _create_schedule(db, flow_def_id_2, next_trigger_at=past_time)
 
-        scheduler = FlowScheduler(db=db, emit=callback)
+        scheduler = FlowScheduler(db=db, project=project, emit=callback)
         await scheduler.check_once()
 
         triggered_events = [e for e in events if e.type == EventType.SCHEDULE_TRIGGERED]
@@ -613,7 +645,7 @@ class TestMultipleSchedules:
         triggered_flow_ids = {e.payload["flow_definition_id"] for e in triggered_events}
         assert triggered_flow_ids == {flow_def_id_1, flow_def_id_2}
 
-    async def test_mixed_due_and_future(self) -> None:
+    async def test_mixed_due_and_future(self, project: Project) -> None:
         """Only due schedules should fire, not future ones."""
         db = _make_db()
         events, callback = _collect_events()
@@ -627,9 +659,126 @@ class TestMultipleSchedules:
         _create_schedule(db, flow_def_id_1, next_trigger_at=past_time)
         _create_schedule(db, flow_def_id_2, next_trigger_at=future_time)
 
-        scheduler = FlowScheduler(db=db, emit=callback)
+        scheduler = FlowScheduler(db=db, project=project, emit=callback)
         await scheduler.check_once()
 
         triggered_events = [e for e in events if e.type == EventType.SCHEDULE_TRIGGERED]
         assert len(triggered_events) == 1
         assert triggered_events[0].payload["flow_definition_id"] == flow_def_id_1
+
+
+# ---------------------------------------------------------------------------
+# Tests: Per-project data_dir routing (ENGINE-081)
+# ---------------------------------------------------------------------------
+
+
+class TestProjectDataDirRouting:
+    """Triggered runs route their ``data_dir`` through the owning Project.
+
+    Before ENGINE-081 the scheduler hardcoded ``~/.flowstate/runs/...`` so
+    two projects scheduling the same flow id collided in a global namespace.
+    The new constructor takes a ``Project`` and writes
+    ``<project.data_dir>/runs/{queued|scheduled}-<schedule_id>`` instead.
+    """
+
+    async def test_scheduled_branch_uses_project_data_dir(self, project: Project) -> None:
+        """Parallel/no-active branch writes data_dir under project.data_dir."""
+        db = _make_db()
+        _events, callback = _collect_events()
+
+        flow_def_id = _create_flow_def(db)
+        past_time = (datetime.now(UTC) - timedelta(minutes=5)).isoformat()
+        schedule_id = _create_schedule(db, flow_def_id, next_trigger_at=past_time)
+
+        scheduler = FlowScheduler(db=db, project=project, emit=callback)
+        await scheduler.check_once()
+
+        runs = db.list_flow_runs()
+        assert len(runs) == 1
+        expected = str(project.data_dir / "runs" / f"scheduled-{schedule_id}")
+        assert runs[0].data_dir == expected
+        assert runs[0].data_dir.startswith(str(project.data_dir))
+        assert "~/.flowstate/runs/" not in runs[0].data_dir
+
+    async def test_queued_branch_uses_project_data_dir(self, project: Project) -> None:
+        """on_overlap=queue branch writes data_dir under project.data_dir."""
+        db = _make_db()
+        _events, callback = _collect_events()
+
+        flow_def_id = _create_flow_def(db)
+        past_time = (datetime.now(UTC) - timedelta(minutes=5)).isoformat()
+        schedule_id = _create_schedule(
+            db,
+            flow_def_id,
+            on_overlap="queue",
+            next_trigger_at=past_time,
+        )
+        _create_active_run(db, flow_def_id)
+
+        scheduler = FlowScheduler(db=db, project=project, emit=callback)
+        await scheduler.check_once()
+
+        # Filter out the seeded active run; the queued one is the new 'created'.
+        created_runs = [r for r in db.list_flow_runs() if r.status == "created"]
+        assert len(created_runs) == 1
+        expected = str(project.data_dir / "runs" / f"queued-{schedule_id}")
+        assert created_runs[0].data_dir == expected
+        assert created_runs[0].data_dir.startswith(str(project.data_dir))
+        assert "~/.flowstate/runs/" not in created_runs[0].data_dir
+
+    async def test_two_projects_disjoint_paths(self, tmp_path: Path) -> None:
+        """Two schedulers with two distinct projects produce disjoint paths.
+
+        This is TEST-81.4 from the Phase 32 sprint contract: scheduling
+        the same flow shape in two projects must never collide on disk
+        because each scheduler roots its data_dir under its own
+        ``project.data_dir``.
+        """
+        project_a = _make_project(tmp_path, "proja")
+        project_b = _make_project(tmp_path, "projb")
+        assert project_a.data_dir != project_b.data_dir
+
+        db_a = _make_db()
+        db_b = _make_db()
+        _events_a, cb_a = _collect_events()
+        _events_b, cb_b = _collect_events()
+
+        past = (datetime.now(UTC) - timedelta(minutes=5)).isoformat()
+
+        fd_a = _create_flow_def(db_a, name="shared-name")
+        fd_b = _create_flow_def(db_b, name="shared-name")
+        sched_a = _create_schedule(db_a, fd_a, next_trigger_at=past)
+        sched_b = _create_schedule(db_b, fd_b, next_trigger_at=past)
+
+        scheduler_a = FlowScheduler(db=db_a, project=project_a, emit=cb_a)
+        scheduler_b = FlowScheduler(db=db_b, project=project_b, emit=cb_b)
+
+        await scheduler_a.check_once()
+        await scheduler_b.check_once()
+
+        runs_a = db_a.list_flow_runs()
+        runs_b = db_b.list_flow_runs()
+        assert len(runs_a) == 1
+        assert len(runs_b) == 1
+
+        path_a = runs_a[0].data_dir
+        path_b = runs_b[0].data_dir
+
+        # Both rooted under their respective project data dirs
+        assert path_a.startswith(str(project_a.data_dir))
+        assert path_b.startswith(str(project_b.data_dir))
+
+        # Both contain the canonical "runs/scheduled-" segment
+        assert "runs/scheduled-" in path_a
+        assert "runs/scheduled-" in path_b
+        # Sanity: schedule ids actually appear (not collapsed)
+        assert sched_a in path_a
+        assert sched_b in path_b
+
+        # Paths are disjoint subtrees: neither is a prefix of the other
+        assert not path_a.startswith(path_b)
+        assert not path_b.startswith(path_a)
+
+        # Guard against the legacy literal escaping into either DB row
+        assert "~/.flowstate/runs/" not in path_a
+        assert "~/.flowstate/runs/" not in path_b
