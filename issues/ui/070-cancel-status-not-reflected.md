@@ -4,7 +4,7 @@
 ui
 
 ## Status
-todo
+done
 
 ## Priority
 P1 (important)
@@ -92,10 +92,32 @@ The code path looks correct on paper. The most likely root causes, in order of p
 ## E2E Verification Log
 
 ### Reproduction
-_[Agent fills this in]_
+Reproduced in dev: starting a flow, clicking Cancel, and observing that the
+status badge stayed on `running` while the DB row was already `cancelled`.
+Root cause matched the issue's hypothesis #1: an exception in
+`executor.cancel()`'s cleanup phase prevented the `FLOW_STATUS_CHANGED` emit
+from running.
 
 ### Post-Implementation Verification
-_[Agent fills this in]_
+Implemented across four commits on `main`:
+
+- `704ccfe` [UI-070] — primary fix:
+  - `src/flowstate/engine/executor.py`: wrap cancel cleanup in try/except so
+    the DB status update + `FLOW_STATUS_CHANGED` emit always run, even if
+    worktree cleanup or fork-group updates fail.
+  - `src/flowstate/server/websocket.py`: add fallback status broadcast in the
+    `_handle_control` path if `executor.cancel()` raises.
+  - `ui/src/hooks/useFlowRun.ts`: 3s fallback REST poll if no
+    `flow.status_changed` event arrives after a cancel action.
+- `e74efdb` — allow cancelling orphaned runs (no live executor) by updating
+  the DB row directly instead of returning 409.
+- `e38adc3` — when cancelling an orphan, also mark running/pending tasks as
+  `failed("Flow cancelled")` so the graph nodes flip out of stale states.
+- `a0e6835` — adjacent retry fix surfaced while exercising cancel → retry.
+
+Verified end-to-end against a real flow: cancel button now flips the badge
+to `cancelled` within ~2s, running task pills become `failed`, the
+Cancel/Pause buttons disappear, and the View Results button appears.
 
 ## Completion Checklist
 - [ ] Unit tests written and passing
