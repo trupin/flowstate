@@ -492,7 +492,7 @@
 
 | Issue      | Title                                                        | Domain | Priority | Depends On  | Status |
 | ---------- | ------------------------------------------------------------ | ------ | -------- | ----------- | ------ |
-| UI-070     | Cancel button succeeds on backend but UI does not reflect it | ui     | P1       | —           | todo   |
+| UI-070     | Cancel button succeeds on backend but UI does not reflect it | ui     | P1       | —           | done   |
 | UI-072     | Retry Task button click appears to do nothing                | ui     | P1       | —           | done        |
 
 
@@ -569,7 +569,7 @@ Stepping stone before the full menubar app: add a PWA manifest + service worker 
 
 | Issue   | Title                                              | Domain | Priority | Depends On  | Status |
 | ------- | -------------------------------------------------- | ------ | -------- | ----------- | ------ |
-| UI-073  | Make Flowstate UI installable as a PWA from the browser | ui | P2       | SHARED-008  | todo   |
+| UI-073  | Make Flowstate UI installable as a PWA from the browser | ui | P2       | SHARED-008  | done   |
 
 
 ### Phase 35 — Tauri menubar app (macOS)
