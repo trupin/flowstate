@@ -1,0 +1,37 @@
+// Example Flowstate flow for a Node project.
+// This flow walks a Node codebase through install, build, and test using npm.
+// Run `flowstate check flows/example.flow` to validate, then `flowstate server`.
+flow example_node {
+    budget = 30m
+    on_error = pause
+    context = session
+
+    input {
+        project_name: string = "my-node-app"
+    }
+
+    entry install {
+        prompt = """
+        Install dependencies for the Node project {{project_name}}.
+        Run `npm install` and report any dependency errors.
+        """
+    }
+
+    task build {
+        prompt = """
+        Build the Node project {{project_name}}.
+        Run `npm run build` (or `npm run compile` if build is not defined)
+        and fix any compilation errors.
+        """
+    }
+
+    exit test {
+        prompt = """
+        Run the Node test suite for {{project_name}} with `npm test`.
+        Summarize pass/fail counts and any flaky tests.
+        """
+    }
+
+    install -> build
+    build -> test
+}

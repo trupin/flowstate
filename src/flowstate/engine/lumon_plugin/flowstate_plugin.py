@@ -165,6 +165,58 @@ def handle_list_subtasks(args: dict) -> dict[str, str]:
     return _api_request("GET", path)
 
 
+def handle_schedule_task(args: dict) -> dict[str, str]:
+    """Queue a follow-up task on a flow.
+
+    Required: ``flow_name``, ``title``. Optional: ``description``, ``params_json``
+    (a JSON-encoded object — invalid JSON yields an error), ``scheduled_at``
+    (ISO-8601), ``cron``. Returns the new task's ID on success.
+    """
+    flow_name = str(args.get("flow_name", "")).strip()
+    if not flow_name:
+        return {"tag": "error", "value": "flow_name is required"}
+    title = str(args.get("title", "")).strip()
+    if not title:
+        return {"tag": "error", "value": "title is required"}
+
+    body: dict[str, object] = {"title": title}
+
+    description = str(args.get("description", "")).strip()
+    if description:
+        body["description"] = description
+
+    params_json = str(args.get("params_json", "")).strip()
+    if params_json:
+        try:
+            parsed = json.loads(params_json)
+        except (json.JSONDecodeError, TypeError) as e:
+            return {"tag": "error", "value": f"params_json must be valid JSON: {e}"}
+        if not isinstance(parsed, dict):
+            return {"tag": "error", "value": "params_json must decode to a JSON object"}
+        body["params"] = parsed
+
+    scheduled_at = str(args.get("scheduled_at", "")).strip()
+    if scheduled_at:
+        body["scheduled_at"] = scheduled_at
+
+    cron = str(args.get("cron", "")).strip()
+    if cron:
+        body["cron"] = cron
+
+    path = f"/api/flows/{flow_name}/tasks"
+    result = _api_request("POST", path, json.dumps(body))
+    if result["tag"] != "ok":
+        return result
+    try:
+        data = json.loads(result["value"])
+    except (json.JSONDecodeError, TypeError):
+        return {"tag": "error", "value": f"unexpected response body: {result['value'][:200]}"}
+    task_id = data.get("id", "") if isinstance(data, dict) else ""
+    if not task_id:
+        return {"tag": "error", "value": "API response did not include a task id"}
+    return {"tag": "ok", "value": task_id}
+
+
 HANDLERS = {
     "submit_summary": handle_submit_summary,
     "submit_decision": handle_submit_decision,
@@ -172,6 +224,7 @@ HANDLERS = {
     "create_subtask": handle_create_subtask,
     "update_subtask": handle_update_subtask,
     "list_subtasks": handle_list_subtasks,
+    "schedule_task": handle_schedule_task,
 }
 
 

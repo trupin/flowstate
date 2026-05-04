@@ -1629,6 +1629,39 @@ Flows are discovered from the filesystem (watched directory), not created manual
 | `interrupt_task` | `{task_execution_id}` | Interrupt a running task for user interaction |
 | `send_message` | `{task_execution_id, message}` | Send a user message to a running or interrupted task |
 
+**Server → Client action responses**:
+
+In addition to flow events, the server sends two message types in direct response to client actions. These let the UI give immediate feedback for an action without waiting for downstream flow events.
+
+`action_ack` — sent on the originating WebSocket when a control action (`pause`, `cancel`, `abort`, `retry_task`, `skip_task`) succeeds:
+
+```json
+{
+    "type": "action_ack",
+    "payload": {
+        "action": "<action_type>",
+        "flow_run_id": "<uuid>",
+        "task_execution_id": "<uuid>"   // present for retry_task / skip_task
+    }
+}
+```
+
+`error` — sent on the originating WebSocket when a client message is malformed or a control action fails. The `action`, `flow_run_id`, and `task_execution_id` fields are present when relevant:
+
+```json
+{
+    "type": "error",
+    "payload": {
+        "action": "<action_type>",       // optional: present when an action triggered the error
+        "flow_run_id": "<uuid>",         // optional
+        "task_execution_id": "<uuid>",   // optional: for task-level actions
+        "message": "<human-readable reason>"
+    }
+}
+```
+
+For control actions that fail mid-cleanup (e.g. `cancel` raising during shutdown), the server still broadcasts a `flow.status_changed` fallback event in addition to sending an `error` to the originating client, so all subscribers see the run transition out of `running`.
+
 **Reconnection**: On WebSocket reconnect, client sends `subscribe` with `last_event_timestamp`. Server replays all events after that timestamp from the database.
 
 ### 10.4 Graph Visualization
@@ -1779,30 +1812,31 @@ Judge failures are **never** automatically skipped because a wrong routing decis
 
 ## 13. Configuration
 
+Flowstate's configuration and deployment model is **project-rooted**. Every invocation of the CLI or server is scoped to exactly one project, identified by a `flowstate.toml` **anchor file** in the project root. The full layout and deployment story are specified in §13.3 (Project Layout) and §13.4 (Deployment & Installation). See the Quickstart in `README.md` for the end-user installation path.
+
 ### 13.1 `flowstate.toml`
 
 ```toml
+# flowstate.toml — project anchor file.
+# Its presence makes the containing directory a Flowstate project.
+
 [server]
-host = "127.0.0.1"
-port = 9090
+host = "127.0.0.1"    # default: 127.0.0.1 (loopback). Non-loopback binds
+port = 9090            # emit a loud warning; there is no built-in auth.
 
 [execution]
 max_concurrent_tasks = 4
 default_budget = "1h"
-worktree_cleanup = true         # clean up git worktrees after run completes
+worktree_cleanup = true          # clean up git worktrees after run completes
 
 [judge]
 model = "sonnet"
 confidence_threshold = 0.5
 max_retries = 1
 
-[database]
-# Database lives inside ~/.flowstate/ by default
-path = "~/.flowstate/flowstate.db"
-wal_mode = true
-
 [flows]
-watch_dir = "./flows"   # directory to watch for .flow files
+watch_dir = "flows"              # directory (relative to this file) scanned
+                                  # for *.flow files. Absolute paths allowed.
 
 # Optional: define additional agent harnesses (ACP protocol)
 # [harnesses.gemini]
@@ -1813,7 +1847,10 @@ watch_dir = "./flows"   # directory to watch for .flow files
 level = "info"
 ```
 
-This file can be placed at `~/.flowstate/config.toml` (global) or in the current directory as `flowstate.toml` (local override).
+Notes:
+- There is **no** `[database]` section. The database path is derived from the project (see §13.3); users should not configure it directly.
+- `flows.watch_dir` is resolved **relative to the project root** (the directory containing this file), not relative to CWD. Absolute paths are accepted and used as-is.
+- The old "global `~/.flowstate/config.toml` + local `./flowstate.toml` override" search order has been removed. The only discovery mechanism is the project walk-up described in §13.3.
 
 ### 13.2 CLI Interface
 
@@ -1838,7 +1875,154 @@ flowstate schedules
 
 # Manually trigger a scheduled flow
 flowstate trigger <flow-name>
+
+# Bootstrap Flowstate in an existing project
+flowstate init
 ```
+
+Every command except `flowstate init`, `flowstate check`, and `flowstate --version` / `--help` requires a project context (see §13.3). Commands that require a project exit with code `2` and a message pointing at `flowstate init` when no project is found. `flowstate check` is a pure DSL validator that takes an explicit flow file path and operates without project context, so it can be used for quick syntax-checking outside any project.
+
+### 13.3 Project Layout
+
+Flowstate v0.1 runs as a **per-project dev server**. A "project" is any directory containing a `flowstate.toml` anchor file. Every CLI command and the running server are scoped to exactly one project, discovered by walking up the directory tree from CWD until the anchor file is found — the same pattern `git` uses for its repository root.
+
+**Project directory layout (user's repo):**
+```
+my-app/                 # the user's existing repo
+├── .git/
+├── flowstate.toml      # anchor file — makes this a Flowstate project
+├── flows/              # .flow files, version-controlled with the project
+│   ├── build.flow
+│   └── deploy.flow
+├── package.json
+└── src/
+```
+
+Flowstate writes **nothing** inside the user's project directory beyond the initial `flowstate.toml` and `flows/example.flow` scaffolded by `flowstate init`. All runtime data — the database, auto-generated workspaces, run artifacts — lives outside the project under the per-project data directory described below.
+
+**Per-project data directory:** `~/.flowstate/projects/<slug>/`
+```
+~/.flowstate/
+└── projects/
+    ├── my-app-a1b2c3d4/              # one project
+    │   ├── flowstate.db
+    │   └── workspaces/
+    │       └── build/
+    │           └── <run-id[:8]>/     # auto-generated run workspaces
+    └── other-repo-e5f6a7b8/          # another project
+        ├── flowstate.db
+        └── workspaces/
+```
+
+The **project slug** is derived from the absolute path of the project root:
+```
+slug = <basename(root)> + "-" + sha1(str(root.resolve()))[:8]
+```
+The slug is stable for a given absolute path and collision-safe across projects that share a basename (two different `build/` directories on disk get different slugs). Symlinked project directories always resolve before hashing, so a symlink alias collapses to the same slug as its target.
+
+**Environment overrides:**
+| Variable              | Purpose                                                                                      |
+|-----------------------|----------------------------------------------------------------------------------------------|
+| `FLOWSTATE_CONFIG`    | Absolute path to an explicit `flowstate.toml`. Short-circuits the walk-up; the containing directory is used as the project root. |
+| `FLOWSTATE_DATA_DIR`  | Overrides `~/.flowstate` as the root of all per-project data directories. Useful for CI, containerized deployments, and tests. |
+
+Both are read at project-resolution time. Neither is required.
+
+**Project resolution algorithm:**
+1. If `FLOWSTATE_CONFIG` is set → treat it as an explicit anchor path; the project root is `Path(FLOWSTATE_CONFIG).parent.resolve()`. If the file does not exist, raise `ProjectNotFoundError`.
+2. Otherwise, start at `Path.cwd().resolve()` (or an explicit `--project <path>` if the CLI supports it).
+3. Walk up the directory tree (inclusive of the starting directory) looking for a file named `flowstate.toml`. The **nearest ancestor** wins — nested projects are allowed, and the innermost project context applies.
+4. If no anchor is found by the time the filesystem root is reached, raise `ProjectNotFoundError` with a message pointing at `flowstate init`.
+5. Parse the anchor file, construct the `Project` context object (see §13.3 implementation contract), return.
+
+**The `Project` context object** (implementation contract for SHARED-007):
+A frozen dataclass in `src/flowstate/config.py` with absolute, already-resolved paths:
+
+| Field             | Type               | Meaning                                                             |
+|-------------------|--------------------|---------------------------------------------------------------------|
+| `root`            | `Path`             | Absolute path to the directory containing `flowstate.toml`.         |
+| `slug`            | `str`              | `<basename>-<sha1(abspath)[:8]>`. Stable identifier.               |
+| `config`          | `FlowstateConfig`  | Parsed TOML contents.                                               |
+| `data_dir`        | `Path`             | `<data_root>/projects/<slug>/`. Created on resolve.                 |
+| `flows_dir`       | `Path`             | `(root / config.flows.watch_dir).resolve()`. Created on resolve.    |
+| `db_path`         | `Path`             | `<data_dir>/flowstate.db`. Parent created; file not touched.        |
+| `workspaces_dir`  | `Path`             | `<data_dir>/workspaces/`. Created on resolve.                       |
+
+Every CLI entry point, the FastAPI app factory, the flow registry, and the execution engine receive the `Project` and read paths from it. No component re-derives paths from raw config strings.
+
+**Path resolution within a project:**
+
+*Flow `workspace` attribute* (flow-level):
+- **Absolute path** → used as-is.
+- **Relative path** → resolved relative to the **flow file's containing directory** (not CWD, not the project root). Example: a flow at `flows/build.flow` with `workspace = "../backend"` resolves to `<project_root>/backend`.
+- **Omitted** → an auto-generated workspace under `<project.workspaces_dir>/<flow-name>/<run-id[:8]>/`, auto-initialized as a git repo (preserving ENGINE-069 behavior).
+
+*Node `cwd` attribute* (node-level):
+- **Absolute path** → used as-is.
+- **Relative path** → resolved relative to the flow file's containing directory (same rule as flow `workspace`).
+- **Omitted** → inherit the flow-level workspace.
+
+In all cases the resolved path must exist and be a directory (with the exception of the auto-generated case, which creates the directory). A resolution failure raises `CwdResolutionError` with a clear message naming the attempted path.
+
+**Migration note (v0.1):** v0.1 is **greenfield**. Users with pre-existing data at `~/.flowstate/flowstate.db` from older installs are unaffected — that file is simply no longer read. There is no automatic migration; the old data can be deleted by hand if desired. Any runs the user cares about should be started fresh in a project.
+
+**Non-goals for v0.1:**
+- No global/multi-project daemon.
+- No multi-tenancy or authentication.
+- No automatic migration of pre-v0.1 data.
+- No in-project state beyond `flowstate.toml` and the scaffolded `flows/` directory.
+- No Docker image, Homebrew formula, systemd unit, or cloud deployment template.
+
+### 13.4 Deployment & Installation
+
+> **See also**: [`README.md` Install & Quickstart](./README.md#install) for the end-user-facing version of the install flow. This section is the contract; the README is the sales pitch.
+
+**Primary install channel (v0.1):** Flowstate is published to PyPI as `flowstate` and installed with `pipx` or `uv tool install`:
+
+```bash
+uv tool install flowstate         # recommended
+# or
+pipx install flowstate
+flowstate --version               # confirms install
+```
+
+Installing from PyPI places a `flowstate` binary on `$PATH` inside an isolated virtualenv managed by pipx/uv. No manual Python environment setup is required. Python 3.12+ is a hard prerequisite.
+
+**First-run bootstrap:**
+```bash
+cd ~/my-app                       # any existing repo
+flowstate init                    # creates flowstate.toml and flows/example.flow
+flowstate check flows/example.flow
+flowstate server                  # http://127.0.0.1:9090
+```
+
+`flowstate init` writes two files in CWD: a `flowstate.toml` with sensible defaults, and a starter `flows/example.flow` tailored to the detected project type (Node / Python / Rust / generic). It refuses to overwrite an existing `flowstate.toml` unless `--force` is passed, and it never overwrites an existing `flows/example.flow`. See SERVER-028 for the full contract.
+
+**UI packaging:** the built React UI (`ui/dist/`) is bundled into the `flowstate` wheel during the build via a Hatchling custom build hook (SHARED-008). The hook runs `npm ci && npm run build` in `ui/` and copies the result to `src/flowstate/_ui_dist/`, which is included in the wheel as package data. At runtime, the server locates the UI via `importlib.resources.files("flowstate") / "_ui_dist"` (SERVER-032), so the assets ship with the package and are found regardless of the CWD the server was launched from. End users never need Node installed.
+
+A dev-mode fallback exists: if `_ui_dist/` is empty (e.g., a source checkout with no build), the server looks for a sibling `ui/dist/` next to the source tree and uses that instead. This keeps the contributor workflow unchanged.
+
+**Lumon sandboxing** is an **optional extra**. Core Flowstate ships without any private git dependencies, which is what unblocks PyPI publishing. Users who want sandboxed execution install:
+```bash
+pip install 'flowstate[lumon]'
+```
+Every `import lumon` in the Flowstate source is guarded behind a try/except, and harness factories that require lumon raise `LumonNotInstalledError` with the install hint when the extra is missing (SHARED-009). The default ACP / Claude Code harness path has zero transitive dependency on lumon.
+
+**Security posture (v0.1):** Flowstate has **no built-in authentication**. The default bind address is `127.0.0.1:9090` (loopback only). Any attempt to bind a non-loopback interface (`0.0.0.0`, a specific LAN IP, `::`, etc.) triggers a loud multi-line warning to stderr at startup explaining that anyone reachable on that address can execute code on the host via Flowstate's subprocess harnesses (SERVER-030). Non-loopback deployment is explicitly out of scope for v0.1; users who need it must build their own authentication layer (e.g., put Flowstate behind an authenticated reverse proxy on a trusted network).
+
+**Health check:** `GET /health` returns HTTP 200 with a JSON body containing `status`, Flowstate's installed `version`, and the current `project.slug` / `project.root` (SERVER-031). Suitable for local orchestrators polling for readiness. The endpoint is unauthenticated, consistent with the rest of v0.1.
+
+**Release procedure (maintainers only):** documented in `RELEASING.md` (SHARED-010). Summary:
+1. Bump version in `pyproject.toml`.
+2. `uv build` — invokes the Hatchling hook to build the UI and produce a wheel + sdist.
+3. Smoke-test the wheel with `scripts/verify_wheel_ui.sh`.
+4. Upload to TestPyPI, install into a throwaway venv, run `flowstate init` + `flowstate server`.
+5. Upload to production PyPI.
+6. Tag the release: `git tag v<version> && git push --tags`.
+
+Node 20+ is a **build-time** prerequisite for maintainers. It is **not** required at install time by end users.
+
+**Non-goals for v0.1:** Docker images, Homebrew formulae, systemd units, auth, multi-tenancy, remote dashboards, hosted SaaS. These are deferred to future releases.
 
 ---
 
@@ -1907,6 +2091,19 @@ Subtask data is **not** included in the summary artifact or passed automatically
 ### 14.7 WebSocket Events
 
 A `SUBTASK_UPDATED` event is emitted when a subtask is created or updated. Payload includes the full subtask data and `flow_run_id` for client-side filtering.
+
+### 14.8 Scheduling Follow-up Tasks
+
+In addition to managing subtasks within its own execution, an agent can queue **a brand-new task on any flow** (the same flow or another) for the queue manager to pick up later. This lets agents wire flows together at runtime: a dispatcher task can fan work out to a worker flow, a periodic monitor can self-reschedule, etc.
+
+The capability is exposed two ways:
+
+- **REST**: `POST /api/flows/{flow_name}/tasks` (the same endpoint used by the UI's "Submit task" form). Body: `{"title": "...", "description": "...", "params": {...}, "scheduled_at": "<ISO-8601>" | null, "cron": "<cron expr>" | null}`. Returns 201 with the new task row. Returns 404 if the flow does not exist, 400 if `cron` fails to parse.
+- **Lumon plugin**: `flowstate.schedule_task(flow_name, title, description, params_json, scheduled_at, cron)` — the eighth action exposed by the bundled flowstate plugin (alongside `submit_summary`, `submit_decision`, `submit_output`, `create_subtask`, `update_subtask`, `list_subtasks`, and `guide`). `params_json` is a JSON-encoded object (or `""`); `scheduled_at` and `cron` are mutually-meaningful but only one is needed. Returns `:ok(<task_id>)` on success or `:error(<message>)` (the plugin surfaces 400/404 from the REST endpoint verbatim).
+
+The default-mode prompt (both lumon and non-lumon variants) includes a "Scheduling follow-up work" subsection so agents discover this capability without having to read the docs.
+
+**Out of scope**: rate limiting and self-scheduling-loop detection. The existing scheduler concurrency limits prevent runaway execution but not unbounded queue growth — flow authors are expected to design their cron schedules sensibly.
 
 ---
 

@@ -1,7 +1,37 @@
 [project]
 name = "flowstate"
 version = "0.1.0"
-description = "State-machine orchestration system for AI agents"
+description = "State-machine orchestration system for AI agents — define flows as DSL, run them as per-project dev servers, ship them as wheels."
+readme = "README.md"
+license = { text = "MIT" }
+authors = [
+    { name = "Theophane Rupin", email = "theophane.rupin@gmail.com" },
+]
+keywords = [
+    "orchestration",
+    "ai-agents",
+    "state-machine",
+    "claude",
+    "workflow",
+    "dsl",
+    "dev-tool",
+]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Environment :: Console",
+    "Environment :: Web Environment",
+    "Framework :: FastAPI",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: MacOS",
+    "Operating System :: POSIX :: Linux",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Software Development :: Build Tools",
+    "Topic :: Software Development :: Libraries :: Python Modules",
+    "Typing :: Typed",
+]
 requires-python = ">=3.12"
 dependencies = [
     "lark>=1.1",
@@ -13,6 +43,21 @@ dependencies = [
     "watchfiles>=0.21",
     "claude-agent-sdk>=0.1",
     "agent-client-protocol>=0.8.1",
+]
+
+[project.urls]
+Homepage = "https://github.com/trupin/flowstate"
+Repository = "https://github.com/trupin/flowstate"
+Issues = "https://github.com/trupin/flowstate/issues"
+Documentation = "https://github.com/trupin/flowstate#readme"
+
+[project.optional-dependencies]
+# Lumon sandboxing — installs the `lumon` CLI binary so flows that declare
+# `lumon = true` or `sandbox = true` can deploy isolated execution environments.
+# Flows that don't use Lumon work fine without this extra. Source-installed via
+# git because Lumon is not currently on PyPI; this extra is NOT shipped to PyPI
+# with the published Flowstate wheel — users must install it explicitly.
+lumon = [
     "lumon @ git+https://github.com/trupin/lumon.git",
 ]
 
@@ -28,6 +73,23 @@ allow-direct-references = true
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/flowstate"]
+
+# Custom build hook (SHARED-008) that bundles the React UI into the wheel.
+# See hatch_build.py at the repo root.
+[tool.hatch.build.targets.wheel.hooks.custom]
+path = "hatch_build.py"
+
+[tool.hatch.build.targets.sdist]
+include = [
+    "src/",
+    "ui/",
+    "hatch_build.py",
+    "pyproject.toml",
+    "README.md",
+    "LICENSE",
+    "specs.md",
+    "RELEASING.md",
+]
 
 [dependency-groups]
 dev = [
@@ -64,3 +126,9 @@ typeCheckingMode = "standard"
 venvPath = "."
 venv = ".venv"
 include = ["src"]
+# hatch_build.py is a PEP 517 build hook that runs in Hatchling's build
+# environment (where `hatchling` is always installed). The runtime venv
+# does not install hatchling, so pyright cannot resolve the import.
+# Excluding the file entirely is cleaner than inline ``type: ignore``
+# comments and matches how other Python projects handle build-only code.
+exclude = ["hatch_build.py"]

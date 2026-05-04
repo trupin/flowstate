@@ -237,12 +237,10 @@ def get_artifact(base_url: str, run_id: str, task_id: str, name: str) -> str | N
 @pytest.fixture(scope="module")
 def server_url(tmp_path_factory):
     port = _find_free_port()
-    data_dir = tmp_path_factory.mktemp("lumon_e2e_data")
     watch_dir = tmp_path_factory.mktemp("lumon_e2e_flows")
 
     config = FlowstateConfig(
         server_port=port,
-        database_path=str(data_dir / "flowstate.db"),
         watch_dir=str(watch_dir),
         log_level="debug",
     )

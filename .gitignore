@@ -24,6 +24,10 @@ node_modules/
 ui/dist/
 ui/build/
 
+# UI bundle copied into the wheel by the Hatchling build hook (SHARED-008).
+# Regenerated on every `uv build`. Never commit; it's large and derived.
+src/flowstate/_ui_dist/
+
 # Flowstate runtime data
 .flowstate/
 flowstate.db

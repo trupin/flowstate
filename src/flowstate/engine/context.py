@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import os
 import re
+from pathlib import Path
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
@@ -17,13 +18,68 @@ if TYPE_CHECKING:
 
 
 class CwdResolutionError(Exception):
-    """Raised when neither node nor flow specifies a working directory."""
+    """Raised when a working directory cannot be resolved.
+
+    This covers two failure modes:
+    - Neither node.cwd nor flow.workspace is set (and no auto-gen fallback applies).
+    - A resolved path does not exist or is not a directory.
+    """
+
+
+def resolve_workspace(
+    flow_workspace: str | None,
+    flow_file: Path,
+) -> Path | None:
+    """Resolve a flow-level ``workspace`` attribute to an absolute path.
+
+    Rules (per spec §13.3 "Path resolution within a project"):
+
+    - Absolute path (after ``~`` expansion) → used as-is, resolved.
+    - Relative path → resolved relative to the **flow file's containing
+      directory**, NOT the process CWD.
+    - Omitted (``None``) → returns ``None`` so the caller can fall back to an
+      auto-generated workspace (see :mod:`flowstate.engine.queue_manager`).
+
+    The path is NOT required to exist at this stage; existence is checked at
+    the task-launch site (which may also create auto-generated directories).
+    """
+    if flow_workspace is None:
+        return None
+    path = Path(flow_workspace).expanduser()
+    if path.is_absolute():
+        return path.resolve()
+    return (flow_file.parent / path).resolve()
+
+
+def resolve_node_cwd(
+    node_cwd: str | None,
+    flow_file: Path,
+    flow_workspace: Path | None,
+) -> Path | None:
+    """Resolve a node-level ``cwd`` attribute to an absolute path.
+
+    Rules (per spec §13.3):
+
+    - Absolute path → used as-is, resolved.
+    - Relative path → resolved relative to the flow file's containing
+      directory (same rule as :func:`resolve_workspace`).
+    - Omitted (``None``) → inherit ``flow_workspace`` (which itself may be
+      ``None`` if the caller wants auto-gen).
+    """
+    if node_cwd is None:
+        return flow_workspace
+    path = Path(node_cwd).expanduser()
+    if path.is_absolute():
+        return path.resolve()
+    return (flow_file.parent / path).resolve()
 
 
 def _build_directory_sections(cwd: str, *, lumon: bool = False) -> str:
     """Build the shared 'Working directory' and 'Task coordination' prompt sections.
 
     When lumon=True, uses flowstate.submit_summary() instead of curl commands.
+    Both branches end with a 'Scheduling follow-up work' subsection that
+    documents how to queue a future task on any flow.
     """
     if lumon:
         return (
@@ -38,7 +94,23 @@ def _build_directory_sections(cwd: str, *, lumon: bool = False) -> str:
             'flowstate.submit_summary("Your summary here: what you did, what changed, '
             'the outcome")\n'
             "```\n"
-            "Describe: what you did, what changed, the outcome / current state."
+            "Describe: what you did, what changed, the outcome / current state.\n"
+            "\n"
+            "## Scheduling follow-up work\n"
+            "You can queue a new task on any flow (this flow or another) for the "
+            "queue manager to pick up later:\n"
+            "```\n"
+            "flowstate.schedule_task(\n"
+            '    flow_name="<flow_name>",\n'
+            '    title="<short title>",\n'
+            '    description="",\n'
+            '    params_json="{}",\n'
+            '    scheduled_at="2026-05-01T12:00:00Z",\n'
+            '    cron=""\n'
+            ")\n"
+            "```\n"
+            'Use `cron` (e.g. `"*/5 * * * *"`) instead of `scheduled_at` for '
+            "recurring tasks. Pass empty strings for fields you do not need."
         )
     return (
         "## Working directory\n"
@@ -53,7 +125,19 @@ def _build_directory_sections(cwd: str, *, lumon: bool = False) -> str:
         '  -H "Content-Type: text/markdown" \\\n'
         "  -d 'Your summary here: what you did, what changed, the outcome'\n"
         "```\n"
-        "Describe: what you did, what changed, the outcome / current state."
+        "Describe: what you did, what changed, the outcome / current state.\n"
+        "\n"
+        "## Scheduling follow-up work\n"
+        "You can queue a new task on any flow (this flow or another) for the "
+        "queue manager to pick up later:\n"
+        "```bash\n"
+        "curl -s -X POST $FLOWSTATE_SERVER_URL/api/flows/<flow_name>/tasks \\\n"
+        '  -H "Content-Type: application/json" \\\n'
+        '  -d \'{"title": "...", "description": "...", '
+        '"params": {}, "scheduled_at": "2026-05-01T12:00:00Z"}\'\n'
+        "```\n"
+        'Use `cron` (e.g. `"*/5 * * * *"`) instead of `scheduled_at` for '
+        "recurring tasks."
     )
 
 
@@ -198,18 +282,47 @@ def get_context_mode(edge: Edge, flow: Flow) -> ContextMode:
     return flow.context
 
 
-def resolve_cwd(node: Node, flow: Flow) -> str:
+def resolve_cwd(node: Node, flow: Flow, flow_file: Path | None = None) -> str:
     """Resolve the working directory for a task.
 
-    Priority: node.cwd > flow.workspace > error.
+    Priority: ``node.cwd`` > ``flow.workspace`` > error.
+
+    When ``flow_file`` is provided, relative paths on either attribute are
+    resolved relative to the flow file's **containing directory** (per spec
+    §13.3). This makes the resolution independent of the server's process
+    CWD — crucial once Flowstate is installed as a binary and launched from
+    an arbitrary directory.
+
+    When ``flow_file`` is ``None`` (legacy call sites / unit tests), the
+    attributes are returned verbatim: this preserves backwards compatibility
+    for in-memory test flows that already store absolute paths.
     """
+    raw_cwd: str | None = None
+    source_attr: str = ""
     if node.cwd is not None:
-        return node.cwd
-    if flow.workspace is not None:
-        return flow.workspace
-    raise CwdResolutionError(
-        f"No working directory for node '{node.name}': neither node.cwd nor flow.workspace is set"
-    )
+        raw_cwd = node.cwd
+        source_attr = f"node '{node.name}'.cwd"
+    elif flow.workspace is not None:
+        raw_cwd = flow.workspace
+        source_attr = "flow.workspace"
+    else:
+        raise CwdResolutionError(
+            f"No working directory for node '{node.name}': neither node.cwd "
+            "nor flow.workspace is set"
+        )
+
+    if flow_file is None:
+        return raw_cwd
+
+    path = Path(raw_cwd).expanduser()
+    path = (flow_file.parent / path).resolve() if not path.is_absolute() else path.resolve()
+
+    if not path.exists() or not path.is_dir():
+        raise CwdResolutionError(
+            f"Resolved working directory does not exist or is not a directory: "
+            f"{path} (from {source_attr})"
+        )
+    return str(path)
 
 
 def build_task_management_instructions(

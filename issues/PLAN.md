@@ -503,6 +503,83 @@
 | ENGINE-078 | Two-phase pause with `pausing` intermediate state            | engine | P1       | —           | done |
 | UI-071     | Immediate pause feedback with pausing/resume UX              | ui     | P1       | ENGINE-078  | done   |
 
+
+### Phase 31 — Deployability v0.1
+
+Make Flowstate installable from PyPI via `pipx` / `uv tool install` and runnable inside any existing user project. Introduces the per-project dev-server model: `flowstate.toml` is a project anchor, `flows/` lives in the user's repo, each project gets its own `~/.flowstate/projects/<slug>/` data directory, and the built React UI is bundled into the wheel.
+
+#### Phase 31.0 — Shared contracts & spec
+
+| Issue      | Title                                                               | Domain | Priority | Depends On | Status |
+| ---------- | ------------------------------------------------------------------- | ------ | -------- | ---------- | ------ |
+| SHARED-006 | Spec: project layout & deployment model                             | shared | P0       | —          | done   |
+| SHARED-007 | Define `Project` contract (root, slug, abs paths) in `config.py`    | shared | P0       | SHARED-006 | done   |
+
+#### Phase 31.1 — Core deployability (parallel after SHARED-007)
+
+| Issue      | Title                                                               | Domain | Priority | Depends On | Status |
+| ---------- | ------------------------------------------------------------------- | ------ | -------- | ---------- | ------ |
+| SERVER-026 | Config loader: project resolution + env-var overrides               | server | P0       | SHARED-007 | done   |
+| STATE-012  | Derive DB path from `Project.db_path`; drop hardcoded default       | state  | P0       | SHARED-007 | done   |
+| SERVER-027 | Flow registry: resolve `watch_dir` relative to project root         | server | P0       | SHARED-007 | done   |
+| ENGINE-079 | Resolve flow `workspace` relative to flow file (fallback: project)  | engine | P0       | SHARED-007 | done   |
+| ENGINE-080 | Per-project workspaces dir + queue_manager update                    | engine | P0       | SHARED-007, ENGINE-079 | done   |
+
+#### Phase 31.2 — Bootstrap UX & hardening
+
+| Issue      | Title                                                               | Domain | Priority | Depends On   | Status |
+| ---------- | ------------------------------------------------------------------- | ------ | -------- | ------------ | ------ |
+| SERVER-028 | `flowstate init` command with project-type detection                | server | P0       | SERVER-026, SERVER-027 | done   |
+| SERVER-029 | Clear error when no `flowstate.toml` found                          | server | P0       | SERVER-026   | done   |
+| SERVER-030 | Loud warning on non-127.0.0.1 bind; default host to 127.0.0.1       | server | P1       | SERVER-026   | done   |
+| SERVER-031 | `GET /health` endpoint returning project slug + version             | server | P1       | SERVER-026   | done   |
+
+#### Phase 31.3 — Packaging & distribution
+
+| Issue      | Title                                                               | Domain | Priority | Depends On              | Status |
+| ---------- | ------------------------------------------------------------------- | ------ | -------- | ----------------------- | ------ |
+| SHARED-008 | Hatchling build hook: `npm run build` → `src/flowstate/_ui_dist/`   | shared | P0       | SHARED-006              | done   |
+| SERVER-032 | Serve UI from `importlib.resources` instead of `ui/dist/`           | server | P0       | SHARED-008              | done   |
+| SHARED-009 | Make `lumon` an optional extra; guard all lumon imports             | shared | P0       | —                       | done   |
+| SHARED-010 | PyPI release pipeline + `pyproject.toml` metadata                    | shared | P1       | SHARED-008, SHARED-009  | done   |
+| SHARED-011 | Deployment docs in README + `specs.md §13` cross-ref                 | shared | P1       | SHARED-010              | done   |
+
+
+### Phase 32 — Dev/deployed isolation hygiene
+
+Three small engine-domain fixes for paths and URLs that bypass the `Project` contract, surfaced while reviewing dev-vs-deployed conflict surfaces. No spec changes required.
+
+| Issue      | Title                                                               | Domain | Priority | Depends On            | Status |
+| ---------- | ------------------------------------------------------------------- | ------ | -------- | --------------------- | ------ |
+| ENGINE-081 | Scheduler: scheduled flow runs use per-project `data_dir`           | engine | P0       | SHARED-007, ENGINE-080 | done   |
+| ENGINE-082 | Executor: derive subprocess `FLOWSTATE_SERVER_URL` from `Project`   | engine | P1       | SHARED-007, SERVER-026 | done   |
+| ENGINE-083 | Lumon: global plugins path honors `FLOWSTATE_DATA_DIR`              | engine | P2       | SHARED-007             | done   |
+
+
+### Phase 33 — Agent task scheduling
+
+| Issue      | Title                                                               | Domain | Priority | Depends On  | Status |
+| ---------- | ------------------------------------------------------------------- | ------ | -------- | ----------- | ------ |
+| ENGINE-084 | Expose `schedule_task` to agents (lumon plugin + default prompt)    | engine | P1       | ENGINE-077  | done   |
+
+
+### Phase 34 — PWA install (cheap "feels like an app")
+
+Stepping stone before the full menubar app: add a PWA manifest + service worker so users can "Install Flowstate" from Chrome/Safari and get a standalone window. Validates the "users want an app" hypothesis at near-zero cost. Server still runs separately.
+
+| Issue   | Title                                              | Domain | Priority | Depends On  | Status |
+| ------- | -------------------------------------------------- | ------ | -------- | ----------- | ------ |
+| UI-073  | Make Flowstate UI installable as a PWA from the browser | ui | P2       | SHARED-008  | todo   |
+
+
+### Phase 35 — Tauri menubar app (macOS)
+
+Native menubar app that manages the `flowstate server` lifecycle and surfaces status / project switching from the system tray. Same UX category as Postgres.app, OrbStack, Tailscale. Bundles a portable Python so no system install needed. Phase 1 is macOS-only **and unsigned** (users right-click → Open on first launch); Apple Developer cert + notarization is a deferred follow-up. Windows/Linux are P2 follow-ups.
+
+| Issue   | Title                                              | Domain      | Priority | Depends On                                  | Status |
+| ------- | -------------------------------------------------- | ----------- | -------- | ------------------------------------------- | ------ |
+| UI-074  | Tauri menubar app for Flowstate                    | ui (+ shared) | P1     | SHARED-008, SHARED-010, SERVER-031, SERVER-028 | todo   |
+
 ---
 
 ## Cross-Domain Coordination

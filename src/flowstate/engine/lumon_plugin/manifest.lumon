@@ -38,3 +38,14 @@ define flowstate.update_subtask
 define flowstate.list_subtasks
   "List all subtasks for the current task"
   returns: :ok(text) | :error(text) "JSON array of subtasks or error"
+
+define flowstate.schedule_task
+  "Queue a follow-up task on a flow (this flow or another)"
+  takes:
+    flow_name: text "Name (or id) of the flow to queue the task on"
+    title: text "Short task title"
+    description: text "Optional longer description (may be empty)"
+    params_json: text "Optional JSON object of input params (e.g. '{}' or empty)"
+    scheduled_at: text "Optional ISO-8601 timestamp for one-shot deferred execution"
+    cron: text "Optional cron expression for recurring execution"
+  returns: :ok(text) | :error(text) "New task ID on success, or error message"

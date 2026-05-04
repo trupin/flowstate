@@ -178,6 +178,84 @@ def test_creates_parent_directory(tmp_path: object) -> None:
     db.close()
 
 
+def test_accepts_path_object(tmp_path: object) -> None:
+    """FlowstateDB accepts a pathlib.Path directly (not just str).
+
+    STATE-012: the constructor signature is ``db_path: Path | str`` — production
+    code passes ``Project.db_path`` (a ``Path``) directly rather than stringifying.
+    """
+    from pathlib import Path
+
+    db_path = Path(str(tmp_path)) / "path_obj.db"
+    db = FlowstateDB(db_path)
+    try:
+        assert db_path.exists()
+        result = db.connection.execute("PRAGMA foreign_keys").fetchone()
+        assert result is not None
+        assert result[0] == 1
+    finally:
+        db.close()
+
+
+def test_two_projects_have_isolated_databases(tmp_path: object) -> None:
+    """STATE-012 / sprint-phase-31-1 TEST-5: two FlowstateDB instances backed by
+    distinct file paths must not share any rows.
+
+    This proves the unit-level invariant that underpins the sprint's batch-level
+    DB isolation test: `create_app(project_a)` and `create_app(project_b)` will
+    each wire a FlowstateDB at `project.db_path`, and those databases must be
+    fully independent SQLite files with no cross-contamination.
+    """
+    from pathlib import Path
+
+    tmp = Path(str(tmp_path))
+    path_a = tmp / "project-a" / "flowstate.db"
+    path_b = tmp / "project-b" / "flowstate.db"
+
+    db_a = FlowstateDB(path_a)
+    db_b = FlowstateDB(path_b)
+    try:
+        # Sanity: the two files are distinct on disk.
+        assert path_a.exists()
+        assert path_b.exists()
+        assert path_a != path_b
+
+        # Insert a flow_definition + flow_run into project A only.
+        db_a.connection.execute(
+            """
+            INSERT INTO flow_definitions (id, name, source_dsl, ast_json)
+            VALUES ('fd-a', 'flow-a', 'flow a {}', '{}')
+            """
+        )
+        db_a.connection.execute(
+            """
+            INSERT INTO flow_runs (
+                id, flow_definition_id, status, data_dir,
+                budget_seconds, on_error
+            ) VALUES ('run-a', 'fd-a', 'created', '/tmp/runs/run-a', 3600, 'pause')
+            """
+        )
+        db_a.connection.commit()
+
+        # Project A sees exactly one run.
+        count_a = db_a.connection.execute("SELECT COUNT(*) FROM flow_runs").fetchone()[0]
+        assert count_a == 1
+
+        # Project B sees zero runs — no cross-contamination.
+        count_b = db_b.connection.execute("SELECT COUNT(*) FROM flow_runs").fetchone()[0]
+        assert count_b == 0
+
+        # Also: project B has zero flow_definitions, confirming isolation
+        # isn't just coincidental on one table.
+        count_defs_b = db_b.connection.execute("SELECT COUNT(*) FROM flow_definitions").fetchone()[
+            0
+        ]
+        assert count_defs_b == 0
+    finally:
+        db_a.close()
+        db_b.close()
+
+
 def test_check_constraints_on_flow_run_status(db: FlowstateDB) -> None:
     """flow_runs.status CHECK constraint rejects invalid values."""
     # First insert a valid flow_definition

@@ -7,7 +7,7 @@ Checks the `flow_schedules` table every 30 seconds for schedules whose
 Uses the `croniter` library for cron expression parsing and next-trigger computation.
 
 Usage:
-    scheduler = FlowScheduler(db, executor, event_callback)
+    scheduler = FlowScheduler(db, project, emit=event_callback)
     await scheduler.start()
     # ... later ...
     await scheduler.stop()
@@ -28,6 +28,7 @@ from flowstate.engine.events import EventType, FlowEvent
 if TYPE_CHECKING:
     from collections.abc import Callable
 
+    from flowstate.config import Project
     from flowstate.state.models import FlowScheduleRow
     from flowstate.state.repository import FlowstateDB
 
@@ -56,6 +57,7 @@ class FlowScheduler:
     def __init__(
         self,
         db: FlowstateDB,
+        project: Project,
         emit: Callable[[FlowEvent], None],
         start_flow_callback: Callable[[str], str] | None = None,
         check_interval: float = DEFAULT_CHECK_INTERVAL,
@@ -64,6 +66,9 @@ class FlowScheduler:
 
         Args:
             db: Database for querying schedules and creating runs.
+            project: The owning :class:`flowstate.config.Project`. Used to root
+                triggered-run ``data_dir`` strings under the per-project
+                ``<data_root>/projects/<slug>/runs/`` namespace (ENGINE-081).
             emit: Event callback for emitting schedule events.
             start_flow_callback: Optional callback to start a flow run. Receives
                 flow_definition_id and returns flow_run_id. If None, the scheduler
@@ -71,6 +76,7 @@ class FlowScheduler:
             check_interval: Seconds between check cycles. Defaults to 30.
         """
         self._db = db
+        self._project = project
         self._emit = emit
         self._start_flow_callback = start_flow_callback
         self._check_interval = check_interval
@@ -155,9 +161,10 @@ class FlowScheduler:
 
         if overlap == "queue" and has_active:
             # Create a run with 'created' status (queued, not started)
+            queued_data_dir = str(self._project.data_dir / "runs" / f"queued-{schedule.id}")
             flow_run_id = self._db.create_flow_run(
                 flow_definition_id=schedule.flow_definition_id,
-                data_dir=f"~/.flowstate/runs/queued-{schedule.id}",
+                data_dir=queued_data_dir,
                 budget_seconds=0,
                 on_error="pause",
             )
@@ -183,9 +190,10 @@ class FlowScheduler:
             flow_run_id = self._start_flow_callback(schedule.flow_definition_id)
         else:
             # No executor callback -- just create the run record
+            scheduled_data_dir = str(self._project.data_dir / "runs" / f"scheduled-{schedule.id}")
             flow_run_id = self._db.create_flow_run(
                 flow_definition_id=schedule.flow_definition_id,
-                data_dir=f"~/.flowstate/runs/scheduled-{schedule.id}",
+                data_dir=scheduled_data_dir,
                 budget_seconds=0,
                 on_error="pause",
             )

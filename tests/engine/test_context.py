@@ -2,7 +2,12 @@
 
 from __future__ import annotations
 
+from typing import TYPE_CHECKING
+
 import pytest
+
+if TYPE_CHECKING:
+    from pathlib import Path
 
 from flowstate.dsl.ast import ContextMode, Edge, EdgeConfig, EdgeType, Flow, Node, NodeType
 from flowstate.engine.context import (
@@ -17,6 +22,8 @@ from flowstate.engine.context import (
     get_context_mode,
     lumon_plugin_dir,
     resolve_cwd,
+    resolve_node_cwd,
+    resolve_workspace,
 )
 
 # ---------------------------------------------------------------------------
@@ -307,6 +314,178 @@ class TestResolveCwd:
 
 
 # ---------------------------------------------------------------------------
+# Tests: resolve_workspace (ENGINE-079)
+# ---------------------------------------------------------------------------
+
+
+class TestResolveWorkspace:
+    def test_absolute_path_returned_as_is(self, tmp_path: Path) -> None:
+        """Absolute flow workspace is returned resolved, regardless of flow file location."""
+        flow_file = tmp_path / "flows" / "demo.flow"
+        flow_file.parent.mkdir(parents=True)
+        flow_file.write_text("")
+
+        absolute_ws = tmp_path / "absolute_target"
+        absolute_ws.mkdir()
+
+        result = resolve_workspace(str(absolute_ws), flow_file)
+        assert result == absolute_ws.resolve()
+
+    def test_relative_path_resolved_against_flow_file_parent(self, tmp_path: Path) -> None:
+        """Relative workspace like '../backend' resolves against flow file's parent."""
+        flow_dir = tmp_path / "proj" / "flows"
+        flow_dir.mkdir(parents=True)
+        flow_file = flow_dir / "build.flow"
+        flow_file.write_text("")
+
+        backend = tmp_path / "proj" / "backend"
+        backend.mkdir()
+
+        result = resolve_workspace("../backend", flow_file)
+        assert result == backend.resolve()
+
+    def test_relative_path_same_directory(self, tmp_path: Path) -> None:
+        """Relative workspace '.' resolves to flow file's own directory."""
+        flow_dir = tmp_path / "proj"
+        flow_dir.mkdir()
+        flow_file = flow_dir / "demo.flow"
+        flow_file.write_text("")
+
+        result = resolve_workspace(".", flow_file)
+        assert result == flow_dir.resolve()
+
+    def test_omitted_returns_none(self, tmp_path: Path) -> None:
+        """Omitted flow workspace returns None (caller must fall back)."""
+        flow_file = tmp_path / "demo.flow"
+        flow_file.write_text("")
+        assert resolve_workspace(None, flow_file) is None
+
+    def test_is_cwd_independent(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Resolution does not depend on the process CWD."""
+        flow_dir = tmp_path / "proj" / "flows"
+        flow_dir.mkdir(parents=True)
+        flow_file = flow_dir / "demo.flow"
+        flow_file.write_text("")
+
+        target = tmp_path / "proj" / "target"
+        target.mkdir()
+
+        # Change CWD to somewhere completely unrelated.
+        elsewhere = tmp_path / "elsewhere"
+        elsewhere.mkdir()
+        monkeypatch.chdir(elsewhere)
+
+        result = resolve_workspace("../target", flow_file)
+        assert result == target.resolve()
+
+
+# ---------------------------------------------------------------------------
+# Tests: resolve_node_cwd (ENGINE-079)
+# ---------------------------------------------------------------------------
+
+
+class TestResolveNodeCwd:
+    def test_absolute_node_cwd(self, tmp_path: Path) -> None:
+        """Absolute node.cwd is returned as-is (resolved)."""
+        flow_file = tmp_path / "demo.flow"
+        flow_file.write_text("")
+        absolute_cwd = tmp_path / "abs_target"
+        absolute_cwd.mkdir()
+
+        result = resolve_node_cwd(str(absolute_cwd), flow_file, flow_workspace=None)
+        assert result == absolute_cwd.resolve()
+
+    def test_relative_node_cwd(self, tmp_path: Path) -> None:
+        """Relative node.cwd resolves against the flow file's parent."""
+        flow_dir = tmp_path / "proj" / "flows"
+        flow_dir.mkdir(parents=True)
+        flow_file = flow_dir / "build.flow"
+        flow_file.write_text("")
+        sub = tmp_path / "proj" / "flows" / "sub"
+        sub.mkdir()
+
+        result = resolve_node_cwd("sub", flow_file, flow_workspace=None)
+        assert result == sub.resolve()
+
+    def test_omitted_inherits_flow_workspace(self, tmp_path: Path) -> None:
+        """Omitted node.cwd inherits the resolved flow-level workspace."""
+        flow_file = tmp_path / "demo.flow"
+        flow_file.write_text("")
+        ws = tmp_path / "workspace"
+        ws.mkdir()
+
+        result = resolve_node_cwd(None, flow_file, flow_workspace=ws)
+        assert result == ws
+
+    def test_omitted_with_no_flow_workspace_returns_none(self, tmp_path: Path) -> None:
+        """Omitted node.cwd + omitted flow workspace -> None (auto-gen fallback)."""
+        flow_file = tmp_path / "demo.flow"
+        flow_file.write_text("")
+        assert resolve_node_cwd(None, flow_file, flow_workspace=None) is None
+
+
+# ---------------------------------------------------------------------------
+# Tests: resolve_cwd with flow_file (ENGINE-079)
+# ---------------------------------------------------------------------------
+
+
+class TestResolveCwdFlowFile:
+    def test_absolute_node_cwd_with_flow_file(self, tmp_path: Path) -> None:
+        """Absolute node.cwd passed through ``flow_file`` resolution unchanged."""
+        flow_file = tmp_path / "flows" / "demo.flow"
+        flow_file.parent.mkdir(parents=True)
+        flow_file.write_text("")
+
+        target = tmp_path / "target"
+        target.mkdir()
+
+        node = _make_node(cwd=str(target))
+        flow = _make_flow(workspace=None)
+        result = resolve_cwd(node, flow, flow_file=flow_file)
+        assert result == str(target.resolve())
+
+    def test_relative_node_cwd_with_flow_file(self, tmp_path: Path) -> None:
+        """Relative node.cwd resolves against flow file's parent via resolve_cwd."""
+        flow_dir = tmp_path / "proj" / "flows"
+        flow_dir.mkdir(parents=True)
+        flow_file = flow_dir / "build.flow"
+        flow_file.write_text("")
+
+        target = tmp_path / "proj" / "backend"
+        target.mkdir()
+
+        node = _make_node(cwd="../backend")
+        flow = _make_flow(workspace=None)
+        result = resolve_cwd(node, flow, flow_file=flow_file)
+        assert result == str(target.resolve())
+
+    def test_nonexistent_path_raises(self, tmp_path: Path) -> None:
+        """Resolved path that doesn't exist -> CwdResolutionError."""
+        flow_file = tmp_path / "demo.flow"
+        flow_file.write_text("")
+
+        node = _make_node(cwd="./nope")
+        flow = _make_flow(workspace=None)
+        with pytest.raises(CwdResolutionError, match="does not exist"):
+            resolve_cwd(node, flow, flow_file=flow_file)
+
+    def test_flow_workspace_relative_with_flow_file(self, tmp_path: Path) -> None:
+        """Flow workspace resolves relative to flow file parent when node.cwd is None."""
+        flow_dir = tmp_path / "proj" / "flows"
+        flow_dir.mkdir(parents=True)
+        flow_file = flow_dir / "demo.flow"
+        flow_file.write_text("")
+
+        target = tmp_path / "proj" / "ws"
+        target.mkdir()
+
+        node = _make_node(cwd=None)
+        flow = _make_flow(workspace="../ws")
+        result = resolve_cwd(node, flow, flow_file=flow_file)
+        assert result == str(target.resolve())
+
+
+# ---------------------------------------------------------------------------
 # Tests: build_routing_instructions
 # ---------------------------------------------------------------------------
 
@@ -505,3 +684,74 @@ class TestLumonPluginDir:
         import os
 
         assert os.path.isabs(lumon_plugin_dir())
+
+
+# ---------------------------------------------------------------------------
+# Tests: "Scheduling follow-up work" subsection (ENGINE-084)
+# ---------------------------------------------------------------------------
+
+
+class TestScheduleFollowUpSubsection:
+    """The default-mode prompt should advertise POST /api/flows/<name>/tasks
+    so agents can queue follow-up work without rediscovering the API."""
+
+    def test_non_lumon_handoff_documents_curl_endpoint(self) -> None:
+        node = _make_node(prompt="Implement the feature")
+        prompt = build_prompt_handoff(node=node, cwd="/project", predecessor_summary="prev")
+        assert "Scheduling follow-up work" in prompt
+        # Non-lumon branch must show the curl form against /api/flows/.../tasks
+        assert "curl" in prompt
+        assert "/api/flows/" in prompt
+        assert "/tasks" in prompt
+        assert "scheduled_at" in prompt
+        assert "cron" in prompt
+
+    def test_non_lumon_none_documents_curl_endpoint(self) -> None:
+        node = _make_node(prompt="Initialize")
+        prompt = build_prompt_none(node=node, cwd="/project")
+        assert "Scheduling follow-up work" in prompt
+        assert "/api/flows/" in prompt
+
+    def test_non_lumon_join_documents_curl_endpoint(self) -> None:
+        node = _make_node(name="merge", prompt="Merge")
+        prompt = build_prompt_join(
+            node=node,
+            cwd="/project",
+            member_summaries={"a": "x"},
+        )
+        assert "Scheduling follow-up work" in prompt
+        assert "/api/flows/" in prompt
+
+    def test_lumon_handoff_documents_plugin_call(self) -> None:
+        node = _make_node(prompt="Implement the feature")
+        prompt = build_prompt_handoff(
+            node=node,
+            cwd="/project",
+            predecessor_summary="prev",
+            lumon=True,
+        )
+        assert "Scheduling follow-up work" in prompt
+        # Lumon branch uses the plugin call, NOT curl
+        assert "flowstate.schedule_task" in prompt
+        assert "curl" not in prompt
+        assert "scheduled_at" in prompt
+        assert "cron" in prompt
+
+    def test_lumon_none_documents_plugin_call(self) -> None:
+        node = _make_node(prompt="Initialize")
+        prompt = build_prompt_none(node=node, cwd="/project", lumon=True)
+        assert "Scheduling follow-up work" in prompt
+        assert "flowstate.schedule_task" in prompt
+        assert "curl" not in prompt
+
+    def test_lumon_join_documents_plugin_call(self) -> None:
+        node = _make_node(name="merge", prompt="Merge")
+        prompt = build_prompt_join(
+            node=node,
+            cwd="/project",
+            member_summaries={"a": "x"},
+            lumon=True,
+        )
+        assert "Scheduling follow-up work" in prompt
+        assert "flowstate.schedule_task" in prompt
+        assert "curl" not in prompt

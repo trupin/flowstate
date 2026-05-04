@@ -5,6 +5,7 @@ from __future__ import annotations
 import logging
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime
+from importlib.resources import as_file, files
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -16,10 +17,59 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
-from flowstate.config import FlowstateConfig, load_config
+from flowstate.config import FlowstateConfig, Project, build_project
 
 logger = logging.getLogger(__name__)
 
+
+def locate_ui_dist() -> Path | None:
+    """Return the path to the bundled UI assets, or None if not found.
+
+    Resolution order (per SHARED-008 + SERVER-032):
+
+    1. ``importlib.resources.files("flowstate") / "_ui_dist"`` — the wheel-
+       packaged bundle produced by the Hatchling build hook. This is the
+       production path; it works regardless of CWD because it is resolved
+       against the installed package location.
+
+    2. Dev fallback: ``<repo root>/ui/dist/`` next to the source checkout.
+       Used by contributors running ``uv run flowstate server`` from the
+       Flowstate repo without having built a wheel. Located by walking up
+       from ``src/flowstate/server/app.py`` three levels (``server`` →
+       ``flowstate`` → ``src`` → repo root) and then into ``ui/dist``.
+
+    3. Neither present → returns ``None``. ``mount_static_files()`` then
+       logs an INFO message and the server serves API-only. This is a
+       supported mode per spec §13.4.
+
+    The function never raises. Callers should treat ``None`` as "no UI"
+    and the API will still work.
+    """
+    # 1. Packaged wheel assets. ``files()`` works in source checkouts too —
+    # it will return the directory under ``src/flowstate/_ui_dist`` if the
+    # Hatchling build hook has already populated it during a prior
+    # ``uv build``.
+    try:
+        packaged = files("flowstate") / "_ui_dist"
+        with as_file(packaged) as path:
+            if (path / "index.html").is_file():
+                return Path(path)
+    except (FileNotFoundError, ModuleNotFoundError, NotADirectoryError):
+        pass
+
+    # 2. Dev fallback: sibling ``ui/dist/`` next to the source tree.
+    pkg_root = Path(__file__).resolve().parent.parent  # .../src/flowstate
+    repo_root = pkg_root.parent.parent  # <repo>/
+    dev_dist = repo_root / "ui" / "dist"
+    if (dev_dist / "index.html").is_file():
+        return dev_dist
+
+    return None
+
+
+# Backward-compat alias for anything that imported UI_DIST_DIR directly.
+# Prefer ``locate_ui_dist()`` going forward — it returns ``None`` cleanly
+# for "not found" instead of a path that may not exist.
 UI_DIST_DIR = Path(__file__).parent.parent.parent.parent / "ui" / "dist"
 
 
@@ -46,28 +96,52 @@ def mount_static_files(app: FastAPI, dist_dir: Path | None = None) -> None:
     - /favicon.ico from dist/favicon.ico
     - /{path:path} catch-all SPA fallback serving index.html
 
-    If the dist directory or index.html does not exist, logs a warning
-    and returns without mounting anything. The app continues to function
-    normally for API-only usage.
+    If no UI bundle is found, logs an INFO message and returns without
+    mounting anything. The app continues to function normally for
+    API-only usage.
 
     Args:
         app: The FastAPI application instance.
-        dist_dir: Path to the UI dist directory. Defaults to UI_DIST_DIR.
+        dist_dir: Optional explicit path to the UI dist directory. When
+            omitted, ``locate_ui_dist()`` is used to find the wheel-
+            packaged bundle via ``importlib.resources``, with a dev
+            fallback to ``<repo>/ui/dist/`` for source checkouts.
     """
-    dist = dist_dir or UI_DIST_DIR
+    if dist_dir is not None:
+        # Caller provided an explicit path — use it verbatim and preserve
+        # the original detailed "missing dir" / "missing index.html" log
+        # messages (tests depend on them).
+        dist = dist_dir
+    else:
+        # Auto-detect: prefer the wheel-packaged bundle, fall back to a
+        # dev ``ui/dist/`` checkout. ``locate_ui_dist()`` returns ``None``
+        # when neither source is usable.
+        dist = locate_ui_dist()
+        if dist is None:
+            logger.info(
+                "UI bundle not found; serving API only. "
+                "Run 'cd ui && npm run build' (or rebuild the wheel) "
+                "if you want the web UI."
+            )
+            return
 
     if not dist.exists():
-        logger.warning(
-            "UI dist directory not found at %s. "
-            "Static file serving is disabled. "
-            "Run 'cd ui && npm run build' to build the UI.",
+        logger.info(
+            "UI bundle not found at %s; serving API only. "
+            "Run 'cd ui && npm run build' if you want the web UI.",
             dist,
         )
         return
 
     index_html = dist / "index.html"
     if not index_html.exists():
-        logger.warning("index.html not found in %s. Static file serving is disabled.", dist)
+        # Same rationale as above: an incomplete dist/ without index.html
+        # is a build-in-progress or partial checkout, not a server error.
+        logger.info(
+            "UI bundle at %s has no index.html; serving API only. "
+            "Run 'cd ui && npm run build' if you want the web UI.",
+            dist,
+        )
         return
 
     # Mount static assets (JS, CSS, images, etc.)
@@ -83,14 +157,17 @@ def mount_static_files(app: FastAPI, dist_dir: Path | None = None) -> None:
             return FileResponse(str(favicon_path))
         return FileResponse(str(index_html))  # fallback
 
-    # SPA fallback: any GET request not matching /api/* or /ws returns index.html
-    # This must be registered AFTER all API routes
+    # SPA fallback: any GET request not matching /api/*, /ws, or /health
+    # returns index.html. This must be registered AFTER all API routes.
     index_content = index_html.read_text()
 
     @app.get("/{full_path:path}", response_model=None, include_in_schema=False)
     async def spa_fallback(full_path: str) -> Response:
-        # Never intercept API or WebSocket paths
-        if full_path.startswith("api/") or full_path == "ws":
+        # Never intercept API, WebSocket, or unauthenticated readiness paths.
+        # ``/health`` is registered as a real FastAPI route in ``create_app``;
+        # the check here is a belt-and-braces guard in case a future refactor
+        # moves router registration order around.
+        if full_path.startswith("api/") or full_path == "ws" or full_path == "health":
             return JSONResponse(
                 status_code=404,
                 content={"error": "Not found", "details": []},
@@ -117,10 +194,12 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None]:
     from flowstate.server.websocket import WebSocketHub
     from flowstate.state.repository import FlowstateDB
 
+    project: Project = app.state.project
     config: FlowstateConfig = app.state.config
 
-    # Initialize database
-    db = FlowstateDB(config.database_path)
+    # Initialize database (STATE-012: FlowstateDB now requires an explicit
+    # db_path; the project-owned Path is passed directly).
+    db = FlowstateDB(project.db_path)
     app.state.db = db
 
     # Initialize run manager
@@ -137,12 +216,15 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None]:
         max_concurrent=config.max_concurrent_tasks,
         worktree_cleanup=config.worktree_cleanup,
         harness_mgr=harness_mgr,
-        server_base_url=f"http://{config.server_host}:{config.server_port}",
+        # ENGINE-082: subprocesses always loop back via 127.0.0.1 even when
+        # the server binds 0.0.0.0 — the server is on the same machine and
+        # using the bind host directly would route 0.0.0.0 callbacks wrong.
+        server_base_url=f"http://127.0.0.1:{config.server_port}",
     )
     app.state.ws_hub = ws_hub
 
-    # Initialize flow registry
-    registry = FlowRegistry(watch_dir=config.watch_dir)
+    # Initialize flow registry (absolute path, owned by the project).
+    registry = FlowRegistry(flows_dir=project.flows_dir)
 
     # Wire file watcher events to WebSocket hub (SERVER-006)
     def on_file_event(event_type: str, flow: DiscoveredFlow) -> None:
@@ -203,6 +285,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None]:
         harness=app.state.harness,
         ws_hub=ws_hub,
         config=config,
+        project=project,
         harness_mgr=harness_mgr,
     )
     app.state.queue_manager = queue_manager
@@ -218,6 +301,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None]:
 
 
 def create_app(
+    project: Project | None = None,
     config: FlowstateConfig | None = None,
     harness: Any = None,
     static_dir: Path | None | bool = None,
@@ -225,7 +309,14 @@ def create_app(
     """Create and configure the FastAPI application.
 
     Args:
-        config: Optional configuration. If None, loads from TOML or defaults.
+        project: Resolved :class:`Project` context. This is the primary
+            construction path for production code — the CLI calls
+            :func:`flowstate.config.resolve_project` and passes the result
+            here. Tests may omit it and pass ``config=`` instead, in which
+            case a throwaway :class:`Project` is synthesised from a temp
+            directory (no on-disk data is written).
+        config: Backward-compatible test hook. Only consulted when
+            ``project`` is ``None``. Passing neither raises ``TypeError``.
         harness: Optional harness (Harness protocol) for test mock injection.
             Stored on app.state and used as the default harness for task
             execution via HarnessManager.
@@ -237,8 +328,30 @@ def create_app(
     Returns:
         A configured FastAPI instance.
     """
-    if config is None:
-        config = load_config()
+    if project is None:
+        if config is None:
+            raise TypeError(
+                "create_app() requires a `project` (production) or `config` "
+                "(test-only shim). Use flowstate.config.resolve_project() in "
+                "production code and tests/server/conftest.py::project_fixture "
+                "in tests."
+            )
+        # Test-only shim: synthesise a throwaway Project from the config.
+        # We deliberately avoid touching ``config.watch_dir`` on disk because
+        # several tests pass bogus paths like ``/tmp/nonexistent-for-test``
+        # and never actually start the lifespan. When a test passes an
+        # absolute ``watch_dir``, ``build_project`` preserves it as-is
+        # (pathlib ``/`` discards the left side for absolute right operands).
+        import tempfile as _tempfile
+
+        scratch_root = Path(_tempfile.mkdtemp(prefix="flowstate-testapp-"))
+        project = build_project(
+            root=scratch_root,
+            config=config,
+            create_dirs=False,
+        )
+    else:
+        config = project.config
 
     app = FastAPI(
         title="Flowstate",
@@ -253,6 +366,7 @@ def create_app(
         from flowstate.engine.acp_client import AcpHarness
 
         harness = AcpHarness(command=["claude-agent-acp"])
+    app.state.project = project
     app.state.config = config
     app.state.harness = harness
 
@@ -283,6 +397,14 @@ def create_app(
             status_code=exc.status_code,
             content={"error": exc.message, "detail": exc.message, "details": exc.details},
         )
+
+    # Register the unauthenticated readiness endpoint. SERVER-031: this must
+    # go BEFORE the SPA catch-all mounted by ``mount_static_files`` so the
+    # wildcard route doesn't shadow it. Including it before the ``/api``
+    # router is fine because the two namespaces don't overlap.
+    from flowstate.server.health import router as health_router
+
+    app.include_router(health_router)
 
     # Include REST API routes
     from flowstate.server.routes import router

@@ -1,0 +1,28 @@
+// Example Flowstate flow for a Rust project.
+// This flow drives a Rust crate through build and test using cargo.
+// Run `flowstate check flows/example.flow` to validate, then `flowstate server`.
+flow example_rust {
+    budget = 30m
+    on_error = pause
+    context = session
+
+    input {
+        crate_name: string = "my-rust-crate"
+    }
+
+    entry build {
+        prompt = """
+        Build the Rust crate {{crate_name}} with `cargo build`.
+        Report any compiler (rustc) errors or warnings.
+        """
+    }
+
+    exit test {
+        prompt = """
+        Run the Rust test suite for {{crate_name}} with `cargo test`.
+        Summarize pass/fail counts and list any ignored tests.
+        """
+    }
+
+    build -> test
+}

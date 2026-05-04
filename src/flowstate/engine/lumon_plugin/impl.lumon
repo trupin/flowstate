@@ -37,6 +37,15 @@ implement flowstate.guide
       flowstate.list_subtasks()
         List all subtasks for the current task.
 
+      flowstate.schedule_task(flow_name, title, description, params_json, scheduled_at, cron)
+        Queue a follow-up task on a flow (this flow or any other).
+        Required: flow_name, title. Others may be empty strings.
+        Pass scheduled_at as ISO-8601 (e.g. "2026-05-01T12:00:00Z") for a one-shot
+        deferred run, or cron (e.g. "*/5 * * * *") for a recurring schedule.
+        Returns the new task ID.
+        Example:
+          flowstate.schedule_task("worker", "Crawl docs", "", "{}", "2026-05-01T12:00:00Z", "")
+
     WORKFLOW:
       1. Create subtasks for your work plan
       2. Mark each subtask in_progress, then done as you complete it
@@ -69,4 +78,8 @@ implement flowstate.update_subtask
 
 implement flowstate.list_subtasks
   let result = plugin.exec("python3 flowstate_plugin.py list_subtasks", {})
+  return result
+
+implement flowstate.schedule_task
+  let result = plugin.exec("python3 flowstate_plugin.py schedule_task", {flow_name: flow_name, title: title, description: description, params_json: params_json, scheduled_at: scheduled_at, cron: cron})
   return result

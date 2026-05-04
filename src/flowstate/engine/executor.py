@@ -218,6 +218,20 @@ def _get_fork_group_for_member(
     return None
 
 
+class FlowExecutorConfigError(Exception):
+    """Raised when the executor is missing wiring required to spawn a task subprocess.
+
+    The most common case (ENGINE-082) is a missing ``server_base_url``: every
+    subprocess receives ``FLOWSTATE_SERVER_URL`` so it can call back into the
+    Flowstate artifact API. If wiring is forgotten between ``create_app`` and
+    the executor, we refuse to fall through to a guessed loopback port (which
+    used to silently route a subprocess of one server back to a different
+    server bound to a hardcoded default port). Raising loudly here makes the
+    wiring bug visible at first task dispatch instead of producing wrong
+    artifact callbacks.
+    """
+
+
 class FlowExecutor:
     """Executes a flow by orchestrating subprocess launches, budget tracking, and state.
 
@@ -237,12 +251,22 @@ class FlowExecutor:
         harness_mgr: HarnessManager | None = None,
         server_base_url: str | None = None,
         flow_file_dir: str | None = None,
+        flow_file: Path | None = None,
     ) -> None:
         self._db = db
         self._raw_callback = event_callback
         self._harness_mgr = harness_mgr or HarnessManager(default_harness=harness)
         self._server_base_url = server_base_url
         self._flow_file_dir = flow_file_dir
+        # ENGINE-079: absolute path to the .flow source file. Used to resolve
+        # relative workspace / cwd attributes relative to the flow file's
+        # containing directory rather than the server's CWD.
+        self._flow_file: Path | None = flow_file
+        if flow_file is None and flow_file_dir is not None:
+            # Back-compat: older call sites pass only flow_file_dir.
+            # Synthesize a stand-in flow_file so resolve_cwd can use its parent.
+            # Any child path under the dir works for .parent resolution.
+            self._flow_file = Path(flow_file_dir) / "__flow__"
         self._judge = judge or JudgeProtocol(harness)
         self._semaphore = asyncio.Semaphore(max_concurrent)
         self._max_concurrent = max_concurrent
@@ -279,6 +303,29 @@ class FlowExecutor:
             self._raw_callback(event)
         except Exception:
             logger.exception("Event callback raised an exception for event %s", event.type)
+
+    def _build_artifact_env(self, flow_run_id: str, task_execution_id: str) -> dict[str, str]:
+        """Build the FLOWSTATE_* env vars injected into a task subprocess.
+
+        ENGINE-082: refuses to silently default to a hardcoded loopback port
+        if the executor was constructed without ``server_base_url``. The
+        legacy fallback caused a subprocess of a server bound to one port
+        to call back into a different server bound to another port when
+        wiring was missing — failing loudly here is the only way to make
+        the wiring bug visible at the first task dispatch instead of
+        silently corrupting artifact callbacks.
+        """
+        if self._server_base_url is None:
+            raise FlowExecutorConfigError(
+                "FlowExecutor was not given a server_base_url; cannot wire "
+                "FLOWSTATE_SERVER_URL into the subprocess environment. This "
+                "indicates a wiring bug between create_app and the executor."
+            )
+        return {
+            "FLOWSTATE_SERVER_URL": self._server_base_url,
+            "FLOWSTATE_RUN_ID": flow_run_id,
+            "FLOWSTATE_TASK_ID": task_execution_id,
+        }
 
     def _emit_activity(self, flow_run_id: str, task_id: str, message: str) -> None:
         """Emit a human-readable executor activity log entry.
@@ -833,7 +880,7 @@ class FlowExecutor:
         # Enqueue join target
         join_node = flow.nodes[fork_group.join_node_name]
         join_gen = fork_group.generation + 1
-        cwd = resolve_cwd(join_node, flow)
+        cwd = resolve_cwd(join_node, flow, flow_file=self._flow_file)
 
         # Per-node worktree: merge all member branches into join worktree (ENGINE-070)
         join_wt: WorktreeInfo | None = None
@@ -1306,7 +1353,7 @@ class FlowExecutor:
 
         assert isinstance(source_task, TaskExecutionRow)
 
-        cwd = resolve_cwd(target_node, flow)
+        cwd = resolve_cwd(target_node, flow, flow_file=self._flow_file)
         workspace = flow.workspace or cwd
 
         # Per-node worktree isolation (ENGINE-070)
@@ -2621,12 +2668,11 @@ class FlowExecutor:
             # Track task -> session for interrupt dispatch
             self._task_session[task_execution_id] = session_id
 
-            # Build artifact API env vars for the agent subprocess (ENGINE-067)
-            artifact_env = {
-                "FLOWSTATE_SERVER_URL": self._server_base_url or "http://127.0.0.1:9090",
-                "FLOWSTATE_RUN_ID": flow_run_id,
-                "FLOWSTATE_TASK_ID": task_execution_id,
-            }
+            # Build artifact API env vars for the agent subprocess (ENGINE-067).
+            # ENGINE-082: never fall back to a hardcoded loopback port — refuse
+            # loudly so a wiring bug between create_app and the executor cannot
+            # silently route subprocess callbacks to the wrong Flowstate server.
+            artifact_env = self._build_artifact_env(flow_run_id, task_execution_id)
 
             # Inject artifact env vars into process environment (ENGINE-067).
             # The env dict is already set at construction time, so we inject
@@ -2906,7 +2952,7 @@ class FlowExecutor:
         If *worktree_override* is provided (e.g. from fork branching), it is
         used directly and the normal worktree resolution is skipped.
         """
-        cwd = resolve_cwd(node, flow)
+        cwd = resolve_cwd(node, flow, flow_file=self._flow_file)
         workspace = flow.workspace or cwd
 
         # Per-node worktree isolation (ENGINE-070)

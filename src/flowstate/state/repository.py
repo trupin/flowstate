@@ -10,6 +10,7 @@ import uuid
 from collections.abc import Generator
 from contextlib import contextmanager
 from datetime import UTC, datetime
+from pathlib import Path
 
 from flowstate.state.database import FlowstateDB as _DatabaseBase
 from flowstate.state.models import (
@@ -36,12 +37,14 @@ class FlowstateDB:
     thread-safe by design -- the execution engine ensures single-writer access.
     """
 
-    def __init__(self, db_path: str = "~/.flowstate/flowstate.db") -> None:
+    def __init__(self, db_path: Path | str) -> None:
         """Open or create the database and initialize the schema.
 
         Args:
-            db_path: Path to the SQLite database file. Use ":memory:" for
-                in-memory databases (tests). Defaults to ~/.flowstate/flowstate.db.
+            db_path: Path to the SQLite database file. Use ``":memory:"`` for
+                in-memory databases (tests). Required — there is no default.
+                Production callers pass :attr:`flowstate.config.Project.db_path`;
+                tests pass ``":memory:"`` or a ``tmp_path``-rooted path.
         """
         self._db = _DatabaseBase(db_path)
         self._conn = self._db.connection

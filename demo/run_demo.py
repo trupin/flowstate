@@ -601,7 +601,6 @@ def main() -> None:
 
     config = FlowstateConfig(
         server_port=port,
-        database_path=str(Path(tmp) / "flowstate.db"),
         watch_dir=str(watch_dir),
     )
     app = create_app(config=config, subprocess_manager=mock, static_dir=True)

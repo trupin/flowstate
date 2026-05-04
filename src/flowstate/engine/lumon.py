@@ -17,6 +17,7 @@ import logging
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+from flowstate.config import _default_data_dir
 from flowstate.engine.context import lumon_plugin_dir
 
 if TYPE_CHECKING:
@@ -107,8 +108,11 @@ async def setup_lumon(
     plugins_dir = wt / "plugins"
     plugins_dir.mkdir(exist_ok=True)
 
-    # Global plugins (~/.flowstate/plugins/)
-    global_plugins = Path.home() / ".flowstate" / "plugins"
+    # Global plugins (<FLOWSTATE_DATA_DIR or ~/.flowstate>/plugins/).
+    # ENGINE-083: honor FLOWSTATE_DATA_DIR via flowstate.config._default_data_dir
+    # so a relocated data dir (CI, containers, multi-user dev) also relocates
+    # the plugin lookup. Re-resolved per call so test monkeypatches take effect.
+    global_plugins = _default_data_dir() / "plugins"
     _symlink_plugins_from(global_plugins, plugins_dir)
 
     # Per-flow plugins (<flow_file_dir>/plugins/)

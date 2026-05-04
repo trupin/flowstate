@@ -11,15 +11,17 @@ import asyncio
 import contextlib
 import json
 import logging
-import os
 import uuid
+from pathlib import Path
 from typing import TYPE_CHECKING
 
 from flowstate.dsl.parser import parse_flow
+from flowstate.engine.context import resolve_workspace
 from flowstate.engine.executor import FlowExecutor
 from flowstate.engine.worktree import init_git_repo
 
 if TYPE_CHECKING:
+    from flowstate.config import Project
     from flowstate.engine.harness import Harness, HarnessManager
     from flowstate.server.flow_registry import FlowRegistry
     from flowstate.server.run_manager import RunManager
@@ -45,6 +47,7 @@ class QueueManager:
         harness: Harness,
         ws_hub: object,
         config: object,
+        project: Project | None = None,
         poll_interval: float = 2.0,
         max_concurrent: int = 1,
         harness_mgr: HarnessManager | None = None,
@@ -56,6 +59,7 @@ class QueueManager:
         self._harness_mgr = harness_mgr
         self._ws_hub = ws_hub
         self._config = config
+        self._project = project
         self._poll_interval = poll_interval
         self._max_concurrent = max_concurrent
         self._running = False
@@ -143,13 +147,27 @@ class QueueManager:
         # Determine event callback -- ws_hub.on_flow_event if available
         event_callback = getattr(self._ws_hub, "on_flow_event", lambda _e: None)
 
-        # Build server base URL for subtask API instructions
-        host = getattr(self._config, "server_host", "127.0.0.1")
-        # Agents need 127.0.0.1 to reach the server, not 0.0.0.0
-        if host == "0.0.0.0":
-            host = "127.0.0.1"
+        # Build server base URL for subtask API instructions.
+        # ENGINE-082: subprocesses run on the same machine as the server,
+        # so they always loop back via 127.0.0.1 — even when the server
+        # binds 0.0.0.0 or another non-loopback interface. Sourcing the
+        # port from the (possibly CLI-overridden) config matches the port
+        # uvicorn actually bound to.
         port = getattr(self._config, "server_port", 9090)
-        server_base_url = f"http://{host}:{port}"
+        server_base_url = f"http://127.0.0.1:{port}"
+
+        # ENGINE-079: resolve the .flow file's absolute path so flow-level
+        # workspace and node-level cwd can be resolved relative to the flow
+        # file's containing directory rather than the server's CWD.
+        flow_file_path: Path | None = None
+        flow_file_dir: str | None = None
+        raw_flow_file = getattr(flow, "flow_file", None)
+        if isinstance(raw_flow_file, Path) and str(raw_flow_file) not in ("", "."):
+            flow_file_path = raw_flow_file.resolve()
+            flow_file_dir = str(flow_file_path.parent)
+        elif flow.file_path:
+            flow_file_path = Path(flow.file_path).resolve()
+            flow_file_dir = str(flow_file_path.parent)
 
         # Create executor
         executor = FlowExecutor(
@@ -160,15 +178,33 @@ class QueueManager:
             worktree_cleanup=getattr(self._config, "worktree_cleanup", True),
             harness_mgr=self._harness_mgr,
             server_base_url=server_base_url,
+            flow_file_dir=flow_file_dir,
+            flow_file=flow_file_path,
         )
 
         # Generate run ID and workspace
         run_id = str(uuid.uuid4())
-        if flow_ast.workspace:
-            workspace = flow_ast.workspace
+        # ENGINE-079: resolve flow-level workspace relative to the flow file.
+        # ENGINE-080: fall back to the per-project workspaces directory.
+        resolved_ws: Path | None = None
+        if flow_file_path is not None:
+            resolved_ws = resolve_workspace(flow_ast.workspace, flow_file_path)
+        elif flow_ast.workspace:
+            # No flow file available (should not happen in production) —
+            # treat the workspace string as a literal path.
+            resolved_ws = Path(flow_ast.workspace).expanduser().resolve()
+
+        if resolved_ws is not None:
+            workspace = str(resolved_ws)
         else:
-            workspace = os.path.expanduser(f"~/.flowstate/workspaces/{flow_ast.name}/{run_id[:8]}")
-            os.makedirs(workspace, exist_ok=True)
+            if self._project is None:
+                raise RuntimeError(
+                    f"QueueManager has no Project context; cannot auto-generate "
+                    f"a workspace for flow {flow_ast.name!r}"
+                )
+            auto_ws = self._project.workspaces_dir / flow_ast.name / run_id[:8]
+            auto_ws.mkdir(parents=True, exist_ok=True)
+            workspace = str(auto_ws)
             if not await init_git_repo(workspace):
                 logger.warning("Failed to initialize git repo in auto-workspace %s", workspace)
 

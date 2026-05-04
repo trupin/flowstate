@@ -86,7 +86,13 @@ class MockSubprocessManager:
         self._task_count = 0
 
     async def run_task(
-        self, prompt: str, workspace: str, session_id: str, *, skip_permissions: bool = False
+        self,
+        prompt: str,
+        workspace: str,
+        session_id: str,
+        *,
+        skip_permissions: bool = False,
+        settings: Any = None,
     ) -> Any:
         """Yield mock stream events simulating a successful Claude Code run."""
         self._task_count += 1
@@ -110,7 +116,13 @@ class MockSubprocessManager:
         )
 
     async def run_task_resume(
-        self, prompt: str, workspace: str, resume_session_id: str, *, skip_permissions: bool = False
+        self,
+        prompt: str,
+        workspace: str,
+        resume_session_id: str,
+        *,
+        skip_permissions: bool = False,
+        settings: Any = None,
     ) -> Any:
         """Delegate to run_task for simplicity."""
         async for event in self.run_task(prompt, workspace, resume_session_id):
@@ -175,7 +187,6 @@ def _create_integration_client(
             (watch_dir / filename).write_text(content)
 
     config = FlowstateConfig(
-        database_path=":memory:",
         watch_dir=str(watch_dir),
         server_host="127.0.0.1",
         server_port=8080,
@@ -492,12 +503,14 @@ class TestPauseResumeIntegration:
             executor = run_manager.get_executor(route_run_id)
 
             if executor is not None:
-                # The executor is still active, test pause via REST
+                # The executor is still active, test pause via REST. Per ENGINE-078
+                # the first pause response is `pausing`; the run transitions to
+                # `paused` once the currently running task yields control.
                 resp = client.post(f"/api/runs/{route_run_id}/pause")
                 assert resp.status_code == 200
-                assert resp.json()["status"] == "paused"
+                assert resp.json()["status"] in {"pausing", "paused"}
 
-                # Verify the flow was paused in the DB
+                # Verify the flow eventually settles in the paused state.
                 run_detail = _poll_for_completed_run(client, "test_flow", timeout=10)
                 assert run_detail is not None
                 assert run_detail["status"] == "paused"

@@ -84,12 +84,10 @@ def server_and_mock(tmp_path_factory):
     """
     mock = MockSubprocessManager()
     port = _find_free_port()
-    data_dir = tmp_path_factory.mktemp("data")
     watch_dir = tmp_path_factory.mktemp("flows")
 
     config = FlowstateConfig(
         server_port=port,
-        database_path=str(data_dir / "flowstate.db"),
         watch_dir=str(watch_dir),
     )
 
