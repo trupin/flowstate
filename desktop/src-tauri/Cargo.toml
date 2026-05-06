@@ -1,0 +1,39 @@
+[package]
+name = "flowstate-desktop"
+version = "0.0.1"
+description = "Flowstate menubar app — supervises a local flowstate server and surfaces project status from the macOS system tray."
+authors = ["Flowstate Maintainers"]
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+# The Tauri binary. There is no JS/TS frontend in this app — the menubar
+# UI is built natively from Tauri menu items, not HTML.
+[[bin]]
+name = "flowstate-desktop"
+path = "src/main.rs"
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = ["tray-icon", "image-png"] }
+tauri-plugin-dialog = "2"
+tauri-plugin-shell = "2"
+
+# HTTP client for /health polling. rustls avoids the OpenSSL system-library
+# dependency, which simplifies the unsigned macOS .dmg story.
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+anyhow = "1"
+thiserror = "1"
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "time", "sync", "process"] }
+dirs = "5"
+log = "0.4"
+env_logger = "0.11"
+
+[features]
+# This feature is used by Tauri to enable production-only code paths.
+custom-protocol = ["tauri/custom-protocol"]

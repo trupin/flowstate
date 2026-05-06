@@ -112,3 +112,38 @@ reusing version numbers). Instead:
 - No signed releases (no sigstore/PGP yet).
 - No Homebrew formula, no Docker image, no systemd units.
 - No release notes automation — write them by hand in the GitHub Release.
+
+## Desktop app
+
+> **Status: TODO — not yet automated.** UI-074 landed only the v0 scaffold (Tauri project, server supervisor, /health poller, tray menu). The actual build/release pipeline is tracked in UI-075 (bundled Python), UI-076 (auto-updater + Tauri pubkey), and UI-077 (unsigned `.dmg` build script + this section's walkthrough).
+
+When UI-077 lands, this section will be filled in with concrete steps. The intended shape:
+
+```bash
+# (TODO — UI-077)
+# 1. Vendor portable Python via python-build-standalone (TODO — UI-075):
+#    bash desktop/scripts/vendor_python.sh aarch64-apple-darwin
+# 2. Install the freshly built flowstate wheel into the vendored Python:
+#    desktop/python/bin/python3 -m pip install dist/flowstate-X.Y.Z-*.whl
+# 3. Build the unsigned .app + .dmg:
+#    bash desktop/scripts/build.sh
+#    -> writes desktop/dist/Flowstate.dmg
+# 4. Bump the Tauri updater manifest (TODO — UI-076):
+#    edit desktop/updater/latest.json, set version + .dmg URL + signature
+# 5. Upload the .dmg to GitHub Releases alongside the wheel/sdist.
+# 6. Document the Gatekeeper workaround in the release notes:
+#    "First launch: right-click Flowstate.app → Open → Open anyway,
+#     or run `xattr -d com.apple.quarantine /Applications/Flowstate.app`."
+```
+
+**Distribution is unsigned.** Apple Developer cert + notarization is intentionally deferred — see specs.md §13.5 for the rationale. If/when the project gets a Developer ID, add a notarization step to UI-077 and update this section.
+
+For now, contributors who want to try the menubar app build it from source:
+
+```bash
+# Prereqs: Rust toolchain (cargo 1.77+) and Flowstate installed on PATH.
+cd desktop/src-tauri
+cargo check                   # compiles (this is the v0 gate)
+# cargo tauri dev             # interactive run — requires a display
+# cargo tauri build           # local unsigned bundle — requires a display
+```

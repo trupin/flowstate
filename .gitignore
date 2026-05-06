@@ -50,3 +50,13 @@ flowstate.db
 .DS_Store
 Thumbs.db
 demo/*.webm
+
+# Tauri / desktop app build output (UI-074)
+# The root [workspace] in Cargo.toml puts `target/` at the repo root, not
+# inside desktop/, so we ignore both locations defensively.
+target/
+desktop/target/
+desktop/dist/
+desktop/python/
+desktop/src-tauri/target/
+desktop/src-tauri/gen/
