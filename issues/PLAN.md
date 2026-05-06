@@ -580,6 +580,13 @@ Native menubar app that manages the `flowstate server` lifecycle and surfaces st
 | ------- | -------------------------------------------------- | ----------- | -------- | ------------------------------------------- | ------ |
 | UI-074  | Tauri menubar app for Flowstate                    | ui (+ shared) | P1     | SHARED-008, SHARED-010, SERVER-031, SERVER-028 | todo   |
 
+
+### Phase 36 — Test housekeeping
+
+| Issue      | Title                                                        | Domain | Priority | Depends On  | Status |
+| ---------- | ------------------------------------------------------------ | ------ | -------- | ----------- | ------ |
+| ENGINE-085 | EventType count test pins stale value (19) — actual is 21    | engine | P2       | —           | done   |
+
 ---
 
 ## Cross-Domain Coordination
