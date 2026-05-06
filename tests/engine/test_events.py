@@ -39,6 +39,15 @@ class TestEventTypeValues:
     def test_task_failed(self) -> None:
         assert EventType.TASK_FAILED.value == "task.failed"
 
+    def test_task_interrupted(self) -> None:
+        assert EventType.TASK_INTERRUPTED.value == "task.interrupted"
+
+    def test_task_retried(self) -> None:
+        assert EventType.TASK_RETRIED.value == "task.retried"
+
+    def test_task_skipped(self) -> None:
+        assert EventType.TASK_SKIPPED.value == "task.skipped"
+
     def test_edge_transition(self) -> None:
         assert EventType.EDGE_TRANSITION.value == "edge.transition"
 
@@ -66,12 +75,20 @@ class TestEventTypeValues:
     def test_schedule_skipped(self) -> None:
         assert EventType.SCHEDULE_SKIPPED.value == "schedule.skipped"
 
+    def test_subtask_updated(self) -> None:
+        assert EventType.SUBTASK_UPDATED.value == "subtask.updated"
+
 
 class TestEventTypeCount:
-    """Verify there are exactly 19 event types (16 engine + 2 schedule + 1 subtask)."""
+    """Verify there are exactly 21 event types (18 engine + 2 schedule + 1 subtask).
+
+    Matches the breakdown in EventType's class docstring. This guards against
+    accidental rename/duplication; legitimate additions should bump the count
+    here and in the docstring together.
+    """
 
     def test_event_type_count(self) -> None:
-        assert len(EventType) == 19
+        assert len(EventType) == 21
 
 
 class TestFlowEventCreation:

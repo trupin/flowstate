@@ -28,6 +28,7 @@ Event types and their documented payload fields (from specs.md Section 10.3):
 | task.wait_elapsed      | task_execution_id, node_name                                         |
 | schedule.triggered     | flow_definition_id, flow_run_id, cron_expression                     |
 | schedule.skipped       | flow_definition_id, reason                                           |
+| subtask.updated        | task_execution_id, subtask_id, status, ...                           |
 """
 
 from dataclasses import dataclass, field
