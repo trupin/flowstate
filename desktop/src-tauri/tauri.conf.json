@@ -15,11 +15,6 @@
     "windows": [],
     "security": {
       "csp": null
-    },
-    "trayIcon": {
-      "id": "main",
-      "iconPath": "icons/tray-idle.png",
-      "iconAsTemplate": true
     }
   },
   "bundle": {
