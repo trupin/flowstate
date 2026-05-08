@@ -37,17 +37,22 @@ pub struct FlowstateServer {
     port: u16,
     project_root: PathBuf,
     /// Path to a `python3` (or equivalent) interpreter that has Flowstate
-    /// installed. v0: just `"python3"` from PATH.
+    /// installed. v0: read from `FLOWSTATE_PYTHON` env var if set (useful
+    /// when developing against a venv interpreter), else fall back to
+    /// `"python3"` from PATH. UI-075 will replace this with a bundled
+    /// portable Python so neither path needs to be set by the user.
     python: OsString,
 }
 
 impl FlowstateServer {
     pub fn new(project_root: PathBuf) -> Self {
+        let python = std::env::var_os("FLOWSTATE_PYTHON")
+            .unwrap_or_else(|| OsString::from("python3"));
         Self {
             child: None,
             port: 0,
             project_root,
-            python: OsString::from("python3"),
+            python,
         }
     }
 
