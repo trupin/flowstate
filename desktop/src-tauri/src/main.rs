@@ -201,11 +201,26 @@ fn open_ui_in_browser(app: &AppHandle) {
 /// Show a native directory picker; if the user picks a directory that
 /// contains `flowstate.toml`, switch to it.
 fn pick_project(app: AppHandle) {
+    // macOS menubar-only quirk: with `ActivationPolicy::Accessory` set,
+    // the NSApp has no main window and no Dock presence, so native
+    // NSOpenPanel dialogs can't anchor to a proper coordinate frame — the
+    // panel renders at the wrong Y and clicks register at an offset from
+    // their visual position. Workaround: temporarily promote to `Regular`
+    // (briefly shows a Dock icon) so the dialog has a real activation
+    // context, then drop back to `Accessory` once the user dismisses it.
+    #[cfg(target_os = "macos")]
+    let _ = app.set_activation_policy(tauri::ActivationPolicy::Regular);
+
     let app_for_callback = app.clone();
     app.dialog()
         .file()
         .set_title("Select a Flowstate project directory")
         .pick_folder(move |maybe_path| {
+            // Always restore the menubar-only policy, even on cancel/error.
+            #[cfg(target_os = "macos")]
+            let _ = app_for_callback
+                .set_activation_policy(tauri::ActivationPolicy::Accessory);
+
             let Some(file_path) = maybe_path else {
                 return; // user cancelled
             };
