@@ -115,35 +115,98 @@ reusing version numbers). Instead:
 
 ## Desktop app
 
-> **Status: TODO — not yet automated.** UI-074 landed only the v0 scaffold (Tauri project, server supervisor, /health poller, tray menu). The actual build/release pipeline is tracked in UI-075 (bundled Python), UI-076 (auto-updater + Tauri pubkey), and UI-077 (unsigned `.dmg` build script + this section's walkthrough).
+The macOS menubar app is built from `desktop/` and shipped as an unsigned
+`.dmg` alongside the PyPI release. The pipeline is fully scripted —
+`desktop/scripts/build.sh` produces a versioned DMG ready to upload to
+GitHub Releases. Apple Developer cert + notarization is intentionally
+deferred (see `specs.md §13.5` for the rationale).
 
-When UI-077 lands, this section will be filled in with concrete steps. The intended shape:
-
-```bash
-# (TODO — UI-077)
-# 1. Vendor portable Python via python-build-standalone (TODO — UI-075):
-#    bash desktop/scripts/vendor_python.sh aarch64-apple-darwin
-# 2. Install the freshly built flowstate wheel into the vendored Python:
-#    desktop/python/bin/python3 -m pip install dist/flowstate-X.Y.Z-*.whl
-# 3. Build the unsigned .app + .dmg:
-#    bash desktop/scripts/build.sh
-#    -> writes desktop/dist/Flowstate.dmg
-# 4. Bump the Tauri updater manifest (TODO — UI-076):
-#    edit desktop/updater/latest.json, set version + .dmg URL + signature
-# 5. Upload the .dmg to GitHub Releases alongside the wheel/sdist.
-# 6. Document the Gatekeeper workaround in the release notes:
-#    "First launch: right-click Flowstate.app → Open → Open anyway,
-#     or run `xattr -d com.apple.quarantine /Applications/Flowstate.app`."
-```
-
-**Distribution is unsigned.** Apple Developer cert + notarization is intentionally deferred — see specs.md §13.5 for the rationale. If/when the project gets a Developer ID, add a notarization step to UI-077 and update this section.
-
-For now, contributors who want to try the menubar app build it from source:
+### Prerequisites (one-time)
 
 ```bash
-# Prereqs: Rust toolchain (cargo 1.77+) and Flowstate installed on PATH.
-cd desktop/src-tauri
-cargo check                   # compiles (this is the v0 gate)
-# cargo tauri dev             # interactive run — requires a display
-# cargo tauri build           # local unsigned bundle — requires a display
+# Rust toolchain.
+curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
+. "$HOME/.cargo/env"
+
+# Tauri CLI.
+cargo install tauri-cli --locked --version "^2.0"
+
+# jq (build script reads version from tauri.conf.json).
+brew install jq
 ```
+
+### Per-release procedure
+
+```bash
+# 0. Bump the desktop version. Single source of truth: tauri.conf.json.
+#    Keep it in sync with pyproject.toml's flowstate version where
+#    practical, but they don't have to match — the .dmg has its own
+#    cadence and may iterate on bundling fixes between PyPI releases.
+vim desktop/src-tauri/tauri.conf.json   # update "version": "X.Y.Z"
+
+# 1. Build for Apple Silicon. (Builds for both arches in two passes —
+#    universal binaries are a stretch goal, see UI-077.)
+bash desktop/scripts/build.sh aarch64-apple-darwin
+# -> desktop/dist/Flowstate-X.Y.Z-aarch64.dmg
+
+# 2. Build for Intel.
+bash desktop/scripts/build.sh x86_64-apple-darwin
+# -> desktop/dist/Flowstate-X.Y.Z-x86_64.dmg
+
+# 3. Sanity-check both DMGs locally:
+#    a) drag-install onto /Applications
+#    b) right-click → Open → Open anyway (Gatekeeper)
+#    c) menubar icon appears, "Switch Project…" works, "Open UI" works
+#    d) Quit cleanly stops the spawned server (`ps aux | grep flowstate`)
+
+# 4. Upload both DMGs to the GitHub Release alongside the PyPI wheel.
+#    Release notes should include the Gatekeeper workaround verbatim:
+#       "First launch: right-click Flowstate.app → Open → Open anyway,
+#        or run `xattr -d com.apple.quarantine /Applications/Flowstate.app`"
+gh release upload vX.Y.Z \
+    desktop/dist/Flowstate-X.Y.Z-aarch64.dmg \
+    desktop/dist/Flowstate-X.Y.Z-x86_64.dmg
+
+# 5. (Once UI-076 lands) Bump the Tauri updater manifest so existing
+#    installs auto-update. Until UI-076 lands, users must re-download
+#    the .dmg manually.
+```
+
+### What the script does internally
+
+1. Rebuilds the Flowstate wheel via `uv build --wheel`.
+2. Calls `desktop/scripts/vendor_python.sh <triple>` (UI-075) to populate
+   `desktop/python/` with a `python-build-standalone` runtime + the
+   freshly-built wheel installed into it. Tarball is SHA256-verified
+   and cached at `desktop/.cache/`.
+3. Runs `cargo tauri build --target <triple>` to produce the `.app` and
+   `.dmg`. Tauri reads `bundle.resources` from `tauri.conf.json` to ship
+   the vendored Python inside `Contents/Resources/python/`.
+4. Copies the DMG to `desktop/dist/Flowstate-X.Y.Z-<short-arch>.dmg`,
+   prints the `.app` and `.dmg` sizes.
+
+### Known sizes (v0.0.1)
+
+- `.app`: ~400 MB (mostly the bundled `python-build-standalone` runtime
+  plus `claude_agent_sdk`'s 196 MB embedded `claude` Mach-O — see UI-079
+  for the size-trim follow-up).
+- `.dmg`: ~200 MB after DMG compression.
+
+### Rollback
+
+DMGs published on GitHub Releases can be deleted (unlike PyPI). If a
+release is broken: delete the asset from the Release page, fix the bug,
+re-run `build.sh`, re-upload. No version bump required as long as no
+user has installed the broken artifact yet.
+
+### What's deferred (later P3 work)
+
+- **Code signing + notarization** — requires a paid Apple Developer
+  account ($99/yr). When we sign up, add `signingIdentity` +
+  `notarize` config to `tauri.conf.json` and a `signing` step to
+  `build.sh`. Removes the right-click → Open friction.
+- **Universal binaries** (`lipo`-merge of aarch64 + x86_64). Avoids
+  shipping two DMGs per release. See UI-077 follow-up.
+- **CI-driven release** (GitHub Actions building the DMG on macOS
+  runners). Currently maintainers run `build.sh` locally on a
+  trusted machine.
