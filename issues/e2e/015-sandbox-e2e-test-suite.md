@@ -4,7 +4,21 @@
 e2e
 
 ## Status
-todo
+done (superseded — sandbox feature removed in Phase 27)
+
+> **Closed without implementation.** The feature this issue was meant
+> to test — `sandbox = true` flows backed by OpenShell — was removed
+> from the codebase in Phase 27 (ENGINE-075 removed the
+> `SandboxManager` and all OpenShell logic from the engine, SERVER-024
+> removed the server-side preflight). Lumon (Phase 28a/b) replaced it
+> as the sandboxing story; that path is exercised by the existing
+> engine-level integration tests and doesn't need its own dedicated
+> "real sandbox E2E" suite at this layer.
+>
+> If a future iteration reintroduces a per-flow `sandbox = true`
+> attribute, file a fresh E2E-* issue rather than reopening this one —
+> the original acceptance criteria reference protocol surfaces that no
+> longer exist (`SandboxManager`, OpenShell `connect-wrapper`, etc.).
 
 ## Priority
 P1 (important)
