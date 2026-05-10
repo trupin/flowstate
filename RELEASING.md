@@ -158,9 +158,17 @@ vim desktop/src-tauri/tauri.conf.json   # update "version": "X.Y.Z"
 # 1. Export the signing key path so cargo tauri build signs the bundle.
 #    Without this, build.sh prints a WARNING: bundle will be UNSIGNED
 #    and produces no .sig — never publish an unsigned release.
+#
+#    Pull the password from macOS Keychain rather than typing it inline
+#    or storing it in a dotfile — Keychain access prompts with TouchID
+#    and never lands in shell history or `env` output.
+#
+#    One-time setup (skip if already done):
+#       security add-generic-password -s flowstate-tauri-signing \
+#           -a "$USER" -w   # prompts interactively
 export TAURI_SIGNING_PRIVATE_KEY_PATH="$HOME/.tauri/flowstate.key"
-# If you set a password during `signer generate`, also export:
-# export TAURI_SIGNING_PRIVATE_KEY_PASSWORD="..."
+export TAURI_SIGNING_PRIVATE_KEY_PASSWORD="$(security find-generic-password \
+    -s flowstate-tauri-signing -w)"
 
 # 2. Build for Apple Silicon. (Builds for both arches in two passes —
 #    universal binaries are a stretch goal, see UI-077.)
