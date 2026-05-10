@@ -52,6 +52,26 @@ Then launch normally from Spotlight / Launchpad.
 The bundled Python runtime ships inside the `.app` itself
 (`Contents/Resources/python/`) — no system Python install needed.
 
+### `harness="sdk"` flows: `claude` must be on PATH
+
+The bundled Python tree omits `claude_agent_sdk`'s 196 MB embedded `claude`
+binary (UI-079 trims it). The default `AcpHarness` spawns
+`claude-agent-acp` from PATH and is unaffected. But flows that explicitly
+set `harness = "sdk"` need a `claude` binary on PATH at runtime.
+
+If your active project has any SDK-harness flow and `claude` isn't on
+PATH, the tray dropdown surfaces a `⚠ claude not on PATH` warning row
+above the project name.
+
+> [!NOTE]
+> **Launchd PATH ≠ shell PATH.** Apps launched from Spotlight / Finder
+> inherit launchd's PATH (typically `/usr/bin:/bin:/usr/sbin:/sbin`),
+> not your shell's `~/.zshrc`-augmented PATH. If `claude` is on your
+> shell PATH but the warning still fires, install `claude` to a
+> launchd-visible location (e.g. `/usr/local/bin/`) or add it via
+> `launchctl setenv PATH "$PATH:..."`. Install instructions:
+> <https://docs.anthropic.com/en/docs/claude-code/quickstart>.
+
 ## For maintainers — building from source
 
 Prereqs:

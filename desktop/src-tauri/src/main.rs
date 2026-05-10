@@ -17,7 +17,7 @@
 //! icon while a flow is executing.
 
 use std::ffi::OsString;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
 use tauri::image::Image;
@@ -115,9 +115,12 @@ fn main() {
             };
             if let Some(root) = last_root {
                 if validate_project_root(&root).is_ok() {
-                    if let Err(e) = start_server_for(&app_handle, root) {
+                    if let Err(e) = start_server_for(&app_handle, root.clone()) {
                         log::warn!("auto-start failed: {e:#}");
                     }
+                    // UI-080: evaluate the SDK-claude warning for the
+                    // remembered project as soon as the tray is up.
+                    refresh_sdk_claude_warning(&app_handle, Some(&root));
                 } else {
                     log::warn!(
                         "remembered project root no longer valid; user will need to pick again"
@@ -371,10 +374,75 @@ fn pick_project(app: AppHandle) {
             // Stop any existing server, then start a fresh one rooted at
             // the new path.
             stop_server(&app_for_callback);
-            if let Err(e) = start_server_for(&app_for_callback, path) {
+            if let Err(e) = start_server_for(&app_for_callback, path.clone()) {
                 log::warn!("start failed after switch: {e:#}");
             }
+            // UI-080: re-evaluate the SDK-claude warning for the new project.
+            refresh_sdk_claude_warning(&app_for_callback, Some(&path));
         });
+}
+
+/// UI-080: scan a project's `flows/*.flow` files for `harness = "sdk"`
+/// declarations. The check is intentionally a substring match — fast,
+/// good enough for "should we surface a missing-claude warning". A
+/// false positive here is harmless (extra warning row); a false negative
+/// is also harmless (the user just hits a clear `ProcessError` later).
+fn project_uses_sdk_harness(project_root: &Path) -> bool {
+    let flows_dir = project_root.join("flows");
+    let Ok(entries) = std::fs::read_dir(&flows_dir) else {
+        return false;
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.extension().and_then(|s| s.to_str()) != Some("flow") {
+            continue;
+        }
+        let Ok(contents) = std::fs::read_to_string(&path) else {
+            continue;
+        };
+        // Tolerate whitespace variants: `harness="sdk"`, `harness = "sdk"`, etc.
+        for line in contents.lines() {
+            let stripped = line.split_whitespace().collect::<String>();
+            if stripped.contains("harness=\"sdk\"") {
+                return true;
+            }
+        }
+    }
+    false
+}
+
+/// UI-080: probe `PATH` for a `claude` binary. Used to drive the tray
+/// warning when a project uses `harness="sdk"` flows.
+fn claude_on_path() -> bool {
+    let Some(path) = std::env::var_os("PATH") else {
+        return false;
+    };
+    std::env::split_paths(&path).any(|dir| {
+        let candidate = dir.join("claude");
+        // Either `claude` directly or e.g. `claude.exe` on Windows. The
+        // file_type call avoids following dangling symlinks.
+        candidate
+            .symlink_metadata()
+            .map(|m| m.file_type().is_file() || m.file_type().is_symlink())
+            .unwrap_or(false)
+    })
+}
+
+/// UI-080: refresh the tray's `sdk_claude_missing` flag based on the
+/// current project (passed in or read from `desktop_state`) and the
+/// presence of `claude` on PATH. No-op when no project is selected —
+/// can't determine if SDK harness is in play without one.
+fn refresh_sdk_claude_warning(app: &AppHandle, project_root: Option<&Path>) {
+    let owned_root: Option<PathBuf> = project_root.map(Path::to_path_buf).or_else(|| {
+        let state_mutex = app.state::<Mutex<AppState>>();
+        let guard = state_mutex.lock().expect("AppState poisoned");
+        guard.desktop_state.last_project_root.clone()
+    });
+    let warn = match owned_root.as_deref() {
+        Some(root) => project_uses_sdk_harness(root) && !claude_on_path(),
+        None => false,
+    };
+    update_menu(app, |m| m.sdk_claude_missing = warn);
 }
 
 /// Spin up a flowstate server child process for `project_root`, then

@@ -585,7 +585,7 @@ UI-074 landed only the v0 scaffold (compiles via `cargo check`; no installable a
 | UI-076  | Tauri auto-updater + GitHub Releases manifest      | ui          | P2       | UI-074, UI-077                              | todo   |
 | UI-077  | Unsigned `.dmg` build pipeline + `desktop/scripts/build.sh` | ui  | P1       | UI-074, UI-075                              | done   |
 | UI-079  | Trim vendored Python size (strip claude-agent-sdk bundled binary) | ui | P2 | UI-075                                  | done   |
-| UI-080  | Tray UX when `harness="sdk"` flows can't find `claude` on PATH    | ui | P2 | UI-079                                  | todo   |
+| UI-080  | Tray UX when `harness="sdk"` flows can't find `claude` on PATH    | ui | P2 | UI-079                                  | done   |
 
 
 ### Phase 36 — Test housekeeping
