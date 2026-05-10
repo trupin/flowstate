@@ -1720,7 +1720,13 @@ class TestSubtasksParameter:
 
 
 class TestSandboxParameter:
-    """Test sandbox boolean and sandbox_policy string at flow level and node level."""
+    """Test flat ``sandbox = true`` / ``sandbox_policy = "..."`` syntax —
+    parser-layer backward compat that maps onto ``LumonConfig`` (SHARED-012).
+
+    After SHARED-012 the AST has a single ``Flow.lumon: LumonConfig | None``
+    field; the legacy flat ``sandbox`` keys still parse and produce the same
+    ``LumonConfig`` shape that a ``lumon { ... }`` block (DSL-016) would.
+    """
 
     def test_flow_sandbox_true(self):
         source = (
@@ -1728,7 +1734,8 @@ class TestSandboxParameter:
             'entry a { prompt = "x" } exit b { prompt = "y" } a -> b }'
         )
         flow = parse_flow(source)
-        assert flow.sandbox is True
+        assert flow.lumon is not None
+        assert flow.lumon.enabled is True
 
     def test_flow_sandbox_false(self):
         source = (
@@ -1736,15 +1743,18 @@ class TestSandboxParameter:
             'entry a { prompt = "x" } exit b { prompt = "y" } a -> b }'
         )
         flow = parse_flow(source)
-        assert flow.sandbox is False
+        # ``sandbox = false`` is an explicit (disabled) LumonConfig at the
+        # parser layer — semantics preserved for engine resolution.
+        assert flow.lumon is not None
+        assert flow.lumon.enabled is False
 
-    def test_flow_sandbox_default_is_false(self):
+    def test_flow_sandbox_default_is_none(self):
         source = (
             "flow f { budget = 1h on_error = pause context = handoff "
             'entry a { prompt = "x" } exit b { prompt = "y" } a -> b }'
         )
         flow = parse_flow(source)
-        assert flow.sandbox is False
+        assert flow.lumon is None
 
     def test_flow_sandbox_policy_parses(self):
         source = (
@@ -1753,7 +1763,8 @@ class TestSandboxParameter:
             'entry a { prompt = "x" } exit b { prompt = "y" } a -> b }'
         )
         flow = parse_flow(source)
-        assert flow.sandbox_policy == "policies/strict.yaml"
+        assert flow.lumon is not None
+        assert flow.lumon.config_path == "policies/strict.yaml"
 
     def test_flow_sandbox_policy_default_is_none(self):
         source = (
@@ -1761,7 +1772,7 @@ class TestSandboxParameter:
             'entry a { prompt = "x" } exit b { prompt = "y" } a -> b }'
         )
         flow = parse_flow(source)
-        assert flow.sandbox_policy is None
+        assert flow.lumon is None
 
     def test_node_sandbox_true_on_entry(self):
         source = (
@@ -1769,7 +1780,8 @@ class TestSandboxParameter:
             'entry a { prompt = "x" sandbox = true } exit b { prompt = "y" } a -> b }'
         )
         flow = parse_flow(source)
-        assert flow.nodes["a"].sandbox is True
+        assert flow.nodes["a"].lumon is not None
+        assert flow.nodes["a"].lumon.enabled is True
 
     def test_node_sandbox_false_on_task(self):
         source = (
@@ -1779,7 +1791,8 @@ class TestSandboxParameter:
             'exit b { prompt = "y" } a -> t t -> b }'
         )
         flow = parse_flow(source)
-        assert flow.nodes["t"].sandbox is False
+        assert flow.nodes["t"].lumon is not None
+        assert flow.nodes["t"].lumon.enabled is False
 
     def test_node_sandbox_true_on_exit(self):
         source = (
@@ -1787,7 +1800,8 @@ class TestSandboxParameter:
             'entry a { prompt = "x" } exit b { prompt = "y" sandbox = true } a -> b }'
         )
         flow = parse_flow(source)
-        assert flow.nodes["b"].sandbox is True
+        assert flow.nodes["b"].lumon is not None
+        assert flow.nodes["b"].lumon.enabled is True
 
     def test_node_sandbox_true_on_atomic(self):
         source = (
@@ -1797,7 +1811,8 @@ class TestSandboxParameter:
             'exit b { prompt = "y" } a -> d d -> b }'
         )
         flow = parse_flow(source)
-        assert flow.nodes["d"].sandbox is True
+        assert flow.nodes["d"].lumon is not None
+        assert flow.nodes["d"].lumon.enabled is True
 
     def test_node_sandbox_default_is_none(self):
         source = (
@@ -1805,8 +1820,10 @@ class TestSandboxParameter:
             'entry a { prompt = "x" } exit b { prompt = "y" } a -> b }'
         )
         flow = parse_flow(source)
-        assert flow.nodes["a"].sandbox is None
-        assert flow.nodes["b"].sandbox is None
+        # A node with no sandbox/lumon flat keys leaves ``lumon`` as None
+        # (inherit-from-flow sentinel).
+        assert flow.nodes["a"].lumon is None
+        assert flow.nodes["b"].lumon is None
 
     def test_node_sandbox_policy_parses(self):
         source = (
@@ -1815,7 +1832,8 @@ class TestSandboxParameter:
             'exit b { prompt = "y" } a -> b }'
         )
         flow = parse_flow(source)
-        assert flow.nodes["a"].sandbox_policy == "node-policy.yaml"
+        assert flow.nodes["a"].lumon is not None
+        assert flow.nodes["a"].lumon.config_path == "node-policy.yaml"
 
     def test_node_sandbox_policy_default_is_none(self):
         source = (
@@ -1823,8 +1841,8 @@ class TestSandboxParameter:
             'entry a { prompt = "x" } exit b { prompt = "y" } a -> b }'
         )
         flow = parse_flow(source)
-        assert flow.nodes["a"].sandbox_policy is None
-        assert flow.nodes["b"].sandbox_policy is None
+        assert flow.nodes["a"].lumon is None
+        assert flow.nodes["b"].lumon is None
 
     def test_flow_and_node_sandbox_together(self):
         """TEST-19: Combined flow and node sandbox attributes parse together."""
@@ -1836,28 +1854,36 @@ class TestSandboxParameter:
             'exit b { prompt = "y" } a -> t t -> b }'
         )
         flow = parse_flow(source)
-        assert flow.sandbox is True
-        assert flow.sandbox_policy == "flow.yaml"
-        assert flow.nodes["t"].sandbox is False
-        assert flow.nodes["t"].sandbox_policy is None
+        assert flow.lumon is not None
+        assert flow.lumon.enabled is True
+        assert flow.lumon.config_path == "flow.yaml"
+        assert flow.nodes["t"].lumon is not None
+        assert flow.nodes["t"].lumon.enabled is False
+        assert flow.nodes["t"].lumon.config_path is None
 
     def test_fixture_flow_sandbox(self):
-        """Parse the valid_sandbox.flow fixture and verify flow-level sandbox attrs."""
+        """Parse the valid_sandbox.flow fixture and verify flow-level lumon attrs."""
         flow = parse_flow(load_fixture("valid_sandbox.flow"))
-        assert flow.sandbox is True
-        assert flow.sandbox_policy == "policies/strict.yaml"
+        assert flow.lumon is not None
+        assert flow.lumon.enabled is True
+        assert flow.lumon.config_path == "policies/strict.yaml"
 
     def test_fixture_node_sandbox(self):
-        """Parse the valid_sandbox.flow fixture and verify node-level sandbox attrs."""
+        """Parse the valid_sandbox.flow fixture and verify node-level lumon attrs."""
         flow = parse_flow(load_fixture("valid_sandbox.flow"))
-        assert flow.nodes["prepare"].sandbox is True
-        assert flow.nodes["prepare"].sandbox_policy == "node-policy.yaml"
-        assert flow.nodes["build"].sandbox is False
-        assert flow.nodes["build"].sandbox_policy is None
-        assert flow.nodes["test_suite"].sandbox is None  # inherits from flow
-        assert flow.nodes["test_suite"].sandbox_policy is None
-        assert flow.nodes["deploy"].sandbox is True
-        assert flow.nodes["deploy"].sandbox_policy is None
+        prepare = flow.nodes["prepare"].lumon
+        assert prepare is not None
+        assert prepare.enabled is True
+        assert prepare.config_path == "node-policy.yaml"
+        build = flow.nodes["build"].lumon
+        assert build is not None
+        assert build.enabled is False
+        assert build.config_path is None
+        assert flow.nodes["test_suite"].lumon is None  # inherits from flow
+        deploy = flow.nodes["deploy"].lumon
+        assert deploy is not None
+        assert deploy.enabled is True
+        assert deploy.config_path is None
 
 
 # ---------------------------------------------------------------------------
@@ -1866,7 +1892,9 @@ class TestSandboxParameter:
 
 
 class TestLumonParameter:
-    """Test lumon boolean and lumon_config string at flow level and node level."""
+    """Test flat ``lumon = true`` / ``lumon_config = "..."`` syntax —
+    parser-layer backward compat that maps onto ``LumonConfig`` (SHARED-012).
+    """
 
     def test_flow_lumon_true(self):
         source = (
@@ -1874,7 +1902,8 @@ class TestLumonParameter:
             'entry a { prompt = "x" } exit b { prompt = "y" } a -> b }'
         )
         flow = parse_flow(source)
-        assert flow.lumon is True
+        assert flow.lumon is not None
+        assert flow.lumon.enabled is True
 
     def test_flow_lumon_false(self):
         source = (
@@ -1882,15 +1911,16 @@ class TestLumonParameter:
             'entry a { prompt = "x" } exit b { prompt = "y" } a -> b }'
         )
         flow = parse_flow(source)
-        assert flow.lumon is False
+        assert flow.lumon is not None
+        assert flow.lumon.enabled is False
 
-    def test_flow_lumon_default_is_false(self):
+    def test_flow_lumon_default_is_none(self):
         source = (
             "flow f { budget = 1h on_error = pause context = handoff "
             'entry a { prompt = "x" } exit b { prompt = "y" } a -> b }'
         )
         flow = parse_flow(source)
-        assert flow.lumon is False
+        assert flow.lumon is None
 
     def test_flow_lumon_config_parses(self):
         source = (
@@ -1899,7 +1929,8 @@ class TestLumonParameter:
             'entry a { prompt = "x" } exit b { prompt = "y" } a -> b }'
         )
         flow = parse_flow(source)
-        assert flow.lumon_config == "security/strict.lumon.json"
+        assert flow.lumon is not None
+        assert flow.lumon.config_path == "security/strict.lumon.json"
 
     def test_flow_lumon_config_default_is_none(self):
         source = (
@@ -1907,7 +1938,7 @@ class TestLumonParameter:
             'entry a { prompt = "x" } exit b { prompt = "y" } a -> b }'
         )
         flow = parse_flow(source)
-        assert flow.lumon_config is None
+        assert flow.lumon is None
 
     def test_node_lumon_true_on_entry(self):
         source = (
@@ -1915,7 +1946,8 @@ class TestLumonParameter:
             'entry a { prompt = "x" lumon = true } exit b { prompt = "y" } a -> b }'
         )
         flow = parse_flow(source)
-        assert flow.nodes["a"].lumon is True
+        assert flow.nodes["a"].lumon is not None
+        assert flow.nodes["a"].lumon.enabled is True
 
     def test_node_lumon_false_on_task(self):
         source = (
@@ -1925,7 +1957,8 @@ class TestLumonParameter:
             'exit b { prompt = "y" } a -> t t -> b }'
         )
         flow = parse_flow(source)
-        assert flow.nodes["t"].lumon is False
+        assert flow.nodes["t"].lumon is not None
+        assert flow.nodes["t"].lumon.enabled is False
 
     def test_node_lumon_true_on_exit(self):
         source = (
@@ -1933,7 +1966,8 @@ class TestLumonParameter:
             'entry a { prompt = "x" } exit b { prompt = "y" lumon = true } a -> b }'
         )
         flow = parse_flow(source)
-        assert flow.nodes["b"].lumon is True
+        assert flow.nodes["b"].lumon is not None
+        assert flow.nodes["b"].lumon.enabled is True
 
     def test_node_lumon_true_on_atomic(self):
         source = (
@@ -1943,7 +1977,8 @@ class TestLumonParameter:
             'exit b { prompt = "y" } a -> d d -> b }'
         )
         flow = parse_flow(source)
-        assert flow.nodes["d"].lumon is True
+        assert flow.nodes["d"].lumon is not None
+        assert flow.nodes["d"].lumon.enabled is True
 
     def test_node_lumon_default_is_none(self):
         source = (
@@ -1961,7 +1996,8 @@ class TestLumonParameter:
             'exit b { prompt = "y" } a -> b }'
         )
         flow = parse_flow(source)
-        assert flow.nodes["a"].lumon_config == "node-lumon.json"
+        assert flow.nodes["a"].lumon is not None
+        assert flow.nodes["a"].lumon.config_path == "node-lumon.json"
 
     def test_node_lumon_config_default_is_none(self):
         source = (
@@ -1969,8 +2005,8 @@ class TestLumonParameter:
             'entry a { prompt = "x" } exit b { prompt = "y" } a -> b }'
         )
         flow = parse_flow(source)
-        assert flow.nodes["a"].lumon_config is None
-        assert flow.nodes["b"].lumon_config is None
+        assert flow.nodes["a"].lumon is None
+        assert flow.nodes["b"].lumon is None
 
     def test_flow_and_node_lumon_together(self):
         """Combined flow and node lumon attributes parse together."""
@@ -1982,31 +2018,42 @@ class TestLumonParameter:
             'exit b { prompt = "y" } a -> t t -> b }'
         )
         flow = parse_flow(source)
-        assert flow.lumon is True
-        assert flow.lumon_config == "flow.lumon.json"
-        assert flow.nodes["t"].lumon is False
-        assert flow.nodes["t"].lumon_config is None
+        assert flow.lumon is not None
+        assert flow.lumon.enabled is True
+        assert flow.lumon.config_path == "flow.lumon.json"
+        assert flow.nodes["t"].lumon is not None
+        assert flow.nodes["t"].lumon.enabled is False
+        assert flow.nodes["t"].lumon.config_path is None
 
     def test_fixture_flow_lumon(self):
         """Parse the valid_lumon.flow fixture and verify flow-level lumon attrs."""
         flow = parse_flow(load_fixture("valid_lumon.flow"))
-        assert flow.lumon is True
-        assert flow.lumon_config == "security/strict.lumon.json"
+        assert flow.lumon is not None
+        assert flow.lumon.enabled is True
+        assert flow.lumon.config_path == "security/strict.lumon.json"
 
     def test_fixture_node_lumon(self):
         """Parse the valid_lumon.flow fixture and verify node-level lumon attrs."""
         flow = parse_flow(load_fixture("valid_lumon.flow"))
-        assert flow.nodes["prepare"].lumon is True
-        assert flow.nodes["prepare"].lumon_config == "node-lumon.json"
-        assert flow.nodes["build"].lumon is False
-        assert flow.nodes["build"].lumon_config is None
+        prepare = flow.nodes["prepare"].lumon
+        assert prepare is not None
+        assert prepare.enabled is True
+        assert prepare.config_path == "node-lumon.json"
+        build = flow.nodes["build"].lumon
+        assert build is not None
+        assert build.enabled is False
+        assert build.config_path is None
         assert flow.nodes["test_suite"].lumon is None  # inherits from flow
-        assert flow.nodes["test_suite"].lumon_config is None
-        assert flow.nodes["deploy"].lumon is True
-        assert flow.nodes["deploy"].lumon_config is None
+        deploy = flow.nodes["deploy"].lumon
+        assert deploy is not None
+        assert deploy.enabled is True
+        assert deploy.config_path is None
 
     def test_sandbox_and_lumon_together(self):
-        """Both sandbox and lumon can be enabled on the same flow/node (layered security)."""
+        """Both flat ``sandbox`` and flat ``lumon`` map onto the same
+        ``LumonConfig`` block (parser-layer compat). Either being true
+        enables the resulting config.
+        """
         source = (
             "flow f { budget = 1h on_error = pause context = handoff "
             "sandbox = true lumon = true "
@@ -2014,7 +2061,67 @@ class TestLumonParameter:
             'exit b { prompt = "y" } a -> b }'
         )
         flow = parse_flow(source)
-        assert flow.sandbox is True
-        assert flow.lumon is True
-        assert flow.nodes["a"].sandbox is True
-        assert flow.nodes["a"].lumon is True
+        assert flow.lumon is not None
+        assert flow.lumon.enabled is True
+        assert flow.nodes["a"].lumon is not None
+        assert flow.nodes["a"].lumon.enabled is True
+
+
+# ---------------------------------------------------------------------------
+# SHARED-012: LumonConfig round-trip equivalence between flat syntactic forms
+# ---------------------------------------------------------------------------
+
+
+class TestLumonFlatSyntaxRoundTrip:
+    """All four flat syntactic forms (lumon/sandbox + their *_config/*_policy
+    aliases) collapse to the same ``LumonConfig`` shape (TEST-37b.2).
+    """
+
+    def test_lumon_true_and_sandbox_true_are_equivalent(self):
+        from flowstate.dsl.ast import LumonConfig
+
+        lumon_src = (
+            "flow f { budget = 1h on_error = pause context = handoff lumon = true "
+            'entry a { prompt = "x" } exit b { prompt = "y" } a -> b }'
+        )
+        sandbox_src = (
+            "flow f { budget = 1h on_error = pause context = handoff sandbox = true "
+            'entry a { prompt = "x" } exit b { prompt = "y" } a -> b }'
+        )
+        flow_a = parse_flow(lumon_src)
+        flow_b = parse_flow(sandbox_src)
+        assert flow_a.lumon == LumonConfig(enabled=True, plugins=None, config_path=None)
+        assert flow_b.lumon == LumonConfig(enabled=True, plugins=None, config_path=None)
+        assert flow_a.lumon == flow_b.lumon
+
+    def test_lumon_config_and_sandbox_policy_are_equivalent(self):
+        from flowstate.dsl.ast import LumonConfig
+
+        lumon_src = (
+            "flow f { budget = 1h on_error = pause context = handoff lumon = true "
+            'lumon_config = "p.json" '
+            'entry a { prompt = "x" } exit b { prompt = "y" } a -> b }'
+        )
+        sandbox_src = (
+            "flow f { budget = 1h on_error = pause context = handoff sandbox = true "
+            'sandbox_policy = "p.json" '
+            'entry a { prompt = "x" } exit b { prompt = "y" } a -> b }'
+        )
+        flow_a = parse_flow(lumon_src)
+        flow_b = parse_flow(sandbox_src)
+        expected = LumonConfig(enabled=True, plugins=None, config_path="p.json")
+        assert flow_a.lumon == expected
+        assert flow_b.lumon == expected
+
+    def test_lumon_config_wins_over_sandbox_policy(self):
+        """When both flat ``*_config`` and ``*_policy`` are set, ``lumon_config``
+        takes precedence (preserves prior engine resolution order).
+        """
+        source = (
+            "flow f { budget = 1h on_error = pause context = handoff lumon = true "
+            'lumon_config = "lc.json" sandbox_policy = "sp.json" '
+            'entry a { prompt = "x" } exit b { prompt = "y" } a -> b }'
+        )
+        flow = parse_flow(source)
+        assert flow.lumon is not None
+        assert flow.lumon.config_path == "lc.json"

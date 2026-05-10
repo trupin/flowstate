@@ -13,6 +13,7 @@ from flowstate.dsl.ast import (
     EdgeType,
     ErrorPolicy,
     Flow,
+    LumonConfig,
     Node,
     NodeType,
     OverlapPolicy,
@@ -67,6 +68,42 @@ def _strip_string(token: Token | str) -> str:
     if text.startswith('"') and text.endswith('"'):
         return text[1:-1]
     return text
+
+
+def _build_lumon_from_flat(
+    body: dict[str, Any],
+) -> LumonConfig | None:
+    """Build a ``LumonConfig`` from flat-syntax attributes (backward compat).
+
+    Maps the legacy flat keys ``lumon``, ``lumon_config``, ``sandbox``, and
+    ``sandbox_policy`` onto a single ``LumonConfig``. Returns ``None`` when
+    none of them are present (preserves the "inherit / unset" sentinel).
+
+    Precedence for ``config_path`` (preserves prior engine resolution order):
+    ``lumon_config`` > ``sandbox_policy``.
+    """
+    has_lumon_key = "lumon" in body
+    has_sandbox_key = "sandbox" in body
+    lumon_config = body.get("lumon_config")
+    sandbox_policy = body.get("sandbox_policy")
+    if (
+        not has_lumon_key
+        and not has_sandbox_key
+        and lumon_config is None
+        and sandbox_policy is None
+    ):
+        return None
+    # An explicit ``true`` on either flat key enables the block. If only the
+    # *_config / *_policy keys are present without an explicit enable, the
+    # resulting ``enabled=False`` will be flagged by LM1 in the type checker
+    # (same semantics as before this migration).
+    enabled = bool(body.get("lumon")) or bool(body.get("sandbox"))
+    config_path: str | None = None
+    if lumon_config is not None:
+        config_path = str(lumon_config)
+    elif sandbox_policy is not None:
+        config_path = str(sandbox_policy)
+    return LumonConfig(enabled=enabled, plugins=None, config_path=config_path)
 
 
 def _meta_line(meta: Any) -> int:
@@ -172,10 +209,6 @@ class _FlowTransformer(Transformer[Token, Flow]):
         judge = body.get("judge")
         harness = body.get("harness")
         subtasks = body.get("subtasks")
-        sandbox = body.get("sandbox")
-        sandbox_policy = body.get("sandbox_policy")
-        lumon = body.get("lumon")
-        lumon_config = body.get("lumon_config")
         return Node(
             name=name,
             node_type=NodeType.ENTRY,
@@ -184,10 +217,7 @@ class _FlowTransformer(Transformer[Token, Flow]):
             judge=bool(judge) if judge is not None else None,
             harness=str(harness) if harness is not None else None,
             subtasks=bool(subtasks) if subtasks is not None else None,
-            sandbox=bool(sandbox) if sandbox is not None else None,
-            sandbox_policy=str(sandbox_policy) if sandbox_policy is not None else None,
-            lumon=bool(lumon) if lumon is not None else None,
-            lumon_config=str(lumon_config) if lumon_config is not None else None,
+            lumon=_build_lumon_from_flat(body),
             line=_meta_line(meta),
             column=_meta_column(meta),
         )
@@ -203,10 +233,6 @@ class _FlowTransformer(Transformer[Token, Flow]):
         judge = body.get("judge")
         harness = body.get("harness")
         subtasks = body.get("subtasks")
-        sandbox = body.get("sandbox")
-        sandbox_policy = body.get("sandbox_policy")
-        lumon = body.get("lumon")
-        lumon_config = body.get("lumon_config")
         return Node(
             name=name,
             node_type=NodeType.TASK,
@@ -215,10 +241,7 @@ class _FlowTransformer(Transformer[Token, Flow]):
             judge=bool(judge) if judge is not None else None,
             harness=str(harness) if harness is not None else None,
             subtasks=bool(subtasks) if subtasks is not None else None,
-            sandbox=bool(sandbox) if sandbox is not None else None,
-            sandbox_policy=str(sandbox_policy) if sandbox_policy is not None else None,
-            lumon=bool(lumon) if lumon is not None else None,
-            lumon_config=str(lumon_config) if lumon_config is not None else None,
+            lumon=_build_lumon_from_flat(body),
             line=_meta_line(meta),
             column=_meta_column(meta),
         )
@@ -234,10 +257,6 @@ class _FlowTransformer(Transformer[Token, Flow]):
         judge = body.get("judge")
         harness = body.get("harness")
         subtasks = body.get("subtasks")
-        sandbox = body.get("sandbox")
-        sandbox_policy = body.get("sandbox_policy")
-        lumon = body.get("lumon")
-        lumon_config = body.get("lumon_config")
         return Node(
             name=name,
             node_type=NodeType.EXIT,
@@ -246,10 +265,7 @@ class _FlowTransformer(Transformer[Token, Flow]):
             judge=bool(judge) if judge is not None else None,
             harness=str(harness) if harness is not None else None,
             subtasks=bool(subtasks) if subtasks is not None else None,
-            sandbox=bool(sandbox) if sandbox is not None else None,
-            sandbox_policy=str(sandbox_policy) if sandbox_policy is not None else None,
-            lumon=bool(lumon) if lumon is not None else None,
-            lumon_config=str(lumon_config) if lumon_config is not None else None,
+            lumon=_build_lumon_from_flat(body),
             line=_meta_line(meta),
             column=_meta_column(meta),
         )
@@ -310,10 +326,6 @@ class _FlowTransformer(Transformer[Token, Flow]):
         judge = body.get("judge")
         harness = body.get("harness")
         subtasks = body.get("subtasks")
-        sandbox = body.get("sandbox")
-        sandbox_policy = body.get("sandbox_policy")
-        lumon = body.get("lumon")
-        lumon_config = body.get("lumon_config")
         return Node(
             name=name,
             node_type=NodeType.ATOMIC,
@@ -322,10 +334,7 @@ class _FlowTransformer(Transformer[Token, Flow]):
             judge=bool(judge) if judge is not None else None,
             harness=str(harness) if harness is not None else None,
             subtasks=bool(subtasks) if subtasks is not None else None,
-            sandbox=bool(sandbox) if sandbox is not None else None,
-            sandbox_policy=str(sandbox_policy) if sandbox_policy is not None else None,
-            lumon=bool(lumon) if lumon is not None else None,
-            lumon_config=str(lumon_config) if lumon_config is not None else None,
+            lumon=_build_lumon_from_flat(body),
             line=_meta_line(meta),
             column=_meta_column(meta),
         )
@@ -582,6 +591,10 @@ class _FlowTransformer(Transformer[Token, Flow]):
             OverlapPolicy(str(attrs["on_overlap"])) if "on_overlap" in attrs else OverlapPolicy.SKIP
         )
 
+        # Build LumonConfig from the legacy flat attrs (lumon, lumon_config,
+        # sandbox, sandbox_policy). Block syntax lands in DSL-016.
+        lumon_cfg = _build_lumon_from_flat(attrs)
+
         return Flow(
             name=name,
             budget_seconds=int(attrs["budget_seconds"]),
@@ -595,10 +608,7 @@ class _FlowTransformer(Transformer[Token, Flow]):
             harness=str(attrs["harness"]) if "harness" in attrs else "claude",
             worktree=bool(attrs.get("worktree", True)),
             subtasks=bool(attrs.get("subtasks", False)),
-            sandbox=bool(attrs.get("sandbox", False)),
-            sandbox_policy=(str(attrs["sandbox_policy"]) if "sandbox_policy" in attrs else None),
-            lumon=bool(attrs.get("lumon", False)),
-            lumon_config=(str(attrs["lumon_config"]) if "lumon_config" in attrs else None),
+            lumon=lumon_cfg,
             max_parallel=int(attrs.get("max_parallel", 1)),
             input_fields=input_fields,
             output_fields=output_fields,

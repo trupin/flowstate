@@ -16,6 +16,7 @@ from flowstate.dsl.ast import (
     EdgeType,
     ErrorPolicy,
     Flow,
+    LumonConfig,
     Node,
     NodeType,
 )
@@ -1738,240 +1739,178 @@ class TestSchedulingParserRoundTrip:
 
 
 # ===========================================================================
-# DSL-008: Sandbox rules (SB1)
+# DSL-008: Sandbox rules — folded into LM1 by SHARED-012
 # ===========================================================================
+#
+# Before SHARED-012, the type checker had a dedicated SB1 rule firing on
+# flat ``sandbox_policy without sandbox = true``. After SHARED-012 the
+# parser collapses flat ``sandbox``/``sandbox_policy`` onto the same
+# ``LumonConfig`` block as ``lumon``/``lumon_config``, so the type checker
+# now reports the unified ``LM1`` rule. Tests below exercise the same
+# semantics through the parser (the source of truth — these are the user-
+# facing knobs that must keep working) and check for ``LM1`` rather than
+# ``SB1``.
 
 
-class TestSB1SandboxPolicyRequiresSandbox:
-    """SB1: sandbox_policy requires sandbox = true at flow and node level."""
+class TestSandboxFlatSyntaxFlagsLM1:
+    """Flat ``sandbox_policy`` without ``sandbox = true`` produces LM1
+    (previously SB1, semantics preserved through the parser).
+    """
 
     def test_flow_sandbox_policy_without_sandbox_is_error(self) -> None:
-        """TEST-12: sandbox_policy at flow level with sandbox defaulting to false."""
-        flow = _minimal_flow(sandbox_policy="strict.yaml")
+        source = (
+            "flow f { budget = 1h on_error = pause context = handoff "
+            'sandbox_policy = "strict.yaml" '
+            "input { task_name: string } "
+            'entry a { prompt = "x" } exit b { prompt = "y" } a -> b }'
+        )
+        flow = parse_flow(source)
         errors = check_flow(flow)
-        sb1 = _errors_with_rule(errors, "SB1")
-        assert len(sb1) == 1
-        assert "sandbox_policy requires sandbox = true" in sb1[0].message
+        lm1 = _errors_with_rule(errors, "LM1")
+        assert len(lm1) == 1
+        assert "lumon" in lm1[0].message
 
     def test_flow_sandbox_false_with_policy_is_error(self) -> None:
-        """TEST-13: explicit sandbox = false with sandbox_policy."""
-        flow = _minimal_flow(sandbox=False, sandbox_policy="strict.yaml")
+        source = (
+            "flow f { budget = 1h on_error = pause context = handoff "
+            'sandbox = false sandbox_policy = "strict.yaml" '
+            "input { task_name: string } "
+            'entry a { prompt = "x" } exit b { prompt = "y" } a -> b }'
+        )
+        flow = parse_flow(source)
         errors = check_flow(flow)
-        sb1 = _errors_with_rule(errors, "SB1")
-        assert len(sb1) == 1
+        assert len(_errors_with_rule(errors, "LM1")) == 1
 
     def test_flow_sandbox_true_with_policy_is_valid(self) -> None:
-        """TEST-17: sandbox = true with sandbox_policy is valid."""
-        flow = _minimal_flow(sandbox=True, sandbox_policy="strict.yaml")
+        source = (
+            "flow f { budget = 1h on_error = pause context = handoff "
+            'sandbox = true sandbox_policy = "strict.yaml" '
+            "input { task_name: string } "
+            'entry a { prompt = "x" } exit b { prompt = "y" } a -> b }'
+        )
+        flow = parse_flow(source)
         errors = check_flow(flow)
-        sb1 = _errors_with_rule(errors, "SB1")
-        assert len(sb1) == 0
+        assert len(_errors_with_rule(errors, "LM1")) == 0
 
     def test_flow_sandbox_true_without_policy_is_valid(self) -> None:
-        """TEST-18: sandbox = true without sandbox_policy is valid."""
-        flow = _minimal_flow(sandbox=True)
+        source = (
+            "flow f { budget = 1h on_error = pause context = handoff sandbox = true "
+            "input { task_name: string } "
+            'entry a { prompt = "x" } exit b { prompt = "y" } a -> b }'
+        )
+        flow = parse_flow(source)
         errors = check_flow(flow)
-        sb1 = _errors_with_rule(errors, "SB1")
-        assert len(sb1) == 0
-
-    def test_node_sandbox_false_with_policy_is_error(self) -> None:
-        """TEST-14: node sets sandbox = false with sandbox_policy."""
-        nodes = {
-            "start": Node(
-                name="start",
-                node_type=NodeType.ENTRY,
-                prompt="begin",
-                sandbox=False,
-                sandbox_policy="node.yaml",
-            ),
-            "end": Node(name="end", node_type=NodeType.EXIT, prompt="done"),
-        }
-        flow = _minimal_flow(nodes=nodes, sandbox=True)
-        errors = check_flow(flow)
-        sb1 = _errors_with_rule(errors, "SB1")
-        assert len(sb1) == 1
-        assert "start" in sb1[0].message
-
-    def test_node_sandbox_policy_inherits_false_from_flow_is_error(self) -> None:
-        """TEST-15: node sets sandbox_policy, inherits sandbox = false from flow."""
-        nodes = {
-            "start": Node(
-                name="start",
-                node_type=NodeType.ENTRY,
-                prompt="begin",
-                sandbox_policy="node.yaml",
-            ),
-            "end": Node(name="end", node_type=NodeType.EXIT, prompt="done"),
-        }
-        flow = _minimal_flow(nodes=nodes, sandbox=False)
-        errors = check_flow(flow)
-        sb1 = _errors_with_rule(errors, "SB1")
-        assert len(sb1) == 1
-        assert "start" in sb1[0].message
-
-    def test_node_sandbox_policy_inherits_true_from_flow_is_valid(self) -> None:
-        """TEST-16: node sets sandbox_policy, inherits sandbox = true from flow."""
-        nodes = {
-            "start": Node(
-                name="start",
-                node_type=NodeType.ENTRY,
-                prompt="begin",
-                sandbox_policy="node.yaml",
-            ),
-            "end": Node(name="end", node_type=NodeType.EXIT, prompt="done"),
-        }
-        flow = _minimal_flow(nodes=nodes, sandbox=True)
-        errors = check_flow(flow)
-        sb1 = _errors_with_rule(errors, "SB1")
-        assert len(sb1) == 0
-
-    def test_node_sandbox_true_with_policy_overrides_flow_false(self) -> None:
-        """Node with sandbox = true and sandbox_policy is valid even if flow sandbox = false."""
-        nodes = {
-            "start": Node(
-                name="start",
-                node_type=NodeType.ENTRY,
-                prompt="begin",
-                sandbox=True,
-                sandbox_policy="node.yaml",
-            ),
-            "end": Node(name="end", node_type=NodeType.EXIT, prompt="done"),
-        }
-        flow = _minimal_flow(nodes=nodes, sandbox=False)
-        errors = check_flow(flow)
-        sb1 = _errors_with_rule(errors, "SB1")
-        assert len(sb1) == 0
+        assert len(_errors_with_rule(errors, "LM1")) == 0
 
     def test_no_sandbox_attrs_is_valid(self) -> None:
-        """Default flow (no sandbox attrs) has no SB1 errors."""
+        """Default flow (no sandbox/lumon attrs) has no LM1 errors."""
         flow = _minimal_flow()
         errors = check_flow(flow)
-        sb1 = _errors_with_rule(errors, "SB1")
-        assert len(sb1) == 0
+        assert len(_errors_with_rule(errors, "LM1")) == 0
 
     def test_sandbox_fixture_type_checks(self) -> None:
-        """The valid_sandbox.flow fixture should type-check with no SB1 errors."""
+        """The valid_sandbox.flow fixture has no LM1 errors."""
         flow = parse_flow(load_fixture("valid_sandbox.flow"))
         errors = check_flow(flow)
-        sb1 = _errors_with_rule(errors, "SB1")
-        assert len(sb1) == 0
+        assert len(_errors_with_rule(errors, "LM1")) == 0
 
 
 # ===========================================================================
-# DSL-014: Lumon rules (LM1)
+# DSL-014 / SHARED-012: Lumon rules (LM1) — unified for lumon + sandbox
 # ===========================================================================
 
 
 class TestLM1LumonConfigRequiresLumon:
-    """LM1: lumon_config requires lumon = true at flow and node level."""
+    """LM1: a ``LumonConfig.config_path`` requires ``enabled = true`` at the
+    same scope (flow or node). Node-level ``LumonConfig`` fully overrides
+    flow-level, so a node with its own ``LumonConfig`` does NOT inherit the
+    flow's ``enabled``.
+    """
 
     def test_flow_lumon_config_without_lumon_is_error(self) -> None:
-        """lumon_config at flow level with lumon defaulting to false."""
-        flow = _minimal_flow(lumon_config="strict.lumon.json")
+        """config_path at flow level with enabled defaulting to false."""
+        flow = _minimal_flow(
+            lumon=LumonConfig(enabled=False, plugins=None, config_path="strict.lumon.json")
+        )
         errors = check_flow(flow)
         lm1 = _errors_with_rule(errors, "LM1")
         assert len(lm1) == 1
         assert "lumon_config requires lumon = true" in lm1[0].message
 
     def test_flow_lumon_false_with_config_is_error(self) -> None:
-        """Explicit lumon = false with lumon_config."""
-        flow = _minimal_flow(lumon=False, lumon_config="strict.lumon.json")
+        """Explicit enabled=False with config_path."""
+        flow = _minimal_flow(
+            lumon=LumonConfig(enabled=False, plugins=None, config_path="strict.lumon.json")
+        )
         errors = check_flow(flow)
-        lm1 = _errors_with_rule(errors, "LM1")
-        assert len(lm1) == 1
+        assert len(_errors_with_rule(errors, "LM1")) == 1
 
     def test_flow_lumon_true_with_config_is_valid(self) -> None:
-        """lumon = true with lumon_config is valid."""
-        flow = _minimal_flow(lumon=True, lumon_config="strict.lumon.json")
+        flow = _minimal_flow(
+            lumon=LumonConfig(enabled=True, plugins=None, config_path="strict.lumon.json")
+        )
         errors = check_flow(flow)
-        lm1 = _errors_with_rule(errors, "LM1")
-        assert len(lm1) == 0
+        assert len(_errors_with_rule(errors, "LM1")) == 0
 
     def test_flow_lumon_true_without_config_is_valid(self) -> None:
-        """lumon = true without lumon_config is valid."""
-        flow = _minimal_flow(lumon=True)
+        flow = _minimal_flow(lumon=LumonConfig(enabled=True))
         errors = check_flow(flow)
-        lm1 = _errors_with_rule(errors, "LM1")
-        assert len(lm1) == 0
+        assert len(_errors_with_rule(errors, "LM1")) == 0
 
     def test_node_lumon_false_with_config_is_error(self) -> None:
-        """Node sets lumon = false with lumon_config."""
+        """Node has its own LumonConfig with config_path but enabled=False."""
         nodes = {
             "start": Node(
                 name="start",
                 node_type=NodeType.ENTRY,
                 prompt="begin",
-                lumon=False,
-                lumon_config="node.lumon.json",
+                lumon=LumonConfig(enabled=False, plugins=None, config_path="node.lumon.json"),
             ),
             "end": Node(name="end", node_type=NodeType.EXIT, prompt="done"),
         }
-        flow = _minimal_flow(nodes=nodes, lumon=True)
+        flow = _minimal_flow(nodes=nodes, lumon=LumonConfig(enabled=True))
         errors = check_flow(flow)
         lm1 = _errors_with_rule(errors, "LM1")
         assert len(lm1) == 1
         assert "start" in lm1[0].message
-
-    def test_node_lumon_config_inherits_false_from_flow_is_error(self) -> None:
-        """Node sets lumon_config, inherits lumon = false from flow."""
-        nodes = {
-            "start": Node(
-                name="start",
-                node_type=NodeType.ENTRY,
-                prompt="begin",
-                lumon_config="node.lumon.json",
-            ),
-            "end": Node(name="end", node_type=NodeType.EXIT, prompt="done"),
-        }
-        flow = _minimal_flow(nodes=nodes, lumon=False)
-        errors = check_flow(flow)
-        lm1 = _errors_with_rule(errors, "LM1")
-        assert len(lm1) == 1
-        assert "start" in lm1[0].message
-
-    def test_node_lumon_config_inherits_true_from_flow_is_valid(self) -> None:
-        """Node sets lumon_config, inherits lumon = true from flow."""
-        nodes = {
-            "start": Node(
-                name="start",
-                node_type=NodeType.ENTRY,
-                prompt="begin",
-                lumon_config="node.lumon.json",
-            ),
-            "end": Node(name="end", node_type=NodeType.EXIT, prompt="done"),
-        }
-        flow = _minimal_flow(nodes=nodes, lumon=True)
-        errors = check_flow(flow)
-        lm1 = _errors_with_rule(errors, "LM1")
-        assert len(lm1) == 0
 
     def test_node_lumon_true_with_config_overrides_flow_false(self) -> None:
-        """Node with lumon = true and lumon_config is valid even if flow lumon = false."""
+        """Node-level enabled=True is valid even when flow has enabled=False."""
         nodes = {
             "start": Node(
                 name="start",
                 node_type=NodeType.ENTRY,
                 prompt="begin",
-                lumon=True,
-                lumon_config="node.lumon.json",
+                lumon=LumonConfig(enabled=True, plugins=None, config_path="node.lumon.json"),
             ),
             "end": Node(name="end", node_type=NodeType.EXIT, prompt="done"),
         }
-        flow = _minimal_flow(nodes=nodes, lumon=False)
+        flow = _minimal_flow(nodes=nodes, lumon=LumonConfig(enabled=False))
         errors = check_flow(flow)
-        lm1 = _errors_with_rule(errors, "LM1")
-        assert len(lm1) == 0
+        assert len(_errors_with_rule(errors, "LM1")) == 0
 
     def test_no_lumon_attrs_is_valid(self) -> None:
         """Default flow (no lumon attrs) has no LM1 errors."""
         flow = _minimal_flow()
         errors = check_flow(flow)
-        lm1 = _errors_with_rule(errors, "LM1")
-        assert len(lm1) == 0
+        assert len(_errors_with_rule(errors, "LM1")) == 0
 
     def test_lumon_fixture_type_checks(self) -> None:
-        """The valid_lumon.flow fixture should type-check with no LM1 errors."""
+        """The valid_lumon.flow fixture has no LM1 errors."""
         flow = parse_flow(load_fixture("valid_lumon.flow"))
         errors = check_flow(flow)
-        lm1 = _errors_with_rule(errors, "LM1")
-        assert len(lm1) == 0
+        assert len(_errors_with_rule(errors, "LM1")) == 0
+
+    def test_flow_lumon_config_via_parser_flagged(self) -> None:
+        """Parser-layer compat: ``lumon_config`` without ``lumon = true``
+        still flags LM1 through the parser (round-trip with old syntax).
+        """
+        source = (
+            "flow f { budget = 1h on_error = pause context = handoff "
+            'lumon_config = "strict.lumon.json" '
+            "input { task_name: string } "
+            'entry a { prompt = "x" } exit b { prompt = "y" } a -> b }'
+        )
+        flow = parse_flow(source)
+        errors = check_flow(flow)
+        assert len(_errors_with_rule(errors, "LM1")) == 1

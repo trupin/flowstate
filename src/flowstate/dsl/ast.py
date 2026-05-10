@@ -48,6 +48,26 @@ class TaskTypeField:
 
 
 @dataclass(frozen=True)
+class LumonConfig:
+    """Configuration for the Lumon security/sandboxing layer.
+
+    Used on both ``Flow`` and ``Node`` as ``lumon: LumonConfig | None``.
+
+    - ``None`` (at the Node level) means "inherit from flow".
+    - ``LumonConfig(enabled=False)`` means "explicitly disabled at this scope,
+      do not inherit".
+    - ``plugins = None`` means "not specified at this level" — fall back to
+      ``config_path`` or inherit from parent (handled by the engine).
+      An empty tuple ``()`` means "explicitly no plugins beyond the built-in
+      flowstate plugin".
+    """
+
+    enabled: bool = False
+    plugins: tuple[str, ...] | None = None
+    config_path: str | None = None
+
+
+@dataclass(frozen=True)
 class Node:
     name: str
     node_type: NodeType
@@ -56,10 +76,7 @@ class Node:
     judge: bool | None = None
     harness: str | None = None
     subtasks: bool | None = None
-    sandbox: bool | None = None
-    sandbox_policy: str | None = None
-    lumon: bool | None = None
-    lumon_config: str | None = None
+    lumon: LumonConfig | None = None
     wait_delay_seconds: int | None = None
     wait_until_cron: str | None = None
     line: int = 0
@@ -100,10 +117,7 @@ class Flow:
     harness: str = "claude"
     worktree: bool = True
     subtasks: bool = False
-    sandbox: bool = False
-    sandbox_policy: str | None = None
-    lumon: bool = False
-    lumon_config: str | None = None
+    lumon: LumonConfig | None = None
     input_fields: tuple[TaskTypeField, ...] = ()
     output_fields: tuple[TaskTypeField, ...] = ()
     max_parallel: int = 1

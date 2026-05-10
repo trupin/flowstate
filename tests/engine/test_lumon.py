@@ -12,7 +12,7 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
-from flowstate.dsl.ast import ContextMode, ErrorPolicy, Flow, Node, NodeType
+from flowstate.dsl.ast import ContextMode, ErrorPolicy, Flow, LumonConfig, Node, NodeType
 from flowstate.engine.lumon import (
     LumonDeployError,
     LumonNotInstalledError,
@@ -31,6 +31,27 @@ if TYPE_CHECKING:
 # ---------------------------------------------------------------------------
 
 
+def _flat_to_config(
+    *,
+    lumon: bool | None,
+    sandbox: bool | None,
+    lumon_config: str | None,
+    sandbox_policy: str | None,
+) -> LumonConfig | None:
+    """Mirror the parser-layer mapping from flat syntax onto ``LumonConfig``.
+
+    Kept in the test helpers so existing test cases keep their declarative
+    flat-keyword call sites while exercising the post-SHARED-012 AST shape.
+    Precedence for ``config_path``: ``lumon_config`` > ``sandbox_policy``
+    (preserves prior engine resolution order).
+    """
+    if lumon is None and sandbox is None and lumon_config is None and sandbox_policy is None:
+        return None
+    enabled = bool(lumon) or bool(sandbox)
+    config_path = lumon_config if lumon_config is not None else sandbox_policy
+    return LumonConfig(enabled=enabled, plugins=None, config_path=config_path)
+
+
 def _make_flow(
     *,
     lumon: bool = False,
@@ -44,10 +65,12 @@ def _make_flow(
         on_error=ErrorPolicy.PAUSE,
         context=ContextMode.HANDOFF,
         workspace="/workspace",
-        lumon=lumon,
-        sandbox=sandbox,
-        lumon_config=lumon_config,
-        sandbox_policy=sandbox_policy,
+        lumon=_flat_to_config(
+            lumon=lumon,
+            sandbox=sandbox,
+            lumon_config=lumon_config,
+            sandbox_policy=sandbox_policy,
+        ),
     )
 
 
@@ -63,10 +86,12 @@ def _make_node(
         name=name,
         node_type=NodeType.TASK,
         prompt="Do the task",
-        lumon=lumon,
-        sandbox=sandbox,
-        lumon_config=lumon_config,
-        sandbox_policy=sandbox_policy,
+        lumon=_flat_to_config(
+            lumon=lumon,
+            sandbox=sandbox,
+            lumon_config=lumon_config,
+            sandbox_policy=sandbox_policy,
+        ),
     )
 
 

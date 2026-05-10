@@ -1,12 +1,18 @@
 """Lumon sandboxing -- deploy, plugin management, and config resolution.
 
 Handles Lumon sandbox setup for task execution:
-- Resolving whether Lumon is active for a given flow/node
-- Resolving the .lumon.json config path (node overrides flow, sandbox_policy aliases lumon_config)
+- Resolving whether Lumon is active for a given flow/node (via ``LumonConfig``).
+- Resolving the .lumon.json config path (node overrides flow).
 - Creating and populating the plugins/ directory with symlinks
 - Copying .lumon.json config when specified
 - Running `lumon deploy` before subprocess launch
 - Creating the sandbox/ directory
+
+SHARED-012 migrated the flat ``flow.lumon``/``flow.sandbox`` booleans and
+``flow.lumon_config``/``flow.sandbox_policy`` strings to a single
+``LumonConfig`` block on ``Flow`` and ``Node``. The legacy flat syntax is
+still accepted at the parser layer (see ``_build_lumon_from_flat``) and
+collapses to the same ``LumonConfig`` shape, so behavior is preserved.
 """
 
 from __future__ import annotations
@@ -37,28 +43,28 @@ class LumonNotInstalledError(Exception):
 def _use_lumon(flow: Flow, node: Node) -> bool:
     """Check if Lumon sandboxing is active for this node.
 
-    Returns True when the node or flow has lumon=True or sandbox=True.
-    Node-level settings override flow-level (None means inherit).
+    Node-level ``LumonConfig`` fully overrides flow-level when present. A
+    ``None`` ``lumon`` on the node means "inherit from flow".
     """
-    lumon = node.lumon if node.lumon is not None else flow.lumon
-    sandbox = node.sandbox if node.sandbox is not None else flow.sandbox
-    return bool(lumon or sandbox)
+    cfg = node.lumon if node.lumon is not None else flow.lumon
+    return cfg is not None and cfg.enabled
 
 
 def _lumon_config(flow: Flow, node: Node) -> str | None:
-    """Resolve the .lumon.json config path.
+    """Resolve the ``.lumon.json`` config path.
 
-    Priority: node.lumon_config > node.sandbox_policy > flow.lumon_config > flow.sandbox_policy.
-    Returns None if no config is specified at any level.
+    Priority: node ``config_path`` (when the node has its own ``LumonConfig``)
+    > flow ``config_path``. Returns None if no config path is specified at
+    either level.
+
+    Note: node-level ``LumonConfig`` fully overrides flow-level (it does not
+    merge), so a node that sets ``LumonConfig(enabled=True)`` with no
+    ``config_path`` does NOT inherit the flow's ``config_path``.
     """
-    if node.lumon_config is not None:
-        return node.lumon_config
-    if node.sandbox_policy is not None:
-        return node.sandbox_policy
-    if flow.lumon_config is not None:
-        return flow.lumon_config
-    if flow.sandbox_policy is not None:
-        return flow.sandbox_policy
+    if node.lumon is not None:
+        return node.lumon.config_path
+    if flow.lumon is not None:
+        return flow.lumon.config_path
     return None
 
 
