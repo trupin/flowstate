@@ -125,7 +125,20 @@ fn main() {
 
             Ok(())
         })
-        .on_window_event(|_window, _event| {})
+        .on_window_event(|window, event| {
+            // When the main UI window is closed/destroyed, drop the
+            // activation policy back to `Accessory` so the Dock icon
+            // disappears again. We promote to `Regular` only while the
+            // window is on screen (see `open_ui_window`).
+            if window.label() == UI_WINDOW_LABEL {
+                if let tauri::WindowEvent::Destroyed = event {
+                    #[cfg(target_os = "macos")]
+                    let _ = window
+                        .app_handle()
+                        .set_activation_policy(tauri::ActivationPolicy::Accessory);
+                }
+            }
+        })
         .run(tauri::generate_context!())
         .expect("error while running flowstate-desktop");
 }
@@ -138,7 +151,10 @@ fn on_menu_event(app: &AppHandle, id: &str) {
             stop_server(app);
             app.exit(0);
         }
-        crate::menu::ID_OPEN_UI | crate::menu::ID_OPEN_BROWSER => {
+        crate::menu::ID_OPEN_UI => {
+            open_ui_window(app);
+        }
+        crate::menu::ID_OPEN_BROWSER => {
             open_ui_in_browser(app);
         }
         crate::menu::ID_SWITCH_PROJECT => {
@@ -176,18 +192,83 @@ fn on_menu_event(app: &AppHandle, id: &str) {
     }
 }
 
-/// Open the running server's UI in the user's default browser.
-fn open_ui_in_browser(app: &AppHandle) {
-    let port = {
-        let state_mutex = app.state::<Mutex<AppState>>();
-        let guard = state_mutex.lock().expect("AppState poisoned");
-        guard.server.as_ref().map(|s| s.port()).unwrap_or(0)
-    };
+/// Resolve the running server's UI URL, or `None` if no server is running.
+fn current_ui_url(app: &AppHandle) -> Option<String> {
+    let state_mutex = app.state::<Mutex<AppState>>();
+    let guard = state_mutex.lock().expect("AppState poisoned");
+    let port = guard.server.as_ref().map(|s| s.port()).unwrap_or(0);
     if port == 0 {
+        None
+    } else {
+        Some(format!("http://127.0.0.1:{port}/"))
+    }
+}
+
+/// Stable label for the singleton Tauri webview window that hosts the
+/// React UI. Used to look the window up so subsequent "Open UI" clicks
+/// focus the existing window instead of creating duplicates.
+const UI_WINDOW_LABEL: &str = "main_ui";
+
+/// Open the running server's UI inside a Tauri webview window. If the
+/// window already exists, focus it. Falls back to the browser if window
+/// creation fails (rare; e.g. malformed URL).
+fn open_ui_window(app: &AppHandle) {
+    let Some(url) = current_ui_url(app) else {
         log::warn!("Open UI requested but no server is running.");
         return;
+    };
+
+    // If the window already exists, just focus it (don't reload).
+    if let Some(window) = app.get_webview_window(UI_WINDOW_LABEL) {
+        let _ = window.unminimize();
+        let _ = window.show();
+        let _ = window.set_focus();
+        return;
     }
-    let url = format!("http://127.0.0.1:{port}/");
+
+    let parsed_url: tauri::Url = match url.parse() {
+        Ok(u) => u,
+        Err(e) => {
+            log::warn!("invalid UI URL {url}: {e}");
+            return;
+        }
+    };
+
+    // macOS Accessory policy: an app with no Dock icon can still host
+    // webview windows, but bringing the window to the foreground is
+    // unreliable from a tray-menu callback. Promote to Regular while the
+    // window is being created so it actually surfaces; we leave the
+    // policy as Regular while a window exists (drops back to Accessory
+    // on the on_window_event Destroyed handler in main()).
+    #[cfg(target_os = "macos")]
+    let _ = app.set_activation_policy(tauri::ActivationPolicy::Regular);
+
+    let result = tauri::WebviewWindowBuilder::new(
+        app,
+        UI_WINDOW_LABEL,
+        tauri::WebviewUrl::External(parsed_url),
+    )
+    .title("Flowstate")
+    .inner_size(1280.0, 860.0)
+    .min_inner_size(800.0, 600.0)
+    .focused(true)
+    .build();
+
+    if let Err(e) = result {
+        log::warn!("failed to open UI window: {e}; falling back to browser.");
+        // Restore Accessory immediately on failure.
+        #[cfg(target_os = "macos")]
+        let _ = app.set_activation_policy(tauri::ActivationPolicy::Accessory);
+        open_ui_in_browser(app);
+    }
+}
+
+/// Open the running server's UI in the user's default browser.
+fn open_ui_in_browser(app: &AppHandle) {
+    let Some(url) = current_ui_url(app) else {
+        log::warn!("Open in Browser requested but no server is running.");
+        return;
+    };
     // `open` is being moved to `tauri-plugin-opener` upstream, but
     // `tauri-plugin-shell` still ships it for v2 and it's the simplest
     // dep to keep for v0. The #[allow] silences the deprecation warning
