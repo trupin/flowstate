@@ -717,6 +717,34 @@ class AcpHarness:
         ):
             yield event
 
+    async def run_task_with_system_prompt(
+        self,
+        system_prompt: str,
+        init_message: str,
+        workspace: str,
+        session_id: str,
+        *,
+        skip_permissions: bool = False,
+        model: str | None = None,
+        settings: str | None = None,
+    ) -> AsyncGenerator[StreamEvent, None]:
+        """System-prompt dispatch is not supported by the ACP harness.
+
+        The Agent Client Protocol does not currently expose a dedicated
+        system-prompt input. Rather than silently inlining the persona
+        into the user prompt (which would change agent semantics compared
+        to the subprocess CLI's ``--system-prompt``), we fail loudly when
+        an ``agent``-using node hits this harness.
+        """
+        del system_prompt, init_message, workspace, session_id
+        del skip_permissions, model, settings
+        raise NotImplementedError(
+            "AcpHarness does not support run_task_with_system_prompt; "
+            "Node.agent (agent.md persona) requires the 'claude' subprocess "
+            "harness. Switch the node/flow harness or remove the agent attribute."
+        )
+        yield  # type: ignore[unreachable]  # make this an async generator
+
     async def run_judge(
         self,
         prompt: str,

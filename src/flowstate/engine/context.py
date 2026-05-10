@@ -4,14 +4,18 @@ Prepares everything needed before launching a Claude Code subprocess:
 - Constructing prompts based on context mode (handoff, session, none, join)
 - Expanding {{param}} template variables
 - Resolving the effective context mode from edge/flow configuration
+- Loading per-node agent personas from ``agent.md`` files (ENGINE-086)
 """
 
 from __future__ import annotations
 
 import os
 import re
+from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
+
+import yaml
 
 if TYPE_CHECKING:
     from flowstate.dsl.ast import ContextMode, Edge, Flow, Node
@@ -23,6 +27,21 @@ class CwdResolutionError(Exception):
     This covers two failure modes:
     - Neither node.cwd nor flow.workspace is set (and no auto-gen fallback applies).
     - A resolved path does not exist or is not a directory.
+    """
+
+
+class AgentPersonaError(Exception):
+    """Raised when an ``agent.md`` persona file cannot be loaded at run-time.
+
+    Covers three failure modes:
+    - The persona file referenced by ``Node.agent`` is missing (was present at
+      type-check time but deleted before execution).
+    - The persona file's YAML frontmatter is malformed.
+    - The persona file is unreadable (permissions, encoding, etc).
+
+    The type checker (rules AG1/AG2) catches missing files and malformed
+    frontmatter at parse time; this exception is the defense-in-depth path
+    for races between type-check and execution.
     """
 
 
@@ -535,3 +554,161 @@ def lumon_plugin_dir() -> str:
     setting up a Lumon-enabled task.
     """
     return os.path.join(os.path.dirname(__file__), "lumon_plugin")
+
+
+# ---------------------------------------------------------------------------
+# Agent persona loading (ENGINE-086)
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class AgentPersona:
+    """A parsed ``agent.md`` persona file.
+
+    - ``system_prompt`` is the file body with frontmatter stripped and any
+      ``{{template_var}}`` substitutions applied.
+    - ``model`` is the frontmatter ``model:`` field if present, else ``None``.
+      The engine maps this to a registered harness name; if no matching
+      harness exists, a warning is logged and the node/flow harness is used.
+    - ``raw_frontmatter`` is the full parsed YAML frontmatter dict (empty if
+      the file has no frontmatter block). Recorded for observability; only
+      ``model`` is acted on in ENGINE-086.
+    - ``source_path`` is the absolute path the persona was loaded from.
+    """
+
+    system_prompt: str
+    model: str | None
+    raw_frontmatter: dict[str, Any]
+    source_path: Path
+
+
+def _user_global_agents_dir() -> Path:
+    """Return ``~/.claude/agents`` (the user-global persona lookup directory).
+
+    Mirrors ``flowstate.dsl.type_checker._user_global_agents_dir``; duplicated
+    here to keep the engine independent of DSL-internal helpers. Resolution
+    precedence must remain in sync between DSL and engine.
+    """
+    return Path.home() / ".claude" / "agents"
+
+
+def _resolve_agent_md(name: str, flow_file_dir: Path | None) -> Path | None:
+    """Resolve a persona name to an existing ``agent.md`` file.
+
+    Lookup precedence (matches Claude Code's standard resolution, and
+    ``dsl.type_checker._resolve_agent_md``):
+      1. ``<flow_dir>/agents/<name>.md`` (when ``flow_file_dir`` is provided)
+      2. ``~/.claude/agents/<name>.md``
+
+    Returns the first existing path, or ``None`` if neither exists.
+    """
+    candidates: list[Path] = []
+    if flow_file_dir is not None:
+        candidates.append(flow_file_dir / "agents" / f"{name}.md")
+    candidates.append(_user_global_agents_dir() / f"{name}.md")
+    for candidate in candidates:
+        if candidate.is_file():
+            return candidate
+    return None
+
+
+def _split_frontmatter(text: str) -> tuple[dict[str, Any], str]:
+    """Split a persona file's YAML frontmatter from its body.
+
+    A frontmatter block is delimited by ``---`` on its own line as the first
+    non-empty line, terminated by another ``---`` on its own line.
+
+    Returns ``(frontmatter_dict, body)``. If no frontmatter block is present,
+    returns ``({}, text)``.
+
+    Raises :class:`AgentPersonaError` if a frontmatter block starts but is
+    unterminated or contains invalid YAML. (The type checker catches these at
+    parse time via AG2; this is defense-in-depth for files mutated between
+    type-check and execution.)
+    """
+    if not (text.startswith("---\n") or text.startswith("---\r\n")):
+        return ({}, text)
+
+    lines = text.splitlines(keepends=True)
+    if not lines or lines[0].strip() != "---":
+        return ({}, text)
+
+    closing_idx: int | None = None
+    for i in range(1, len(lines)):
+        if lines[i].strip() == "---":
+            closing_idx = i
+            break
+    if closing_idx is None:
+        raise AgentPersonaError("persona frontmatter started with '---' but has no closing '---'")
+
+    frontmatter_text = "".join(lines[1:closing_idx])
+    try:
+        parsed = yaml.safe_load(frontmatter_text)
+    except yaml.YAMLError as e:
+        raise AgentPersonaError(f"malformed YAML in persona frontmatter: {e}") from e
+
+    frontmatter: dict[str, Any] = parsed if isinstance(parsed, dict) else {}
+    body = "".join(lines[closing_idx + 1 :])
+    # Strip a single leading newline after the closing ``---`` so the body
+    # starts at the next content line without an awkward blank prefix.
+    if body.startswith("\n"):
+        body = body[1:]
+    elif body.startswith("\r\n"):
+        body = body[2:]
+    return (frontmatter, body)
+
+
+def load_agent_persona(
+    node: Node,
+    flow_file_dir: Path | None,
+    params: dict[str, str | float | bool],
+) -> AgentPersona | None:
+    """Load and parse the ``agent.md`` persona referenced by *node*.
+
+    Returns ``None`` if ``node.agent`` is unset (no-op for legacy nodes).
+
+    The resolved file is read, YAML frontmatter (if any) is parsed, and
+    ``{{template_var}}`` substitutions are applied to the body using *params*
+    (the same param dict that expands the node's ``prompt``).
+
+    Raises :class:`AgentPersonaError` if:
+      - the persona file is missing (e.g. deleted between type-check and run)
+      - the file is unreadable
+      - the frontmatter is malformed
+    """
+    if node.agent is None:
+        return None
+
+    path = _resolve_agent_md(node.agent, flow_file_dir)
+    if path is None:
+        flow_dir_repr = (
+            str(flow_file_dir / "agents") if flow_file_dir is not None else "<flow_dir>/agents"
+        )
+        user_dir_repr = str(_user_global_agents_dir())
+        raise AgentPersonaError(
+            f"agent '{node.agent}' on node '{node.name}' not found at run-time "
+            f"(looked in {flow_dir_repr}/{node.agent}.md and "
+            f"{user_dir_repr}/{node.agent}.md). The file may have been deleted "
+            "between type-check and execution."
+        )
+
+    try:
+        text = path.read_text()
+    except OSError as e:
+        raise AgentPersonaError(
+            f"failed to read persona file for agent '{node.agent}' "
+            f"on node '{node.name}': {e} (path: {path})"
+        ) from e
+
+    frontmatter, body = _split_frontmatter(text)
+    expanded_body = expand_templates(body, params)
+
+    model_value = frontmatter.get("model")
+    model: str | None = model_value if isinstance(model_value, str) else None
+
+    return AgentPersona(
+        system_prompt=expanded_body,
+        model=model,
+        raw_frontmatter=frontmatter,
+        source_path=path,
+    )

@@ -40,10 +40,11 @@ from flowstate.engine.context import (
     build_task_management_instructions,
     expand_templates,
     get_context_mode,
+    load_agent_persona,
     resolve_cwd,
 )
 from flowstate.engine.events import EventType, FlowEvent
-from flowstate.engine.harness import DEFAULT_HARNESS, HarnessManager
+from flowstate.engine.harness import DEFAULT_HARNESS, HarnessManager, HarnessNotFoundError
 from flowstate.engine.judge import JudgeContext, JudgeDecision, JudgePauseError, JudgeProtocol
 from flowstate.engine.lumon import _use_lumon, setup_lumon
 from flowstate.engine.subprocess_mgr import StreamEvent, StreamEventType
@@ -280,6 +281,11 @@ class FlowExecutor:
         self._flow: Flow | None = None
         self._flow_run_id: str | None = None
         self._expanded_prompts: dict[str, str] = {}
+        # ENGINE-086: params dict from execute(...) — used at task-launch time
+        # to expand template vars inside agent.md persona bodies (the kickoff
+        # prompt's params are baked into prompt_text at task-creation time;
+        # the persona body is loaded fresh per task and needs the same dict).
+        self._params: dict[str, str | float | bool] = {}
         self._budget: BudgetGuard | None = None
         self._completed_queue: asyncio.Queue[str] | None = None
         # Per-node worktree cleanup setting
@@ -447,6 +453,10 @@ class FlowExecutor:
         self._flow = flow
         self._flow_run_id = flow_run_id
         self._expanded_prompts = expanded_prompts
+        # ENGINE-086: persist params so agent.md bodies can be expanded at
+        # task-launch time (the kickoff prompt was already expanded during
+        # _create_task_execution, but the persona body is loaded fresh).
+        self._params = dict(params)
         self._budget = budget
         self._paused = False
         self._cancelled = False
@@ -2044,6 +2054,9 @@ class FlowExecutor:
         self._flow = flow
         self._flow_run_id = flow_run_id
         self._expanded_prompts = expanded_prompts
+        # ENGINE-086: persist params so agent.md bodies can be expanded at
+        # task-launch time (see execute()).
+        self._params = dict(params)
         self._budget = budget
         self._paused = False
         self._cancelled = False
@@ -2662,6 +2675,34 @@ class FlowExecutor:
 
             # Resolve harness: node-level overrides flow-level
             harness_name = node.harness or flow.harness
+
+            # ENGINE-086: agent.md persona loading and harness override.
+            # Load the persona BEFORE selecting the harness so frontmatter
+            # `model:` can swap the active harness (with fallback warning).
+            # Raises AgentPersonaError if the file is missing/malformed at
+            # run-time — defense in depth vs. the type checker's AG1/AG2.
+            persona_flow_dir: Path | None = None
+            if self._flow_file_dir is not None:
+                persona_flow_dir = Path(self._flow_file_dir)
+            elif self._flow_file is not None:
+                persona_flow_dir = self._flow_file.parent
+            persona = load_agent_persona(node, persona_flow_dir, self._params)
+
+            if persona is not None and persona.model:
+                try:
+                    self._harness_mgr.get(persona.model)
+                except HarnessNotFoundError:
+                    logger.warning(
+                        "agent.md frontmatter on node %r requested model %r but no "
+                        "matching harness is registered; falling back to node/flow "
+                        "harness %r",
+                        node.name,
+                        persona.model,
+                        harness_name,
+                    )
+                else:
+                    harness_name = persona.model
+
             harness: Harness = self._harness_mgr.get(harness_name)
             # Track session -> harness name for kill() dispatch
             self._session_harness[session_id] = harness_name
@@ -2692,13 +2733,27 @@ class FlowExecutor:
             if lumon_active:
                 lumon_settings = str(Path(task_exec.cwd) / ".claude" / "settings.json")
 
-            # Determine if this is a session resume or fresh task
+            # Determine if this is a session resume or fresh task.
+            # ENGINE-086: when node.agent is set on a fresh task, dispatch via
+            # the system-prompt variant. For session resumes, we re-use the
+            # existing session (the system prompt was set on the original
+            # run-task call); subsequent resume prompts don't re-set it.
             if task_exec.context_mode == ContextMode.SESSION.value and task_exec.claude_session_id:
                 stream = harness.run_task_resume(
                     task_exec.prompt_text,
                     task_exec.cwd,
                     task_exec.claude_session_id,
                     skip_permissions=skip_perms,
+                    settings=lumon_settings,
+                )
+            elif persona is not None:
+                stream = harness.run_task_with_system_prompt(
+                    persona.system_prompt,
+                    task_exec.prompt_text,
+                    task_exec.cwd,
+                    session_id,
+                    skip_permissions=skip_perms,
+                    model=None,
                     settings=lumon_settings,
                 )
             else:

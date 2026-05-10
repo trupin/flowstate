@@ -59,6 +59,18 @@ class Harness(Protocol):
         settings: str | None = None,
     ) -> AsyncGenerator[StreamEvent, None]: ...
 
+    def run_task_with_system_prompt(
+        self,
+        system_prompt: str,
+        init_message: str,
+        workspace: str,
+        session_id: str,
+        *,
+        skip_permissions: bool = False,
+        model: str | None = None,
+        settings: str | None = None,
+    ) -> AsyncGenerator[StreamEvent, None]: ...
+
     def run_task_resume(
         self,
         prompt: str,

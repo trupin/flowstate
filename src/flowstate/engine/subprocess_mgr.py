@@ -110,6 +110,7 @@ class SubprocessManager:
         *,
         skip_permissions: bool = False,
         model: str | None = None,
+        settings: str | None = None,
     ) -> AsyncGenerator[StreamEvent, None]:
         """Launch a Claude Code session with a system prompt and short init message.
 
@@ -118,7 +119,11 @@ class SubprocessManager:
         the system prompt is treated as context, not a prompt to respond to.
 
         Constructs: claude -p "<init>" --system-prompt "<system>" --output-format stream-json --verbose
+
+        The *settings* parameter is accepted for Harness protocol compatibility
+        but ignored — the CLI subprocess discovers settings from cwd.
         """
+        del settings  # accepted for Harness protocol parity; CLI uses cwd-based discovery
         cmd = [
             "claude",
             "-p",
