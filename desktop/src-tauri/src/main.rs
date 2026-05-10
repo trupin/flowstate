@@ -139,8 +139,23 @@ fn main() {
                 }
             }
         })
-        .run(tauri::generate_context!())
-        .expect("error while running flowstate-desktop");
+        .build(tauri::generate_context!())
+        .expect("error while running flowstate-desktop")
+        .run(|_app_handle, event| {
+            // Menubar-app lifecycle: closing the UI window (or all
+            // windows) must NOT terminate the process — the tray icon
+            // and the supervised flowstate server should keep running.
+            // Tauri fires `ExitRequested` after the last window closes
+            // on macOS; calling `api.prevent_exit()` keeps the run loop
+            // alive. The only legitimate exit path is the tray's
+            // `Quit Flowstate` menu item, which calls `app.exit(0)`
+            // directly and bypasses this guard.
+            if let tauri::RunEvent::ExitRequested { api, code, .. } = event {
+                if code.is_none() {
+                    api.prevent_exit();
+                }
+            }
+        });
 }
 
 /// Dispatcher for tray menu events. The string IDs come from `menu.rs`.
