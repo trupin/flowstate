@@ -35,6 +35,7 @@ flowstate.db
 # Claude Code ephemeral files
 .claude/plans/
 .claude/handoffs/
+.claude/worktrees/
 .claude/settings.local.json
 .claude/project.configured
 .claude/scheduled_tasks.lock

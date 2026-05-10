@@ -439,7 +439,7 @@
 | Issue      | Title                                                        | Domain | Priority | Depends On  | Status |
 | ---------- | ------------------------------------------------------------ | ------ | -------- | ----------- | ------ |
 | UI-066     | Show decision and summary artifacts in node detail view      | ui     | P1       | SERVER-022  | done   |
-| E2E-015    | Real sandbox E2E test suite (no mocking)                     | e2e    | P1       | ENGINE-072, ENGINE-073 | blocked |
+| E2E-015    | Real sandbox E2E test suite (no mocking)                     | e2e    | P1       | ENGINE-072, ENGINE-073 | done (superseded by Phase 27 — OpenShell removed) |
 
 
 ### Phase 25d — Sandbox Infrastructure Fixes
