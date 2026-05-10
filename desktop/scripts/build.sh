@@ -72,6 +72,20 @@ fi
 
 echo "[build] flowstate-desktop $VERSION ($TRIPLE)"
 
+# UI-076: when TAURI_SIGNING_PRIVATE_KEY (or _PATH) is set, `cargo tauri
+# build` signs the bundle and emits a .sig file next to the .dmg. That
+# signature gets pasted into the `platforms.<target>.signature` field of
+# `desktop/updater/latest.json`. Without the env var, the build still
+# succeeds but produces an unsigned bundle — fine for local testing,
+# never for a release. Print a clear warning either way so maintainers
+# never accidentally publish an unsigned release.
+if [[ -n "${TAURI_SIGNING_PRIVATE_KEY:-}${TAURI_SIGNING_PRIVATE_KEY_PATH:-}" ]]; then
+  echo "[build] signing enabled — TAURI_SIGNING_PRIVATE_KEY{,_PATH} present"
+else
+  echo "[build] WARNING: no TAURI_SIGNING_PRIVATE_KEY{,_PATH} set — bundle will be UNSIGNED"
+  echo "[build]          (fine for local testing; never for a release upload)"
+fi
+
 # --- Step 1: build the wheel + vendor Python. ---
 # Tauri bundles `desktop/python/` as a resource (UI-075). Always rebuild
 # the wheel + re-vendor so the bundled python matches the source tree.
@@ -102,11 +116,24 @@ fi
 DMG_OUT="$DIST_DIR/Flowstate-${VERSION}-${SHORT_ARCH}.dmg"
 cp "$DMG_SRC" "$DMG_OUT"
 
+# UI-076: if Tauri produced a .sig file alongside the .dmg (signing was
+# enabled), copy it next to the renamed DMG. Its contents are pasted
+# into `desktop/updater/latest.json` for the GitHub Releases manifest.
+SIG_SRC="${DMG_SRC}.sig"
+SIG_OUT=""
+if [[ -f "$SIG_SRC" ]]; then
+  SIG_OUT="${DMG_OUT}.sig"
+  cp "$SIG_SRC" "$SIG_OUT"
+fi
+
 # --- Step 4: report. ---
 echo
 echo "[build] done."
 echo "  .app:  ${APP_SRC:-(missing)}"
 echo "  .dmg:  $DMG_OUT"
+if [[ -n "$SIG_OUT" ]]; then
+  echo "  .sig:  $SIG_OUT"
+fi
 echo
 if [[ -n "$APP_SRC" ]]; then
   printf '  app size: '; du -sh "$APP_SRC" | awk '{print $1}'
@@ -116,3 +143,10 @@ echo
 echo "Distribute the .dmg via GitHub Releases. First-launch users will hit"
 echo "macOS Gatekeeper — see desktop/README.md for the right-click → Open"
 echo "workaround."
+if [[ -n "$SIG_OUT" ]]; then
+  echo
+  echo "Updater signature: paste the contents of"
+  echo "  $SIG_OUT"
+  echo "into desktop/updater/latest.json under platforms.<target>.signature"
+  echo "and upload latest.json + the .dmg to the GitHub Release. (UI-076)"
+fi

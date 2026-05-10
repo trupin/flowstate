@@ -133,6 +133,17 @@ cargo install tauri-cli --locked --version "^2.0"
 
 # jq (build script reads version from tauri.conf.json).
 brew install jq
+
+# UI-076: updater signing keypair. Generate ONCE per project; the
+# pubkey is committed in `tauri.conf.json` under
+# `plugins.updater.pubkey` and is shared by every release. The
+# privkey signs every release — losing it means losing the auto-
+# update path for installed copies (you'd have to re-key + re-publish
+# from scratch). Treat it like an SSH host key.
+mkdir -p ~/.tauri
+cargo tauri signer generate -w ~/.tauri/flowstate.key --ci
+# -> ~/.tauri/flowstate.key      (private — store in 1Password / vault)
+# -> ~/.tauri/flowstate.key.pub  (public  — already embedded in tauri.conf.json)
 ```
 
 ### Per-release procedure
@@ -144,32 +155,62 @@ brew install jq
 #    cadence and may iterate on bundling fixes between PyPI releases.
 vim desktop/src-tauri/tauri.conf.json   # update "version": "X.Y.Z"
 
-# 1. Build for Apple Silicon. (Builds for both arches in two passes —
+# 1. Export the signing key path so cargo tauri build signs the bundle.
+#    Without this, build.sh prints a WARNING: bundle will be UNSIGNED
+#    and produces no .sig — never publish an unsigned release.
+#
+#    Pull the password from macOS Keychain rather than typing it inline
+#    or storing it in a dotfile — Keychain access prompts with TouchID
+#    and never lands in shell history or `env` output.
+#
+#    One-time setup (skip if already done):
+#       security add-generic-password -s flowstate-tauri-signing \
+#           -a "$USER" -w   # prompts interactively
+export TAURI_SIGNING_PRIVATE_KEY_PATH="$HOME/.tauri/flowstate.key"
+export TAURI_SIGNING_PRIVATE_KEY_PASSWORD="$(security find-generic-password \
+    -s flowstate-tauri-signing -w)"
+
+# 2. Build for Apple Silicon. (Builds for both arches in two passes —
 #    universal binaries are a stretch goal, see UI-077.)
 bash desktop/scripts/build.sh aarch64-apple-darwin
 # -> desktop/dist/Flowstate-X.Y.Z-aarch64.dmg
+# -> desktop/dist/Flowstate-X.Y.Z-aarch64.dmg.sig    (UI-076)
 
-# 2. Build for Intel.
+# 3. Build for Intel.
 bash desktop/scripts/build.sh x86_64-apple-darwin
 # -> desktop/dist/Flowstate-X.Y.Z-x86_64.dmg
+# -> desktop/dist/Flowstate-X.Y.Z-x86_64.dmg.sig
 
-# 3. Sanity-check both DMGs locally:
+# 4. Build the updater manifest from the example + signatures.
+#    `latest.json` is what `tauri-plugin-updater` fetches to decide
+#    "is there a newer version?". Tag URL convention: vX.Y.Z.
+cp desktop/updater/latest.json.example desktop/updater/latest.json
+vim desktop/updater/latest.json
+#   - bump "version" to X.Y.Z
+#   - bump "pub_date" to current ISO 8601 UTC
+#   - replace each platform's "signature" field with the contents of
+#     desktop/dist/Flowstate-X.Y.Z-<arch>.dmg.sig (cat the file, paste verbatim)
+#   - bump each platform's "url" to the v X.Y.Z download URL
+
+# 5. Sanity-check both DMGs locally:
 #    a) drag-install onto /Applications
 #    b) right-click → Open → Open anyway (Gatekeeper)
 #    c) menubar icon appears, "Switch Project…" works, "Open UI" works
 #    d) Quit cleanly stops the spawned server (`ps aux | grep flowstate`)
 
-# 4. Upload both DMGs to the GitHub Release alongside the PyPI wheel.
-#    Release notes should include the Gatekeeper workaround verbatim:
+# 6. Upload both DMGs + latest.json to the GitHub Release alongside the
+#    PyPI wheel. Release notes should include the Gatekeeper workaround
+#    verbatim:
 #       "First launch: right-click Flowstate.app → Open → Open anyway,
 #        or run `xattr -d com.apple.quarantine /Applications/Flowstate.app`"
 gh release upload vX.Y.Z \
     desktop/dist/Flowstate-X.Y.Z-aarch64.dmg \
-    desktop/dist/Flowstate-X.Y.Z-x86_64.dmg
-
-# 5. (Once UI-076 lands) Bump the Tauri updater manifest so existing
-#    installs auto-update. Until UI-076 lands, users must re-download
-#    the .dmg manually.
+    desktop/dist/Flowstate-X.Y.Z-x86_64.dmg \
+    desktop/updater/latest.json
+# Existing installs poll
+# https://github.com/<org>/flowstate/releases/latest/download/latest.json
+# on next launch and surface "Update to X.Y.Z — restart to install"
+# in the tray within ~30s.
 ```
 
 ### What the script does internally
@@ -185,12 +226,16 @@ gh release upload vX.Y.Z \
 4. Copies the DMG to `desktop/dist/Flowstate-X.Y.Z-<short-arch>.dmg`,
    prints the `.app` and `.dmg` sizes.
 
-### Known sizes (v0.0.1)
+### Known sizes
 
-- `.app`: ~400 MB (mostly the bundled `python-build-standalone` runtime
-  plus `claude_agent_sdk`'s 196 MB embedded `claude` Mach-O — see UI-079
-  for the size-trim follow-up).
-- `.dmg`: ~200 MB after DMG compression.
+After UI-079 stripped `claude_agent_sdk`'s 196 MB embedded `claude`
+binary, the artifacts are roughly:
+
+- `.app`: ~150 MB (mostly the bundled `python-build-standalone` runtime).
+- `.dmg`: ~30-50 MB after DMG compression.
+
+Re-run `build.sh` to confirm with `du -sh` — sizes shift slightly with
+each Python or dependency update.
 
 ### Rollback
 

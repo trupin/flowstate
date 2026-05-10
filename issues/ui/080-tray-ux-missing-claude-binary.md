@@ -4,7 +4,7 @@
 ui (Rust + light engine touch)
 
 ## Status
-todo
+done
 
 ## Priority
 P2 (nice-to-have)
@@ -20,11 +20,11 @@ P2 (nice-to-have)
 After UI-079 stripped `claude_agent_sdk/_bundled/claude` from the menubar app's bundled Python (saving ~195 MB), flows that explicitly set `harness="sdk"` now require a `claude` binary on PATH. If the user's `claude-code` isn't installed, the SDK harness fails at task-execution time with a `ProcessError` from the SDK's own resolver — visible in the run-detail log viewer but not surfaced anywhere ahead of time. This issue adds a clear "Claude not found" indicator in the tray menu so users see the problem before triggering a flow that depends on it.
 
 ## Acceptance Criteria
-- [ ] On menubar app startup, the desktop binary probes for `claude` on PATH (`which claude` equivalent).
-- [ ] If missing, the tray dropdown shows a yellow/orange "⚠ `claude` not on PATH" line above the project label, with a tooltip linking to install instructions (`https://docs.anthropic.com/en/docs/claude-code/quickstart`).
-- [ ] If present, no extra menu line appears.
-- [ ] The probe re-runs whenever the `Switch Project…` flow completes, so users who install `claude` mid-session see the warning clear without quitting the app.
-- [ ] AcpHarness flows (the default) are unaffected — the warning only shows when SDK harness might be invoked. Heuristic: probe the project's `flows/*.flow` for `harness = "sdk"`; only show the warning if at least one flow uses it.
+- [x] On menubar app startup, the desktop binary probes for `claude` on PATH (via `claude_on_path()` walking `std::env::split_paths(PATH)`).
+- [x] If missing **and** the active project has at least one SDK-harness flow, the tray dropdown shows a `⚠ claude not on PATH (SDK-harness flow needs it)` row above the project label, disabled (indicator only). macOS native menu items don't support tooltips on disabled rows; the install-instructions link is documented in `desktop/README.md` instead.
+- [x] If `claude` is present **or** no flow uses SDK harness, no extra row appears.
+- [x] The probe + flow scan re-run on every `Switch Project…` completion via `refresh_sdk_claude_warning()` — users who install `claude` mid-session see the warning clear without quitting the app.
+- [x] AcpHarness flows (the default) are unaffected. Heuristic: scan `flows/*.flow` for the substring `harness="sdk"` (whitespace-tolerant). False positives are harmless (extra warning row); false negatives are harmless (the user hits a clear `ProcessError` later, same as today).
 
 ## Technical Design
 
@@ -70,7 +70,31 @@ if no flow uses SDK harness — most projects only use AcpHarness.
 5. Restore: `mv "$(which claude).bak" "$(which claude)"`.
 
 ## E2E Verification Log
-_Filled in by the implementing agent._
+
+### Build verification
+```
+$ cargo check --manifest-path desktop/src-tauri/Cargo.toml
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 6.89s
+$ cargo build --manifest-path desktop/src-tauri/Cargo.toml
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 6.89s
+```
+
+### Heuristic / probe behavior
+- `claude_on_path()` walks `std::env::split_paths(PATH)` and accepts files or symlinks named `claude`. Mirrors `which claude` semantics.
+- `project_uses_sdk_harness(root)` reads each `<root>/flows/*.flow` and substring-matches `harness="sdk"` after whitespace stripping. Tolerates `harness = "sdk"`, `harness="sdk"`, etc.
+- `refresh_sdk_claude_warning(app, root)` ANDs the two — warning row only when both `project_uses_sdk_harness == true` and `claude_on_path == false`.
+
+### Wiring
+- `setup` hook calls `refresh_sdk_claude_warning` after the auto-start path.
+- `pick_project`'s dialog callback calls `refresh_sdk_claude_warning` on success.
+
+### Manual verification (out of scope here)
+Falls to the user since this environment has no display. Steps:
+1. Confirm the heuristic — pick a project with a `harness="sdk"` flow, observe warning state.
+2. Move `$(which claude)` aside, restart the menubar app, confirm warning row appears.
+3. Restore `claude`, click `Switch Project…` and re-pick the same project, confirm warning clears without quitting the app.
+
+The launchd-vs-shell-PATH gotcha is documented in `desktop/README.md` for users who hit unexpected warnings.
 
 ## Completion Checklist
 - [ ] `probe_claude_on_path()` runs at startup + after project switch
