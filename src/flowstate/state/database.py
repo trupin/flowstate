@@ -73,6 +73,12 @@ class FlowstateDB:
         if version < 1:
             # Migration 1: Add 'pausing' to flow_runs.status CHECK constraint.
             # SQLite doesn't support ALTER CHECK, so we recreate the table.
+            #
+            # The SELECT lists columns explicitly (not SELECT *) so this
+            # migration is robust against later additive migrations that grow
+            # the schema.sql table definition. New columns added after this
+            # one (e.g. source_branch in migration 2) are intentionally not
+            # carried over here — migration 2 re-adds them on top.
             self._conn.executescript("""
                 PRAGMA foreign_keys=OFF;
                 BEGIN;
@@ -98,8 +104,17 @@ class FlowstateDB:
                     task_id TEXT REFERENCES tasks(id)
                 );
 
-                INSERT OR IGNORE INTO flow_runs_new
-                    SELECT * FROM flow_runs;
+                INSERT OR IGNORE INTO flow_runs_new (
+                    id, flow_definition_id, status, default_workspace, data_dir,
+                    params_json, budget_seconds, elapsed_seconds, on_error,
+                    started_at, completed_at, created_at, error_message,
+                    worktree_path, task_id
+                ) SELECT
+                    id, flow_definition_id, status, default_workspace, data_dir,
+                    params_json, budget_seconds, elapsed_seconds, on_error,
+                    started_at, completed_at, created_at, error_message,
+                    worktree_path, task_id
+                FROM flow_runs;
 
                 DROP TABLE flow_runs;
                 ALTER TABLE flow_runs_new RENAME TO flow_runs;
@@ -110,6 +125,26 @@ class FlowstateDB:
                 PRAGMA foreign_keys=ON;
                 PRAGMA user_version=1;
             """)
+
+        if version < 2:
+            # Migration 2 (STATE-013): Add nullable source_branch column to
+            # flow_runs. Captures the original workspace's branch at run-start
+            # when worktree_persist = true so the engine can merge the exit
+            # worktree back into it at run-completion. Existing rows get NULL
+            # (no backfill).
+            #
+            # If the column already exists (e.g. the schema.sql in
+            # _initialize_schema ran first and created the table with the new
+            # column), the ALTER will raise. Use PRAGMA table_info to check
+            # first so the migration is idempotent across upgrade and fresh-DB
+            # paths.
+            existing_columns = {
+                row[1] for row in self._conn.execute("PRAGMA table_info(flow_runs)").fetchall()
+            }
+            if "source_branch" not in existing_columns:
+                self._conn.execute("ALTER TABLE flow_runs ADD COLUMN source_branch TEXT")
+            self._conn.execute("PRAGMA user_version=2")
+            self._conn.commit()
 
     @property
     def connection(self) -> sqlite3.Connection:

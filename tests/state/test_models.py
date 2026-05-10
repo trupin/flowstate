@@ -67,6 +67,23 @@ def test_flow_run_row_defaults() -> None:
     assert row.started_at is None
     assert row.completed_at is None
     assert row.error_message is None
+    # STATE-013: source_branch defaults to None when not set
+    assert row.source_branch is None
+
+
+def test_flow_run_row_source_branch_field() -> None:
+    """STATE-013: FlowRunRow accepts and exposes source_branch."""
+    row = FlowRunRow(
+        id="run-1",
+        flow_definition_id="def-1",
+        status="running",
+        data_dir="/tmp/flowstate/run-1",
+        budget_seconds=300,
+        on_error="pause",
+        created_at="2024-01-01T00:00:00",
+        source_branch="main",
+    )
+    assert row.source_branch == "main"
 
 
 def test_flow_run_row_all_fields() -> None:

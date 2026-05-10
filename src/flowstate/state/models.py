@@ -37,6 +37,7 @@ class FlowRunRow(BaseModel):
     error_message: str | None = None
     worktree_path: str | None = None
     task_id: str | None = None
+    source_branch: str | None = None
 
 
 class TaskExecutionRow(BaseModel):
