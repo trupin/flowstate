@@ -1,0 +1,5 @@
+{
+  "name": "filesystem",
+  "description": "Test fixture plugin for ENGINE-087: minimal filesystem plugin stub.",
+  "version": "0.0.0"
+}

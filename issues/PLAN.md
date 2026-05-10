@@ -612,7 +612,7 @@ Replaces flat `lumon = true` / `lumon_config = "..."` / `sandbox = ...` / `sandb
 | SHARED-012  | `LumonConfig` dataclass and AST migration                              | shared | P1       | —                         | done   |
 | SERVER-033  | Adapt `routes.py` flow listing to nested `lumon` AST shape             | server | P1       | SHARED-012                | done   |
 | DSL-016     | `lumon { ... }` block syntax + type-check rules L1/L2/L3               | dsl    | P1       | SHARED-012                | done   |
-| ENGINE-087  | Adapt Lumon resolution to `LumonConfig`; synthesize `.lumon.json`      | engine | P1       | SHARED-012                | todo   |
+| ENGINE-087  | Adapt Lumon resolution to `LumonConfig`; synthesize `.lumon.json`      | engine | P1       | SHARED-012                | done   |
 
 ### Phase 37c — Persist exit worktree to source branch
 
