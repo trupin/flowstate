@@ -845,6 +845,56 @@ class TestWorktreeParameter:
 
 
 # ---------------------------------------------------------------------------
+# Additional: worktree_persist parameter (DSL-017)
+# ---------------------------------------------------------------------------
+
+
+class TestWorktreePersistParameter:
+    """Test ``worktree_persist`` boolean flow attribute (DSL-017)."""
+
+    def test_flow_worktree_persist_true(self):
+        source = (
+            "flow f { budget = 1h on_error = pause context = handoff "
+            "worktree = true worktree_persist = true "
+            'entry a { prompt = "x" } exit b { prompt = "y" } a -> b }'
+        )
+        flow = parse_flow(source)
+        assert flow.worktree_persist is True
+        # Sanity: worktree still parses correctly alongside it.
+        assert flow.worktree is True
+
+    def test_flow_worktree_persist_false(self):
+        source = (
+            "flow f { budget = 1h on_error = pause context = handoff "
+            "worktree = true worktree_persist = false "
+            'entry a { prompt = "x" } exit b { prompt = "y" } a -> b }'
+        )
+        flow = parse_flow(source)
+        assert flow.worktree_persist is False
+
+    def test_flow_worktree_persist_default_is_false(self):
+        source = (
+            "flow f { budget = 1h on_error = pause context = handoff "
+            'entry a { prompt = "x" } exit b { prompt = "y" } a -> b }'
+        )
+        flow = parse_flow(source)
+        assert flow.worktree_persist is False
+
+    def test_flow_worktree_persist_true_with_worktree_false_still_parses(self):
+        """Parser accepts the combination; type checker (WP1) is responsible
+        for flagging it.
+        """
+        source = (
+            "flow f { budget = 1h on_error = pause context = handoff "
+            "worktree = false worktree_persist = true "
+            'entry a { prompt = "x" } exit b { prompt = "y" } a -> b }'
+        )
+        flow = parse_flow(source)
+        assert flow.worktree is False
+        assert flow.worktree_persist is True
+
+
+# ---------------------------------------------------------------------------
 # Flow-level input/output blocks
 # ---------------------------------------------------------------------------
 

@@ -117,6 +117,7 @@ class Flow:
     judge: bool = False
     harness: str = "claude"
     worktree: bool = True
+    worktree_persist: bool = False
     subtasks: bool = False
     lumon: LumonConfig | None = None
     input_fields: tuple[TaskTypeField, ...] = ()

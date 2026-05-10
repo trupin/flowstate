@@ -2103,3 +2103,67 @@ class TestAG2AgentFrontmatterParses:
         flow = parse_flow(flow_path.read_text())
         errors = check_flow(flow, flow_file_dir=tmp_path)
         assert _errors_with_rule(errors, "AG2") == []
+
+
+# ===========================================================================
+# DSL-017: Worktree persist rule (WP1)
+# ===========================================================================
+
+
+class TestWP1WorktreePersistRequiresWorktree:
+    """WP1: ``worktree_persist = true`` requires ``worktree = true``.
+
+    The persist mechanism (merge exit branch back to source branch on
+    completion, ENGINE-088) is meaningless without worktree isolation.
+    """
+
+    def test_persist_true_with_worktree_false_is_error(self) -> None:
+        flow = _minimal_flow(worktree=False, worktree_persist=True)
+        errors = check_flow(flow)
+        wp1 = _errors_with_rule(errors, "WP1")
+        assert len(wp1) == 1
+        # Error message must reference both attribute names per sprint contract.
+        assert "worktree_persist" in wp1[0].message
+        assert "worktree" in wp1[0].message
+
+    def test_persist_true_with_worktree_true_is_valid(self) -> None:
+        flow = _minimal_flow(worktree=True, worktree_persist=True)
+        errors = check_flow(flow)
+        assert _errors_with_rule(errors, "WP1") == []
+
+    def test_persist_false_with_worktree_false_is_valid(self) -> None:
+        """Both off — the default state with no persist intended. Valid."""
+        flow = _minimal_flow(worktree=False, worktree_persist=False)
+        errors = check_flow(flow)
+        assert _errors_with_rule(errors, "WP1") == []
+
+    def test_persist_false_with_worktree_true_is_valid(self) -> None:
+        """Worktrees used but cleaned up at run end (existing behavior). Valid."""
+        flow = _minimal_flow(worktree=True, worktree_persist=False)
+        errors = check_flow(flow)
+        assert _errors_with_rule(errors, "WP1") == []
+
+    def test_default_flow_has_no_WP1_error(self) -> None:
+        """A minimal flow has ``worktree_persist`` defaulting to false."""
+        flow = _minimal_flow()
+        # Sanity: the default values match what the spec promises.
+        assert flow.worktree_persist is False
+        errors = check_flow(flow)
+        assert _errors_with_rule(errors, "WP1") == []
+
+    def test_valid_fixture_type_checks_clean(self) -> None:
+        flow = parse_flow(load_fixture("valid_worktree_persist.flow"))
+        assert flow.worktree is True
+        assert flow.worktree_persist is True
+        errors = check_flow(flow)
+        assert errors == []
+
+    def test_invalid_fixture_fires_WP1(self) -> None:
+        flow = parse_flow(load_fixture("invalid_worktree_persist_no_worktree.flow"))
+        assert flow.worktree is False
+        assert flow.worktree_persist is True
+        errors = check_flow(flow)
+        wp1 = _errors_with_rule(errors, "WP1")
+        assert len(wp1) == 1
+        assert "worktree_persist" in wp1[0].message
+        assert "worktree" in wp1[0].message

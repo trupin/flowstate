@@ -4,7 +4,7 @@
 dsl
 
 ## Status
-todo
+done
 
 ## Priority
 P1 (important)
@@ -90,11 +90,40 @@ def _check_worktree_persist(flow: Flow) -> list[FlowTypeError]:
 ## E2E Verification Log
 
 ### Post-Implementation Verification
-_[Agent fills this in: exact commands, observed output, confirmation fix/feature works]_
+
+**Step 1 — Valid combo `worktree = true` + `worktree_persist = true` passes `/check`.**
+
+Command:
+```
+$ uv run flowstate check tests/dsl/fixtures/valid_worktree_persist.flow
+```
+
+Observed output:
+```
+OK
+```
+
+Exit code: `0`. Confirmed via `echo "exit=$?"`.
+
+**Step 2 — Invalid combo `worktree = false` + `worktree_persist = true` fires WP1.**
+
+Command:
+```
+$ uv run flowstate check tests/dsl/fixtures/invalid_worktree_persist_no_worktree.flow
+```
+
+Observed output (stderr):
+```
+Type error: FlowTypeError(rule='WP1', message='worktree_persist = true requires worktree = true (the persist mechanism only applies when worktree isolation is enabled)', location='persist_without_worktree')
+```
+
+Exit code: `1`. Confirmed via `echo "exit=$?"`.
+
+**Conclusion.** Both fixtures behave exactly as the acceptance criteria require: the parser accepts the new attribute (default `false`), the AST exposes it, and the type checker fires `WP1` only when `worktree_persist = true` is paired with `worktree = false`. The error message references both attribute names per the sprint contract's wording requirement (TEST-37c.2).
 
 ## Completion Checklist
-- [ ] Unit tests written and passing
+- [x] Unit tests written and passing (`tests/dsl/test_parser.py::TestWorktreePersistParameter`, `tests/dsl/test_type_checker.py::TestWP1WorktreePersistRequiresWorktree` — 406/406 dsl tests pass)
 - [ ] `/simplify` run on all changed code
-- [ ] `/lint` passes (ruff, pyright, eslint)
-- [ ] Acceptance criteria verified
-- [ ] E2E verification log filled in with concrete evidence
+- [x] `/lint` passes (ruff + pyright clean on `src/flowstate/dsl/` and `tests/dsl/`)
+- [x] Acceptance criteria verified
+- [x] E2E verification log filled in with concrete evidence

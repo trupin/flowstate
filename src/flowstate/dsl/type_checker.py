@@ -6,6 +6,7 @@ Implements the rules from specs.md Section 4:
   - C1-C3: Cycle rules (safe cycles)
   - F1-F3: Fork-join rules (parallel region scoping)
   - AG1-AG2: Agent persona file rules (DSL-015)
+  - WP1: Worktree persist rule (DSL-017)
 """
 
 from __future__ import annotations
@@ -46,6 +47,7 @@ def check_flow(flow: Flow, flow_file_dir: Path | None = None) -> list[FlowTypeEr
     errors.extend(_check_scheduling(flow))
     errors.extend(_check_lumon(flow))
     errors.extend(_check_agents(flow, flow_file_dir))
+    errors.extend(_check_worktree_persist(flow))
     return errors
 
 
@@ -1050,3 +1052,28 @@ def _check_agents(flow: Flow, flow_file_dir: Path | None) -> list[FlowTypeError]
             )
 
     return errors
+
+
+# ---------------------------------------------------------------------------
+# WP1: Worktree persist rule (DSL-017)
+# ---------------------------------------------------------------------------
+
+
+def _check_worktree_persist(flow: Flow) -> list[FlowTypeError]:
+    """WP1: ``worktree_persist = true`` requires ``worktree = true``.
+
+    The persist mechanism (merge exit branch back into the source branch at
+    run-completion, ENGINE-088) only applies when worktree isolation is on.
+    Setting ``worktree_persist`` without ``worktree`` is a meaningless
+    combination and surfaces as a type error here.
+    """
+    if flow.worktree_persist and not flow.worktree:
+        return [
+            FlowTypeError(
+                "WP1",
+                "worktree_persist = true requires worktree = true "
+                "(the persist mechanism only applies when worktree isolation is enabled)",
+                flow.name,
+            )
+        ]
+    return []

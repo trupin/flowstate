@@ -1,0 +1,27 @@
+// Test fixture: worktree_persist = true with worktree = true (valid combo)
+flow persist_pipeline {
+    budget = 1h
+    on_error = pause
+    context = handoff
+    worktree = true
+    worktree_persist = true
+
+    input {
+        task_name: string
+    }
+
+    entry start {
+        prompt = "Begin work"
+    }
+
+    task implement {
+        prompt = "Make the change"
+    }
+
+    exit finish {
+        prompt = "Commit the change"
+    }
+
+    start -> implement
+    implement -> finish
+}

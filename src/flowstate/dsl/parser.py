@@ -538,6 +538,9 @@ class _FlowTransformer(Transformer[Token, Flow]):
     def flow_worktree(self, items: list[Token]) -> tuple[str, bool]:
         return ("worktree", str(items[0]) == "true")
 
+    def flow_worktree_persist(self, items: list[Token]) -> tuple[str, bool]:
+        return ("worktree_persist", str(items[0]) == "true")
+
     def flow_subtasks(self, items: list[Token]) -> tuple[str, bool]:
         return ("subtasks", str(items[0]) == "true")
 
@@ -618,6 +621,7 @@ class _FlowTransformer(Transformer[Token, Flow]):
             judge=bool(attrs.get("judge", False)),
             harness=str(attrs["harness"]) if "harness" in attrs else "claude",
             worktree=bool(attrs.get("worktree", True)),
+            worktree_persist=bool(attrs.get("worktree_persist", False)),
             subtasks=bool(attrs.get("subtasks", False)),
             lumon=lumon_cfg,
             max_parallel=int(attrs.get("max_parallel", 1)),
