@@ -129,6 +129,36 @@ async def open_in_ide(body: OpenRequest) -> dict[str, str]:
 # ---------------------------------------------------------------------------
 
 
+def _node_to_frontend(n: dict[str, Any]) -> dict[str, Any]:
+    """Convert a serialized AST node dict to the frontend node contract.
+
+    Reads the post-SHARED-012 nested ``lumon`` block (``{"enabled": bool,
+    "plugins": list | None, "config_path": str | None}``) and surfaces both
+    the legacy ``sandbox``/``sandbox_policy`` aliases and the canonical
+    ``lumon``/``lumon_config`` fields. ``sandbox`` is an alias for ``lumon``
+    post-SHARED-012 — there is no longer a syntactic way to distinguish them.
+
+    A node with no ``lumon`` block at all yields ``None`` for all four output
+    fields (preserving the pre-SHARED-012 "absent override" semantics). A
+    node with ``lumon { enabled = false }`` explicitly yields ``False`` —
+    that is the explicit-disable override.
+    """
+    lumon_block = n.get("lumon") or {}
+    lumon_enabled: bool | None = lumon_block.get("enabled") if lumon_block else None
+    lumon_path: str | None = lumon_block.get("config_path") if lumon_block else None
+    return {
+        "name": n.get("name", ""),
+        "type": n.get("node_type", "task"),
+        "prompt": n.get("prompt", ""),
+        "cwd": n.get("cwd"),
+        # Sandbox is an alias for lumon post-SHARED-012 — same value.
+        "sandbox": lumon_enabled,
+        "sandbox_policy": lumon_path,
+        "lumon": lumon_enabled,
+        "lumon_config": lumon_path,
+    }
+
+
 def _flow_to_frontend(f: DiscoveredFlow, include_detail: bool = False) -> dict[str, Any]:
     """Convert a DiscoveredFlow to the frontend DiscoveredFlow contract.
 
@@ -151,32 +181,10 @@ def _flow_to_frontend(f: DiscoveredFlow, include_detail: bool = False) -> dict[s
         raw_nodes = f.ast_json.get("nodes", {})
         if isinstance(raw_nodes, dict):
             for n in raw_nodes.values():
-                nodes_out.append(
-                    {
-                        "name": n.get("name", ""),
-                        "type": n.get("node_type", "task"),
-                        "prompt": n.get("prompt", ""),
-                        "cwd": n.get("cwd"),
-                        "sandbox": n.get("sandbox"),
-                        "sandbox_policy": n.get("sandbox_policy"),
-                        "lumon": n.get("lumon"),
-                        "lumon_config": n.get("lumon_config"),
-                    }
-                )
+                nodes_out.append(_node_to_frontend(n))
         elif isinstance(raw_nodes, list):
             for n in raw_nodes:
-                nodes_out.append(
-                    {
-                        "name": n.get("name", ""),
-                        "type": n.get("node_type", "task"),
-                        "prompt": n.get("prompt", ""),
-                        "cwd": n.get("cwd"),
-                        "sandbox": n.get("sandbox"),
-                        "sandbox_policy": n.get("sandbox_policy"),
-                        "lumon": n.get("lumon"),
-                        "lumon_config": n.get("lumon_config"),
-                    }
-                )
+                nodes_out.append(_node_to_frontend(n))
         for e in f.ast_json.get("edges", []):
             edges_out.append(
                 {
@@ -204,16 +212,21 @@ def _flow_to_frontend(f: DiscoveredFlow, include_detail: bool = False) -> dict[s
     if f.ast_json:
         harness = f.ast_json.get("harness", "claude")
 
-    # Extract lumon/sandbox settings from the AST JSON (SERVER-025)
+    # Extract lumon/sandbox settings from the AST JSON (SERVER-025, SERVER-033).
+    # Post-SHARED-012 the AST exposes a single nested block:
+    #   {"lumon": {"enabled": bool, "plugins": [...] | None, "config_path": str | None}}
+    # Sandbox is an alias for lumon (both flat keys collapsed onto the same block
+    # at the parser layer), so we surface them as the same value.
     lumon = False
     sandbox = False
     lumon_config: str | None = None
     sandbox_policy: str | None = None
     if f.ast_json:
-        lumon = bool(f.ast_json.get("lumon", False))
-        sandbox = bool(f.ast_json.get("sandbox", False))
-        lumon_config = f.ast_json.get("lumon_config")
-        sandbox_policy = f.ast_json.get("sandbox_policy")
+        lumon_block = f.ast_json.get("lumon") or {}
+        lumon = bool(lumon_block.get("enabled", False))
+        sandbox = lumon
+        lumon_config = lumon_block.get("config_path")
+        sandbox_policy = lumon_config
 
     result: dict[str, Any] = {
         "id": f.id,

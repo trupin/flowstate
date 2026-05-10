@@ -4,7 +4,7 @@
 server
 
 ## Status
-todo
+done
 
 ## Priority
 P1 (important)
@@ -95,7 +95,137 @@ Add one new test that uses `{"lumon": {"enabled": False, "config_path": "x.json"
 ## E2E Verification Log
 
 ### Post-Implementation Verification
-_[Agent fills this in: exact commands, observed output, confirmation fix works]_
+
+Verified against the real dev server (`uv run flowstate server --host 127.0.0.1 --port 9090`)
+running out of the project root, watching `./flows/`. Server PID 13708. Six flows
+loaded from `flows/`: `agent_delegation`, `discuss_flowstate`, `implement_flowstate`,
+`lumon_flat_off`, `lumon_flat_on`, `sandbox_alias`. The latter three are dedicated
+fixtures created for this issue exercising the three relevant DSL shapes
+(flat `lumon = true`, no lumon block, flat `sandbox = true` alias).
+
+#### 1. List endpoint — `GET /api/flows`
+
+```
+$ curl -s http://localhost:9090/api/flows | python3 -c "
+import json, sys
+data = json.load(sys.stdin)
+for f in data:
+    print(f\"id={f['id']:25s} lumon={f.get('lumon')} sandbox={f.get('sandbox')}\")"
+id=agent_delegation          lumon=False sandbox=False
+id=discuss_flowstate         lumon=True sandbox=True
+id=implement_flowstate       lumon=False sandbox=False
+id=lumon_flat_off            lumon=False sandbox=False
+id=lumon_flat_on             lumon=True sandbox=True
+id=sandbox_alias             lumon=True sandbox=True
+```
+
+Conclusion: every flow's `lumon` and `sandbox` booleans match what the DSL contains.
+`sandbox = true` (in `discuss_flowstate` and `sandbox_alias`) correctly aliases onto
+`lumon = true` post-SHARED-012 — both fields are reported as `true` for the same flow.
+Flows with no lumon block (`agent_delegation`, `implement_flowstate`, `lumon_flat_off`)
+correctly report `false / false`. The pre-fix `bool(dict)` regression would have
+reported `lumon=true` for `lumon_flat_off` if the AST still emitted an empty
+`LumonConfig` dict — confirmed not the case here.
+
+#### 2. Detail endpoint — `GET /api/flows/<id>` for four representative cases
+
+```
+$ for id in lumon_flat_on sandbox_alias discuss_flowstate lumon_flat_off; do
+    echo "=== /api/flows/$id ==="
+    curl -s "http://localhost:9090/api/flows/$id" -o /tmp/d.json
+    python3 -c "
+import json
+with open('/tmp/d.json') as f: d = json.load(f)
+print(f\"  lumon={d.get('lumon')} sandbox={d.get('sandbox')} \"
+      f\"lumon_config={d.get('lumon_config')!r} sandbox_policy={d.get('sandbox_policy')!r}\")"
+  done
+=== /api/flows/lumon_flat_on ===
+  lumon=True sandbox=True lumon_config='policies/strict.json' sandbox_policy='policies/strict.json'
+=== /api/flows/sandbox_alias ===
+  lumon=True sandbox=True lumon_config='policies/network-none.json' sandbox_policy='policies/network-none.json'
+=== /api/flows/discuss_flowstate ===
+  lumon=True sandbox=True lumon_config=None sandbox_policy=None
+=== /api/flows/lumon_flat_off ===
+  lumon=False sandbox=False lumon_config=None sandbox_policy=None
+```
+
+DSL → API mapping verified:
+
+| Flow | DSL declaration | API `lumon` | API `sandbox` | API `lumon_config` | API `sandbox_policy` |
+|------|----------------|-------------|---------------|--------------------|----------------------|
+| `lumon_flat_on` | `lumon = true; lumon_config = "policies/strict.json"` | `true` | `true` | `"policies/strict.json"` | `"policies/strict.json"` |
+| `sandbox_alias` | `sandbox = true; sandbox_policy = "policies/network-none.json"` | `true` | `true` | `"policies/network-none.json"` | `"policies/network-none.json"` |
+| `discuss_flowstate` | `sandbox = true` (no policy path) | `true` | `true` | `null` | `null` |
+| `lumon_flat_off` | (no lumon / sandbox keys) | `false` | `false` | `null` | `null` |
+
+The `sandbox_alias` case is the strongest proof that the parser collapses
+both flat aliases onto a single nested `LumonConfig` block and that the
+route reads `config_path` from it — the API surfaces the user's
+`sandbox_policy = "..."` value through both `lumon_config` and
+`sandbox_policy` consistently.
+
+#### 3. Per-node fields — `GET /api/flows/discuss_flowstate`
+
+```
+$ curl -s http://localhost:9090/api/flows/discuss_flowstate -o /tmp/df.json
+$ python3 -c "
+import json
+with open('/tmp/df.json') as fp: d = json.load(fp)
+print('Flow-level:')
+print(f\"  lumon={d.get('lumon')} sandbox={d.get('sandbox')} \"
+      f\"lumon_config={d.get('lumon_config')!r} sandbox_policy={d.get('sandbox_policy')!r}\")
+print('Per-node:')
+for n in d.get('nodes', []):
+    print(f\"  {n['name']:12s} sandbox={n.get('sandbox')} sandbox_policy={n.get('sandbox_policy')!r} \"
+          f\"lumon={n.get('lumon')} lumon_config={n.get('lumon_config')!r}\")"
+Flow-level:
+  lumon=True sandbox=True lumon_config=None sandbox_policy=None
+Per-node:
+  moderator    sandbox=None sandbox_policy=None lumon=None lumon_config=None
+  alice        sandbox=None sandbox_policy=None lumon=None lumon_config=None
+  bob          sandbox=None sandbox_policy=None lumon=None lumon_config=None
+  done         sandbox=None sandbox_policy=None lumon=None lumon_config=None
+```
+
+Conclusion: `discuss_flowstate.flow` declares `sandbox = true` only at the
+flow level — no node has its own `lumon` override block — so every node
+reports `None` for all four fields. This matches the documented "absent
+override" semantics: only nodes with an explicit `lumon { ... }` block
+surface non-`None` values. The pre-fix code would have surfaced `True` for
+`sandbox` and `lumon` on every node (because `bool({})` evaluated against
+an empty dict from `n.get("lumon", {})` is `False`, but the old flat reads
+were inconsistent across branches) — verified not the case here.
+
+#### 4. Unit-test regression suite
+
+```
+$ uv run pytest tests/server/test_flow_discovery.py -k "TestFlowLumonSandboxFields" -v
+...
+tests/server/test_flow_discovery.py::TestFlowLumonSandboxFields::test_flow_list_includes_lumon_and_sandbox_booleans PASSED
+tests/server/test_flow_discovery.py::TestFlowLumonSandboxFields::test_flow_list_lumon_sandbox_default_false PASSED
+tests/server/test_flow_discovery.py::TestFlowLumonSandboxFields::test_flow_list_error_flow_lumon_sandbox_false PASSED
+tests/server/test_flow_discovery.py::TestFlowLumonSandboxFields::test_flow_detail_includes_all_lumon_sandbox_fields PASSED
+tests/server/test_flow_discovery.py::TestFlowLumonSandboxFields::test_flow_detail_lumon_config_absent_when_not_set PASSED
+tests/server/test_flow_discovery.py::TestFlowLumonSandboxFields::test_flow_list_does_not_include_config_details PASSED
+tests/server/test_flow_discovery.py::TestFlowLumonSandboxFields::test_per_node_lumon_sandbox_fields PASSED
+tests/server/test_flow_discovery.py::TestFlowLumonSandboxFields::test_flow_explicit_disabled_with_config_path PASSED
+tests/server/test_flow_discovery.py::TestFlowLumonSandboxFields::test_flow_block_syntax_plugins_no_config_path PASSED
+
+9 passed
+```
+
+All 9 `TestFlowLumonSandboxFields` tests pass with the migrated nested-shape
+fixtures, including the new `test_flow_explicit_disabled_with_config_path`
+(covers the previously-invisible `LumonConfig(enabled=False, config_path=...)`
+regression) and `test_flow_block_syntax_plugins_no_config_path` (covers
+`lumon { enabled = true plugins = ["filesystem"] }` block syntax).
+
+#### 5. Result
+
+Acceptance criteria 1, 2, 3, 4, 5 satisfied. The flat-key regression is closed:
+the routes read the nested `LumonConfig` dict directly and the unit tests
+mirror the real AST serialization path, so any future schema drift will surface
+in CI rather than only against the running app.
 
 ## Completion Checklist
 - [ ] Unit tests written and passing

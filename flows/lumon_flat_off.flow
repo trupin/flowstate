@@ -1,0 +1,20 @@
+flow lumon_flat_off {
+    budget = 10m
+    on_error = pause
+    context = handoff
+    workspace = "."
+
+    input {
+        description: string = "lumon flat off"
+    }
+
+    entry start {
+        prompt = "go"
+    }
+
+    exit done {
+        prompt = "bye"
+    }
+
+    start -> done
+}
