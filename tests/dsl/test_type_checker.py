@@ -1914,3 +1914,192 @@ class TestLM1LumonConfigRequiresLumon:
         flow = parse_flow(source)
         errors = check_flow(flow)
         assert len(_errors_with_rule(errors, "LM1")) == 1
+
+
+# ===========================================================================
+# DSL-015: Agent persona rules (AG1, AG2)
+# ===========================================================================
+
+
+class TestAG1AgentFileExists:
+    """AG1: when ``agent`` is set, the resolved persona file must exist."""
+
+    def test_resolved_in_flow_dir_is_valid(self) -> None:
+        """Persona file at <flow_dir>/agents/<name>.md type-checks clean."""
+        flow = parse_flow(load_fixture("valid_agent.flow"))
+        errors = check_flow(flow, flow_file_dir=FIXTURES)
+        ag1 = _errors_with_rule(errors, "AG1")
+        ag2 = _errors_with_rule(errors, "AG2")
+        assert ag1 == [], f"unexpected AG1 errors: {ag1}"
+        assert ag2 == [], f"unexpected AG2 errors: {ag2}"
+
+    def test_missing_agent_fires_AG1(self) -> None:
+        """A flow whose ``agent`` references no file in either lookup
+        location produces an AG1 error mentioning both paths.
+        """
+        flow = parse_flow(load_fixture("invalid_agent_missing.flow"))
+        errors = check_flow(flow, flow_file_dir=FIXTURES)
+        ag1 = _errors_with_rule(errors, "AG1")
+        assert len(ag1) == 1
+        msg = ag1[0].message
+        assert "definitely_not_a_persona" in msg
+        # Both lookup paths must appear in the error message.
+        assert "agents" in msg  # flow_dir/agents
+        assert ".claude/agents" in msg
+
+    def test_missing_with_no_flow_dir_falls_back_to_user_global(self, tmp_path: Path) -> None:
+        """When ``flow_file_dir`` is None we still report AG1 for a missing
+        user-global persona, citing the user-global path.
+        """
+        source = (
+            "flow f { budget = 1h on_error = pause context = handoff "
+            "input { task_name: string } "
+            'entry a { prompt = "x" agent = "definitely_not_a_persona_xyz" } '
+            'exit b { prompt = "y" } a -> b }'
+        )
+        flow = parse_flow(source)
+        errors = check_flow(flow, flow_file_dir=None)
+        ag1 = _errors_with_rule(errors, "AG1")
+        assert len(ag1) == 1
+        assert ".claude/agents" in ag1[0].message
+
+    def test_path_separator_in_agent_name_is_AG1(self) -> None:
+        """Values containing ``/`` are not bare names — reject with AG1."""
+        source = (
+            "flow f { budget = 1h on_error = pause context = handoff "
+            "input { task_name: string } "
+            'entry a { prompt = "x" agent = "foo/bar" } '
+            'exit b { prompt = "y" } a -> b }'
+        )
+        flow = parse_flow(source)
+        errors = check_flow(flow, flow_file_dir=FIXTURES)
+        ag1 = _errors_with_rule(errors, "AG1")
+        assert len(ag1) == 1
+        assert "bare" in ag1[0].message.lower()
+
+    def test_dot_in_agent_name_is_AG1(self) -> None:
+        """Values containing ``.`` (e.g. ``helly.md``) are not bare names."""
+        source = (
+            "flow f { budget = 1h on_error = pause context = handoff "
+            "input { task_name: string } "
+            'entry a { prompt = "x" agent = "helly.md" } '
+            'exit b { prompt = "y" } a -> b }'
+        )
+        flow = parse_flow(source)
+        errors = check_flow(flow, flow_file_dir=FIXTURES)
+        ag1 = _errors_with_rule(errors, "AG1")
+        assert len(ag1) == 1
+        assert "bare" in ag1[0].message.lower()
+
+    def test_empty_agent_name_is_AG1(self) -> None:
+        """Empty string is not a valid bare name."""
+        source = (
+            "flow f { budget = 1h on_error = pause context = handoff "
+            "input { task_name: string } "
+            'entry a { prompt = "x" agent = "" } '
+            'exit b { prompt = "y" } a -> b }'
+        )
+        flow = parse_flow(source)
+        errors = check_flow(flow, flow_file_dir=FIXTURES)
+        ag1 = _errors_with_rule(errors, "AG1")
+        assert len(ag1) == 1
+
+    def test_no_agent_attr_no_AG_errors(self) -> None:
+        """Nodes without ``agent`` produce no AG1/AG2 errors."""
+        flow = parse_flow(load_fixture("valid_linear.flow"))
+        errors = check_flow(flow, flow_file_dir=FIXTURES)
+        assert _errors_with_rule(errors, "AG1") == []
+        assert _errors_with_rule(errors, "AG2") == []
+
+    def test_check_flow_default_flow_file_dir_does_not_break_callers(self) -> None:
+        """Calling ``check_flow`` without ``flow_file_dir`` keeps existing
+        callers working — only AG1/AG2 lose flow-dir resolution.
+        """
+        flow = parse_flow(load_fixture("valid_linear.flow"))
+        # No agent attr, so omitting flow_file_dir must not raise or report.
+        errors = check_flow(flow)
+        assert _errors_with_rule(errors, "AG1") == []
+        assert _errors_with_rule(errors, "AG2") == []
+
+
+class TestAG2AgentFrontmatterParses:
+    """AG2: the resolved file's YAML frontmatter must parse if present."""
+
+    def _write_flow_with_agent(self, tmp_path: Path, agent_name: str, agent_md_body: str) -> Path:
+        """Write a tmp flow file referencing an agent persona; return the flow path."""
+        agents_dir = tmp_path / "agents"
+        agents_dir.mkdir()
+        (agents_dir / f"{agent_name}.md").write_text(agent_md_body)
+        flow_path = tmp_path / "test.flow"
+        flow_path.write_text(
+            "flow f { budget = 1h on_error = pause context = handoff "
+            "input { task_name: string } "
+            f'entry a {{ prompt = "x" agent = "{agent_name}" }} '
+            'exit b { prompt = "y" } a -> b }'
+        )
+        return flow_path
+
+    def test_valid_frontmatter_parses(self, tmp_path: Path) -> None:
+        flow_path = self._write_flow_with_agent(
+            tmp_path,
+            "demo",
+            "---\nname: Demo\nmodel: claude\n---\n\nbody text\n",
+        )
+        flow = parse_flow(flow_path.read_text())
+        errors = check_flow(flow, flow_file_dir=tmp_path)
+        assert _errors_with_rule(errors, "AG1") == []
+        assert _errors_with_rule(errors, "AG2") == []
+
+    def test_no_frontmatter_is_valid(self, tmp_path: Path) -> None:
+        """A persona file with no ``---`` markers is valid (frontmatter is optional)."""
+        flow_path = self._write_flow_with_agent(
+            tmp_path,
+            "demo",
+            "Just a body, no frontmatter.\n",
+        )
+        flow = parse_flow(flow_path.read_text())
+        errors = check_flow(flow, flow_file_dir=tmp_path)
+        assert _errors_with_rule(errors, "AG2") == []
+
+    def test_empty_file_is_valid(self, tmp_path: Path) -> None:
+        flow_path = self._write_flow_with_agent(tmp_path, "demo", "")
+        flow = parse_flow(flow_path.read_text())
+        errors = check_flow(flow, flow_file_dir=tmp_path)
+        assert _errors_with_rule(errors, "AG2") == []
+
+    def test_unterminated_frontmatter_is_AG2(self, tmp_path: Path) -> None:
+        """A file that opens with ``---`` but never closes it is AG2."""
+        flow_path = self._write_flow_with_agent(
+            tmp_path,
+            "demo",
+            "---\nname: never closes\ndescription: no closing marker\n",
+        )
+        flow = parse_flow(flow_path.read_text())
+        errors = check_flow(flow, flow_file_dir=tmp_path)
+        ag2 = _errors_with_rule(errors, "AG2")
+        assert len(ag2) == 1
+        assert "demo" in ag2[0].message
+
+    def test_malformed_yaml_is_AG2(self, tmp_path: Path) -> None:
+        """Frontmatter with invalid YAML produces AG2 with the file path."""
+        flow_path = self._write_flow_with_agent(
+            tmp_path,
+            "demo",
+            "---\nname: [unterminated\n---\nbody\n",
+        )
+        flow = parse_flow(flow_path.read_text())
+        errors = check_flow(flow, flow_file_dir=tmp_path)
+        ag2 = _errors_with_rule(errors, "AG2")
+        assert len(ag2) == 1
+        # The resolved path should appear in the error message for traceability.
+        assert "demo.md" in ag2[0].message
+
+    def test_frontmatter_only_no_body_is_valid(self, tmp_path: Path) -> None:
+        flow_path = self._write_flow_with_agent(
+            tmp_path,
+            "demo",
+            "---\nname: Demo\n---\n",
+        )
+        flow = parse_flow(flow_path.read_text())
+        errors = check_flow(flow, flow_file_dir=tmp_path)
+        assert _errors_with_rule(errors, "AG2") == []

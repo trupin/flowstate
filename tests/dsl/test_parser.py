@@ -2125,3 +2125,90 @@ class TestLumonFlatSyntaxRoundTrip:
         flow = parse_flow(source)
         assert flow.lumon is not None
         assert flow.lumon.config_path == "lc.json"
+
+
+# ---------------------------------------------------------------------------
+# DSL-015: agent persona attribute
+# ---------------------------------------------------------------------------
+
+
+class TestAgentAttribute:
+    """``agent = "<name>"`` parses at every node type and defaults to None."""
+
+    def test_default_agent_is_none(self):
+        source = (
+            "flow f { budget = 1h on_error = pause context = handoff "
+            "input { task_name: string } "
+            'entry a { prompt = "x" } exit b { prompt = "y" } a -> b }'
+        )
+        flow = parse_flow(source)
+        assert flow.nodes["a"].agent is None
+        assert flow.nodes["b"].agent is None
+
+    def test_entry_node_agent(self):
+        source = (
+            "flow f { budget = 1h on_error = pause context = handoff "
+            "input { task_name: string } "
+            'entry a { prompt = "x" agent = "demo" } '
+            'exit b { prompt = "y" } a -> b }'
+        )
+        flow = parse_flow(source)
+        assert flow.nodes["a"].agent == "demo"
+        assert flow.nodes["b"].agent is None
+
+    def test_task_node_agent(self):
+        source = (
+            "flow f { budget = 1h on_error = pause context = handoff "
+            "input { task_name: string } "
+            'entry a { prompt = "x" } '
+            'task t { prompt = "work" agent = "helly" } '
+            'exit b { prompt = "y" } a -> t t -> b }'
+        )
+        flow = parse_flow(source)
+        assert flow.nodes["t"].agent == "helly"
+
+    def test_exit_node_agent(self):
+        source = (
+            "flow f { budget = 1h on_error = pause context = handoff "
+            "input { task_name: string } "
+            'entry a { prompt = "x" } '
+            'exit b { prompt = "y" agent = "wrap_up" } a -> b }'
+        )
+        flow = parse_flow(source)
+        assert flow.nodes["b"].agent == "wrap_up"
+
+    def test_atomic_node_agent(self):
+        source = (
+            "flow f { budget = 1h on_error = pause context = handoff "
+            "input { task_name: string } "
+            'entry a { prompt = "x" } '
+            'atomic d { prompt = "deploy" agent = "deployer" } '
+            'exit b { prompt = "y" } a -> d d -> b }'
+        )
+        flow = parse_flow(source)
+        assert flow.nodes["d"].agent == "deployer"
+
+    def test_agent_does_not_affect_other_attrs(self):
+        """Setting ``agent`` does not implicitly set ``harness`` or any other
+        node attribute.
+        """
+        source = (
+            "flow f { budget = 1h on_error = pause context = handoff "
+            "input { task_name: string } "
+            'entry a { prompt = "x" agent = "demo" harness = "claude" } '
+            'exit b { prompt = "y" } a -> b }'
+        )
+        flow = parse_flow(source)
+        node_a = flow.nodes["a"]
+        assert node_a.agent == "demo"
+        assert node_a.harness == "claude"
+        # Other unrelated fields untouched.
+        assert node_a.lumon is None
+        assert node_a.judge is None
+
+    def test_valid_agent_fixture(self):
+        """The valid_agent.flow fixture parses with agent set on every node."""
+        flow = parse_flow(load_fixture("valid_agent.flow"))
+        assert flow.nodes["start"].agent == "demo"
+        assert flow.nodes["analyze"].agent == "demo"
+        assert flow.nodes["done"].agent == "demo"

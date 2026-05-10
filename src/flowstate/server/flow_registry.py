@@ -177,7 +177,7 @@ class FlowRegistry:
         try:
             flow_ast = parse_flow(source)
             flow_name = flow_ast.name
-            type_errors = check_flow(flow_ast)
+            type_errors = check_flow(flow_ast, flow_file_dir=abs_path.parent)
             if type_errors:
                 errors = [str(e) for e in type_errors]
             else:

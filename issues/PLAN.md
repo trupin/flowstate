@@ -600,7 +600,7 @@ Lets nodes reference reusable persona files (e.g. `agent = "helly"`) instead of 
 
 | Issue       | Title                                                        | Domain | Priority | Depends On  | Status |
 | ----------- | ------------------------------------------------------------ | ------ | -------- | ----------- | ------ |
-| DSL-015     | Add `agent` node attribute (parser, AST, type-check)         | dsl    | P1       | —           | todo   |
+| DSL-015     | Add `agent` node attribute (parser, AST, type-check)         | dsl    | P1       | —           | done   |
 | ENGINE-086  | Resolve `agent.md` and wire as subprocess system prompt      | engine | P1       | DSL-015     | todo   |
 
 ### Phase 37b — `lumon { ... }` config block

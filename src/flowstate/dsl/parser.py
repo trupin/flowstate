@@ -190,6 +190,9 @@ class _FlowTransformer(Transformer[Token, Flow]):
     def node_lumon_config(self, items: list[Token]) -> tuple[str, str]:
         return ("lumon_config", _strip_string(items[0]))
 
+    def node_agent(self, items: list[Token]) -> tuple[str, str]:
+        return ("agent", _strip_string(items[0]))
+
     def node_body(self, items: list[tuple[str, str | bool]]) -> dict[str, str | bool]:
         result: dict[str, str | bool] = {}
         for key, value in items:
@@ -209,6 +212,7 @@ class _FlowTransformer(Transformer[Token, Flow]):
         judge = body.get("judge")
         harness = body.get("harness")
         subtasks = body.get("subtasks")
+        agent = body.get("agent")
         return Node(
             name=name,
             node_type=NodeType.ENTRY,
@@ -218,6 +222,7 @@ class _FlowTransformer(Transformer[Token, Flow]):
             harness=str(harness) if harness is not None else None,
             subtasks=bool(subtasks) if subtasks is not None else None,
             lumon=_build_lumon_from_flat(body),
+            agent=str(agent) if agent is not None else None,
             line=_meta_line(meta),
             column=_meta_column(meta),
         )
@@ -233,6 +238,7 @@ class _FlowTransformer(Transformer[Token, Flow]):
         judge = body.get("judge")
         harness = body.get("harness")
         subtasks = body.get("subtasks")
+        agent = body.get("agent")
         return Node(
             name=name,
             node_type=NodeType.TASK,
@@ -242,6 +248,7 @@ class _FlowTransformer(Transformer[Token, Flow]):
             harness=str(harness) if harness is not None else None,
             subtasks=bool(subtasks) if subtasks is not None else None,
             lumon=_build_lumon_from_flat(body),
+            agent=str(agent) if agent is not None else None,
             line=_meta_line(meta),
             column=_meta_column(meta),
         )
@@ -257,6 +264,7 @@ class _FlowTransformer(Transformer[Token, Flow]):
         judge = body.get("judge")
         harness = body.get("harness")
         subtasks = body.get("subtasks")
+        agent = body.get("agent")
         return Node(
             name=name,
             node_type=NodeType.EXIT,
@@ -266,6 +274,7 @@ class _FlowTransformer(Transformer[Token, Flow]):
             harness=str(harness) if harness is not None else None,
             subtasks=bool(subtasks) if subtasks is not None else None,
             lumon=_build_lumon_from_flat(body),
+            agent=str(agent) if agent is not None else None,
             line=_meta_line(meta),
             column=_meta_column(meta),
         )
@@ -326,6 +335,7 @@ class _FlowTransformer(Transformer[Token, Flow]):
         judge = body.get("judge")
         harness = body.get("harness")
         subtasks = body.get("subtasks")
+        agent = body.get("agent")
         return Node(
             name=name,
             node_type=NodeType.ATOMIC,
@@ -335,6 +345,7 @@ class _FlowTransformer(Transformer[Token, Flow]):
             harness=str(harness) if harness is not None else None,
             subtasks=bool(subtasks) if subtasks is not None else None,
             lumon=_build_lumon_from_flat(body),
+            agent=str(agent) if agent is not None else None,
             line=_meta_line(meta),
             column=_meta_column(meta),
         )

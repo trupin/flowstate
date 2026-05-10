@@ -77,6 +77,7 @@ class Node:
     harness: str | None = None
     subtasks: bool | None = None
     lumon: LumonConfig | None = None
+    agent: str | None = None
     wait_delay_seconds: int | None = None
     wait_until_cron: str | None = None
     line: int = 0

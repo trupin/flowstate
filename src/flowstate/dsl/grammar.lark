@@ -72,6 +72,7 @@ node_attr: "prompt" "=" string  -> node_prompt
          | "sandbox_policy" "=" STRING -> node_sandbox_policy
          | "lumon" "=" BOOL_LIT -> node_lumon
          | "lumon_config" "=" STRING -> node_lumon_config
+         | "agent" "=" STRING -> node_agent
 
 // Edges
 edge_decl: simple_edge | cond_edge | fork_edge | join_edge | file_edge | file_cond_edge | file_delayed_edge | file_scheduled_edge | await_edge | await_cond_edge

@@ -5,13 +5,16 @@ Implements the rules from specs.md Section 4:
   - E1-E9: Edge rules (edge semantics)
   - C1-C3: Cycle rules (safe cycles)
   - F1-F3: Fork-join rules (parallel region scoping)
+  - AG1-AG2: Agent persona file rules (DSL-015)
 """
 
 from __future__ import annotations
 
 from collections import deque
 from dataclasses import dataclass
+from pathlib import Path
 
+import yaml
 from croniter import croniter
 
 from flowstate.dsl.ast import (
@@ -24,11 +27,16 @@ from flowstate.dsl.ast import (
 from flowstate.dsl.exceptions import FlowTypeError
 
 
-def check_flow(flow: Flow) -> list[FlowTypeError]:
+def check_flow(flow: Flow, flow_file_dir: Path | None = None) -> list[FlowTypeError]:
     """Validate a Flow AST against all type checking rules.
 
     Returns an empty list if the flow is valid, or a list of FlowTypeError
     instances describing each violation found.
+
+    ``flow_file_dir`` is the directory of the source ``.flow`` file. When
+    provided, agent persona files are resolved against it (AG1/AG2). When
+    omitted (e.g. parsing from a string with no path), only the
+    user-global ``~/.claude/agents/`` lookup is performed for AG1.
     """
     errors: list[FlowTypeError] = []
     errors.extend(_check_structural(flow))
@@ -37,6 +45,7 @@ def check_flow(flow: Flow) -> list[FlowTypeError]:
     errors.extend(_check_fork_join(flow))
     errors.extend(_check_scheduling(flow))
     errors.extend(_check_lumon(flow))
+    errors.extend(_check_agents(flow, flow_file_dir))
     return errors
 
 
@@ -895,6 +904,147 @@ def _check_lumon(flow: Flow) -> list[FlowTypeError]:
                     "LM1",
                     f"Node '{node.name}' sets lumon_config but lumon is not enabled"
                     " (lumon must be true, either on the node or inherited from flow)",
+                    node.name,
+                )
+            )
+
+    return errors
+
+
+# ---------------------------------------------------------------------------
+# AG1-AG2: Agent persona rules (DSL-015)
+# ---------------------------------------------------------------------------
+
+
+def _user_global_agents_dir() -> Path:
+    """Return ``~/.claude/agents`` (the user-global persona lookup directory)."""
+    return Path.home() / ".claude" / "agents"
+
+
+def _resolve_agent_md(name: str, flow_file_dir: Path | None) -> Path | None:
+    """Resolve an agent name to an existing ``agent.md`` file.
+
+    Lookup precedence (matches Claude Code's standard resolution):
+      1. ``<flow_dir>/agents/<name>.md`` (when ``flow_file_dir`` is provided)
+      2. ``~/.claude/agents/<name>.md``
+
+    Returns the first existing path, or ``None`` if neither exists.
+    """
+    candidates: list[Path] = []
+    if flow_file_dir is not None:
+        candidates.append(flow_file_dir / "agents" / f"{name}.md")
+    candidates.append(_user_global_agents_dir() / f"{name}.md")
+    for candidate in candidates:
+        if candidate.is_file():
+            return candidate
+    return None
+
+
+def _parse_agent_frontmatter(path: Path) -> None:
+    """Parse YAML frontmatter at the top of ``path`` if present.
+
+    A frontmatter block is a YAML document delimited by ``---`` on its own
+    line as the first non-empty line, terminated by another ``---`` on its
+    own line. If the file does not start with ``---`` the frontmatter is
+    considered absent (no-op).
+
+    Raises an exception (yaml or ValueError) if a frontmatter block is
+    started but malformed (unterminated or invalid YAML). Successful parse
+    is a no-op — we don't currently use the parsed values at type-check
+    time; we only verify they parse.
+    """
+    text = path.read_text()
+    if not text.startswith("---\n") and not text.startswith("---\r\n"):
+        # No frontmatter — nothing to validate.
+        return
+    # Split off the leading ``---`` line and find the closing one.
+    lines = text.splitlines()
+    if not lines or lines[0].strip() != "---":
+        return
+    closing_idx: int | None = None
+    for i in range(1, len(lines)):
+        if lines[i].strip() == "---":
+            closing_idx = i
+            break
+    if closing_idx is None:
+        raise ValueError("frontmatter started with '---' but has no closing '---'")
+    frontmatter_text = "\n".join(lines[1:closing_idx])
+    # ``yaml.safe_load`` raises ``yaml.YAMLError`` on malformed YAML. Empty
+    # frontmatter (returning None) is allowed.
+    yaml.safe_load(frontmatter_text)
+
+
+def _check_agents(flow: Flow, flow_file_dir: Path | None) -> list[FlowTypeError]:
+    """AG1/AG2: validate that ``agent`` references resolve to a parseable file.
+
+    AG1: when ``Node.agent`` is set, the resolved persona file must exist
+    in either ``<flow_dir>/agents/<name>.md`` or ``~/.claude/agents/<name>.md``.
+    Bare names only — values containing path separators or ``.`` are rejected
+    with a clear "only bare names allowed" error.
+
+    AG2: when AG1 succeeds, the resolved file's YAML frontmatter (if any)
+    must parse without error.
+    """
+    errors: list[FlowTypeError] = []
+    flow_dir_repr = (
+        str(flow_file_dir / "agents") if flow_file_dir is not None else "<flow_dir>/agents"
+    )
+    user_dir_repr = str(_user_global_agents_dir())
+
+    for node in flow.nodes.values():
+        if node.agent is None:
+            continue
+        agent_name = node.agent
+
+        # Empty string is not a valid bare name — surface AG1 with a clear
+        # message rather than letting an empty path resolve oddly.
+        if agent_name == "":
+            errors.append(
+                FlowTypeError(
+                    "AG1",
+                    f"agent attribute on node '{node.name}' is empty; "
+                    'expected a bare persona name (e.g. agent = "helly")',
+                    node.name,
+                )
+            )
+            continue
+
+        # Reject path-like values up front — only bare names allowed.
+        if any(ch in agent_name for ch in ("/", "\\", ".")):
+            errors.append(
+                FlowTypeError(
+                    "AG1",
+                    f"agent '{agent_name}' on node '{node.name}' is not a bare name "
+                    "(only bare persona names allowed; path separators and '.' are not "
+                    'permitted — use e.g. agent = "helly", not agent = "foo/bar" '
+                    'or agent = "helly.md")',
+                    node.name,
+                )
+            )
+            continue
+
+        path = _resolve_agent_md(agent_name, flow_file_dir)
+        if path is None:
+            errors.append(
+                FlowTypeError(
+                    "AG1",
+                    f"agent '{agent_name}' on node '{node.name}' not found "
+                    f"(looked in {flow_dir_repr}/{agent_name}.md and "
+                    f"{user_dir_repr}/{agent_name}.md)",
+                    node.name,
+                )
+            )
+            continue
+
+        # AG2: parse frontmatter if present.
+        try:
+            _parse_agent_frontmatter(path)
+        except (yaml.YAMLError, ValueError, OSError) as e:
+            errors.append(
+                FlowTypeError(
+                    "AG2",
+                    f"agent '{agent_name}' on node '{node.name}' has malformed "
+                    f"frontmatter at {path}: {e}",
                     node.name,
                 )
             )
