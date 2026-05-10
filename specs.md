@@ -280,16 +280,16 @@ flow <name> {
     workspace = <path>                    // optional — auto-generated if omitted
     judge = true | false                  // optional — default: false (self-report)
     worktree = true | false               // optional — default: true (git worktree isolation)
-    worktree_persist = true | false       // optional — default: false (merge exit branch back to source on completion) [TBD: DSL-017, ENGINE-088]
+    worktree_persist = true | false       // optional — default: false (merge exit branch back to source on completion; requires worktree = true) [TBD: ENGINE-088]
     max_parallel = <number>               // optional — default: 1 (serial processing)
     harness = <string>                    // optional — default: "claude" (agent runtime)
     subtasks = true | false               // optional — default: false (agent subtask management)
     skip_permissions = true | false       // optional — default: false
-    sandbox = true | false                // DEPRECATED — use lumon { enabled = true } [TBD: DSL-016]
-    sandbox_policy = <path>               // DEPRECATED — use lumon { config = "..." } [TBD: DSL-016]
-    lumon = true | false                  // DEPRECATED — use lumon { enabled = true } [TBD: DSL-016]
-    lumon_config = <path>                 // DEPRECATED — use lumon { config = "..." } [TBD: DSL-016]
-    lumon {                               // optional — Lumon language-level sandboxing config block [TBD: SHARED-012, DSL-016]
+    sandbox = true | false                // DEPRECATED — use lumon { enabled = true }
+    sandbox_policy = <path>               // DEPRECATED — use lumon { config = "..." }
+    lumon = true | false                  // DEPRECATED — use lumon { enabled = true }
+    lumon_config = <path>                 // DEPRECATED — use lumon { config = "..." }
+    lumon {                               // optional — Lumon language-level sandboxing config block
         enabled = true | false            //   default: false
         plugins = [name1, name2, ...]     //   optional — explicit plugin allowlist (mutex with `config`)
         config = <path>                   //   optional — path to .lumon.json (mutex with `plugins`)
@@ -315,19 +315,20 @@ flow <name> {
 
 `harness` sets the default agent runtime for all nodes. `"claude"` (default) uses the native Claude Code CLI. Other values (e.g., `"gemini"`, `"custom"`) use the ACP (Agent Client Protocol) to communicate with the agent subprocess. Harnesses are configured in `flowstate.toml` under `[harnesses.<name>]`. Each node can override the flow-level harness with its own `harness` attribute.
 
-The `lumon { ... }` block enables Lumon language-level sandboxing (see Section 9.9). When `enabled = true`, the engine deploys Lumon's configuration into the agent's worktree before launching the subprocess. The agent is constrained to operate only through Lumon's safe, type-checked language primitives — it cannot run arbitrary shell commands, edit files outside the sandbox directory, or bypass the language's restricted vocabulary. Enforcement is layered: a `PreToolUse` hook (`sandbox-guard.py`) blocks disallowed operations at the tool level, and a deployed `CLAUDE.md` provides procedural constraints. [TBD: SHARED-012, DSL-016, ENGINE-087]
+The `lumon { ... }` block enables Lumon language-level sandboxing (see Section 9.9). When `enabled = true`, the engine deploys Lumon's configuration into the agent's worktree before launching the subprocess. The agent is constrained to operate only through Lumon's safe, type-checked language primitives — it cannot run arbitrary shell commands, edit files outside the sandbox directory, or bypass the language's restricted vocabulary. Enforcement is layered: a `PreToolUse` hook (`sandbox-guard.py`) blocks disallowed operations at the tool level, and a deployed `CLAUDE.md` provides procedural constraints.
 
 Inside the block:
-- `enabled = true | false` turns Lumon on for this scope (default `false`).
-- `plugins = [...]` lists plugin names to enable. Each name resolves to `<flow_dir>/plugins/<name>/`, `~/.flowstate/plugins/<name>/`, or the bundled flowstate plugin. The built-in `flowstate` plugin is always included.
-- `config = <path>` points at a hand-written `.lumon.json` file (resolved relative to the flow file's directory). Use this for advanced per-plugin configuration.
-- `plugins` and `config` are mutually exclusive within the same block (rule L2). Pick the sugar or the file, not both.
+- `enabled = true | false` turns Lumon on for this scope (default `false`). The block is parsed in any attribute order — `enabled`, `plugins`, `config` are statements, not positional fields.
+- `plugins = [name1, name2, ...]` lists plugin names to enable. Names may be bare identifiers or quoted strings (`["filesystem", "git"]` and `[filesystem, git]` are equivalent). Each name resolves at parse time to `<flow_dir>/plugins/<name>/`, `<flowstate_data_dir>/plugins/<name>/` (default `~/.flowstate/plugins/`, honors `FLOWSTATE_DATA_DIR`), or the bundled flowstate plugin (the literal name `flowstate`). The built-in `flowstate` plugin is always merged in at deploy time even when not listed. `plugins = []` (explicit empty list) means "no plugins beyond the built-in" — distinct from omitting the attribute, which leaves the slot unset.
+- `config = <path>` points at a hand-written `.lumon.json` file (resolved relative to the flow file's directory). Use this for advanced per-plugin configuration the curated `plugins` list cannot express. [TBD: ENGINE-087 — the on-disk synthesis from `plugins` is implemented in that issue]
+- `plugins` and `config` are mutually exclusive within the same block (rule L2). Pick the curated allowlist or the file, not both.
+- `plugins` (non-empty) and `config` both require `enabled = true` at the same scope (rule L1). Setting either without `enabled` is a type error.
 
-The flat attributes `lumon`, `lumon_config`, `sandbox`, `sandbox_policy` continue to parse for backward compatibility but are deprecated. They map onto an equivalent `lumon { ... }` block at the parser layer. [TBD: SHARED-012]
+The flat attributes `lumon`, `lumon_config`, `sandbox`, `sandbox_policy` continue to parse for backward compatibility but are deprecated. They map onto an equivalent `lumon { ... }` block at the parser layer (see Section 11.1). Combining the block with any of these flat keys **in the same scope** is a parse error: "use the lumon block or the flat attributes, not both." The check is per-scope — a flow body using the flat syntax with a node body using the block is allowed (node-level lumon fully overrides flow-level, so the two scopes are evaluated independently).
 
 Per-node `lumon { ... }` blocks fully override the flow-level block (no field-level merging). To opt a single node out of flow-wide sandboxing, set `lumon { enabled = false }` on the node.
 
-`worktree_persist = true` (requires `worktree = true`) merges the exit node's worktree branch back into the original workspace's source branch on successful flow completion. The merge runs in a fresh detached temporary worktree so the user's main checkout is never modified. The source branch ref advances atomically via `git update-ref` compare-and-swap. Concurrent runs serialize via a per-workspace file lock. Merge conflicts cause the run to complete with status `completed_with_conflicts` and preserve the exit branch for manual recovery. Used to give advisor-style flows a long-term git-backed memory: each run lands its commits on the source branch, accumulating across sessions. [TBD: DSL-017, STATE-013, ENGINE-088]
+`worktree_persist = true` (requires `worktree = true`, rule WP1) merges the exit node's worktree branch back into the original workspace's source branch on successful flow completion. The merge runs in a fresh detached temporary worktree so the user's main checkout is never modified. The source branch ref advances atomically via `git update-ref` compare-and-swap. Concurrent runs serialize via a per-workspace file lock. Merge conflicts cause the run to complete with status `completed_with_conflicts` and preserve the exit branch for manual recovery. Used to give advisor-style flows a long-term git-backed memory: each run lands its commits on the source branch, accumulating across sessions. [TBD: ENGINE-088]
 
 Lumon sandboxing requires per-node worktree isolation (Section 9.7) — each node gets its own worktree with its own Lumon deployment. Requires the `lumon` package (installed from `git+https://github.com/trupin/lumon.git`).
 
@@ -367,30 +368,30 @@ Output fields declare the structure of the flow's output (used by cross-flow `fi
 ```
 entry <name> {
     prompt = <string>
-    agent = <string>          // optional — persona file under <flow_dir>/agents/ or ~/.claude/agents/ [TBD: DSL-015, ENGINE-086]
+    agent = <string>          // optional — persona file under <flow_dir>/agents/ or ~/.claude/agents/
     cwd = <path>           // optional — overrides flow-level workspace
     judge = true | false   // optional — overrides flow-level judge setting
     harness = <string>     // optional — overrides flow-level harness
     subtasks = true | false   // optional — overrides flow-level subtasks setting
-    lumon { ... }             // optional — fully overrides flow-level lumon block [TBD: SHARED-012, DSL-016]
+    lumon { ... }             // optional — fully overrides flow-level lumon block (no merge)
 }
 
 task <name> {
     prompt = <string>
-    agent = <string>          // optional — persona file [TBD: DSL-015, ENGINE-086]
+    agent = <string>          // optional — persona file
     cwd = <path>           // optional — overrides flow-level workspace
     judge = true | false   // optional — overrides flow-level judge setting
     harness = <string>     // optional — overrides flow-level harness
     subtasks = true | false   // optional — overrides flow-level subtasks setting
-    lumon { ... }             // optional — fully overrides flow-level lumon block [TBD: SHARED-012, DSL-016]
+    lumon { ... }             // optional — fully overrides flow-level lumon block (no merge)
 }
 
 exit <name> {
     prompt = <string>
-    agent = <string>          // optional — persona file [TBD: DSL-015, ENGINE-086]
+    agent = <string>          // optional — persona file
     cwd = <path>           // optional — overrides flow-level workspace
     subtasks = true | false   // optional — overrides flow-level subtasks setting
-    lumon { ... }             // optional — fully overrides flow-level lumon block [TBD: SHARED-012, DSL-016]
+    lumon { ... }             // optional — fully overrides flow-level lumon block (no merge)
 }
 
 wait <name> {
@@ -403,11 +404,11 @@ fence <name> { }           // synchronization barrier — no body needed
 
 atomic <name> {
     prompt = <string>
-    agent = <string>          // optional — persona file [TBD: DSL-015, ENGINE-086]
+    agent = <string>          // optional — persona file
     cwd = <path>           // optional
     harness = <string>     // optional — overrides flow-level harness
     subtasks = true | false   // optional — overrides flow-level subtasks setting
-    lumon { ... }             // optional — fully overrides flow-level lumon block [TBD: SHARED-012, DSL-016]
+    lumon { ... }             // optional — fully overrides flow-level lumon block (no merge)
 }
 ```
 
@@ -415,7 +416,7 @@ The prompt can use template variables (`{{field_name}}`) and triple-quoted strin
 
 `cwd` sets the working directory for the Claude Code subprocess. If omitted, the task inherits the flow-level `workspace`. If neither is set, the engine auto-generates a workspace.
 
-`agent` references a persona file (e.g. `agent = "helly"`) resolved against `<flow_dir>/agents/<name>.md` first, then `~/.claude/agents/<name>.md`. The file's body becomes the subprocess system prompt; the node's `prompt` becomes the user-facing kickoff message. Optional YAML frontmatter (`name`, `model`, `description`) is honored — `model` selects an alternate harness if a matching one is registered. Both the system prompt and kickoff message receive `{{template_var}}` substitution. Missing files surface as a type error at parse time (rule AG1). [TBD: DSL-015, ENGINE-086]
+`agent` references a persona file (e.g. `agent = "helly"`) resolved against `<flow_dir>/agents/<name>.md` first, then `~/.claude/agents/<name>.md`. The file's body becomes the subprocess system prompt; the node's `prompt` becomes the user-facing kickoff message. Optional YAML frontmatter (`name`, `model`, `description`) is honored — `model` selects an alternate harness if a matching one is registered. Both the system prompt and kickoff message receive `{{template_var}}` substitution. Missing files surface as a type error at parse time (rule AG1).
 
 `wait` nodes pause the flow — they have no prompt and don't spawn a subprocess. `fence` nodes block until all running tasks in the flow reach the fence. `atomic` nodes ensure exclusive execution — only one instance runs at a time across all concurrent runs of the same flow.
 
@@ -632,7 +633,32 @@ A -> [B, C]
 B -> [C, D]     // C appears in two fork groups — invalid
 ```
 
-### 4.5 Validation Algorithm
+### 4.5 Lumon Config Block Rules
+
+| # | Rule | Rationale |
+|---|------|-----------|
+| L1 | In a `lumon { ... }` block, setting `plugins` (non-empty) or `config` requires `enabled = true` in the same scope | A plugin allowlist or external config file is meaningless when Lumon is off — fail loudly at parse time instead of silently dropping the setting at deploy time |
+| L2 | `plugins` and `config` are mutually exclusive within the same block | One block, one source of truth — either the curated in-DSL allowlist or the hand-written `.lumon.json`, not both |
+| L3 | Every name in `plugins` must resolve to a plugin directory under `<flow_dir>/plugins/<name>/`, `<flowstate_data_dir>/plugins/<name>/`, or the bundled flowstate plugin | Catch typos in plugin names at parse time instead of at run-time |
+
+L1 supersedes the legacy LM1 (`config_path requires enabled`) by also covering the new `plugins` attribute. The flat `sandbox`/`sandbox_policy`/`lumon`/`lumon_config` aliases are still collapsed into the same `LumonConfig` at the parser layer (per SHARED-012), so flat-syntax flows surface the same diagnostic under L1.
+
+Additionally, mixing the block with any of the deprecated flat keys **within the same scope** is a parse error (not a type error). The check is per-scope: a flow body using the flat syntax with a node body using the block is allowed (node-level lumon fully overrides flow-level, so each scope is evaluated independently).
+
+### 4.6 Agent Persona Rules
+
+| # | Rule | Rationale |
+|---|------|-----------|
+| AG1 | When `Node.agent` is set, the resolved persona file must exist in `<flow_dir>/agents/<name>.md` or `~/.claude/agents/<name>.md`, and the value must be a bare name (no path separators or `.`) | Typos surface at parse time, not at run-time. Path-like values would bypass the precedence rules |
+| AG2 | When AG1 succeeds, the resolved file's YAML frontmatter (if present) must parse without error | Malformed frontmatter would fail at run-time; surface the error before the run starts |
+
+### 4.7 Worktree Persist Rules
+
+| # | Rule | Rationale |
+|---|------|-----------|
+| WP1 | `worktree_persist = true` requires `worktree = true` | The persist mechanism (merge exit branch back to source branch at run-completion) only applies when worktree isolation is enabled |
+
+### 4.8 Validation Algorithm
 
 ```
 1. Build adjacency list from edges
@@ -640,7 +666,10 @@ B -> [C, D]     // C appears in two fork groups — invalid
 3. For each node, classify outgoing edges and verify E1-E10
 4. Identify all fork-join pairs, verify F1-F3
 5. Detect cycles via DFS, verify C1-C3
-6. Verify reachability (S3-S4) via BFS from entry
+6. Validate lumon blocks at flow and node scope: L1, L2, L3
+7. Validate agent persona references: AG1, AG2
+8. Validate worktree_persist consistency: WP1
+9. Verify reachability (S3-S4) via BFS from entry
 ```
 
 ---

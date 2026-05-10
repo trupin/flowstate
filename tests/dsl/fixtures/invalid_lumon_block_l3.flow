@@ -1,0 +1,21 @@
+// Test fixture: L3 — every plugin name must resolve to a plugin directory.
+// ``definitely_not_a_plugin_xyz`` does not exist in <flow_dir>/plugins/,
+// ~/.flowstate/plugins/, or the built-in flowstate plugin. (DSL-016)
+flow lumon_block_l3 {
+    budget = 1h
+    on_error = pause
+    context = handoff
+    lumon {
+        enabled = true
+        plugins = ["definitely_not_a_plugin_xyz"]
+    }
+
+    input {
+        task_name: string
+    }
+
+    entry start { prompt = "begin" }
+    exit done { prompt = "wrap up" }
+
+    start -> done
+}

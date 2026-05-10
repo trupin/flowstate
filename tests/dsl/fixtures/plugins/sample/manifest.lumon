@@ -1,0 +1,5 @@
+// Minimal Lumon plugin manifest stub used by DSL-016 fixtures.
+// The L3 rule only checks that <plugin_name>/ is a directory; it does not
+// validate the manifest contents. This file exists so the directory is
+// non-empty and obviously a plugin slot to a human reader.
+name = "sample"

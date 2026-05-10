@@ -1752,9 +1752,13 @@ class TestSchedulingParserRoundTrip:
 # ``SB1``.
 
 
-class TestSandboxFlatSyntaxFlagsLM1:
-    """Flat ``sandbox_policy`` without ``sandbox = true`` produces LM1
-    (previously SB1, semantics preserved through the parser).
+class TestSandboxFlatSyntaxFlagsL1:
+    """Flat ``sandbox_policy`` without ``sandbox = true`` produces L1
+    (previously SB1, then LM1, semantics preserved through the parser).
+
+    DSL-016 collapses the legacy LM1 ("config_path requires enabled") into the
+    broader L1 ("plugins or config require enabled"), so the same flat-syntax
+    flows now surface L1 instead of LM1.
     """
 
     def test_flow_sandbox_policy_without_sandbox_is_error(self) -> None:
@@ -1766,9 +1770,9 @@ class TestSandboxFlatSyntaxFlagsLM1:
         )
         flow = parse_flow(source)
         errors = check_flow(flow)
-        lm1 = _errors_with_rule(errors, "LM1")
-        assert len(lm1) == 1
-        assert "lumon" in lm1[0].message
+        l1 = _errors_with_rule(errors, "L1")
+        assert len(l1) == 1
+        assert "lumon" in l1[0].message
 
     def test_flow_sandbox_false_with_policy_is_error(self) -> None:
         source = (
@@ -1779,7 +1783,7 @@ class TestSandboxFlatSyntaxFlagsLM1:
         )
         flow = parse_flow(source)
         errors = check_flow(flow)
-        assert len(_errors_with_rule(errors, "LM1")) == 1
+        assert len(_errors_with_rule(errors, "L1")) == 1
 
     def test_flow_sandbox_true_with_policy_is_valid(self) -> None:
         source = (
@@ -1790,7 +1794,7 @@ class TestSandboxFlatSyntaxFlagsLM1:
         )
         flow = parse_flow(source)
         errors = check_flow(flow)
-        assert len(_errors_with_rule(errors, "LM1")) == 0
+        assert len(_errors_with_rule(errors, "L1")) == 0
 
     def test_flow_sandbox_true_without_policy_is_valid(self) -> None:
         source = (
@@ -1800,31 +1804,34 @@ class TestSandboxFlatSyntaxFlagsLM1:
         )
         flow = parse_flow(source)
         errors = check_flow(flow)
-        assert len(_errors_with_rule(errors, "LM1")) == 0
+        assert len(_errors_with_rule(errors, "L1")) == 0
 
     def test_no_sandbox_attrs_is_valid(self) -> None:
-        """Default flow (no sandbox/lumon attrs) has no LM1 errors."""
+        """Default flow (no sandbox/lumon attrs) has no L1 errors."""
         flow = _minimal_flow()
         errors = check_flow(flow)
-        assert len(_errors_with_rule(errors, "LM1")) == 0
+        assert len(_errors_with_rule(errors, "L1")) == 0
 
     def test_sandbox_fixture_type_checks(self) -> None:
-        """The valid_sandbox.flow fixture has no LM1 errors."""
+        """The valid_sandbox.flow fixture has no L1 errors."""
         flow = parse_flow(load_fixture("valid_sandbox.flow"))
         errors = check_flow(flow)
-        assert len(_errors_with_rule(errors, "LM1")) == 0
+        assert len(_errors_with_rule(errors, "L1")) == 0
 
 
 # ===========================================================================
-# DSL-014 / SHARED-012: Lumon rules (LM1) — unified for lumon + sandbox
+# DSL-014 / SHARED-012 / DSL-016: Lumon L1 — unified config-requires-enabled rule
 # ===========================================================================
 
 
-class TestLM1LumonConfigRequiresLumon:
-    """LM1: a ``LumonConfig.config_path`` requires ``enabled = true`` at the
-    same scope (flow or node). Node-level ``LumonConfig`` fully overrides
-    flow-level, so a node with its own ``LumonConfig`` does NOT inherit the
-    flow's ``enabled``.
+class TestL1LumonConfigRequiresEnabled:
+    """L1: a ``LumonConfig`` with ``config_path`` (or ``plugins``) set must
+    also have ``enabled = true`` at the same scope (flow or node). DSL-016
+    generalizes the legacy LM1 (which only covered ``config_path``) to also
+    cover the new ``plugins`` attribute.
+
+    Node-level ``LumonConfig`` fully overrides flow-level, so a node with its
+    own ``LumonConfig`` does NOT inherit the flow's ``enabled``.
     """
 
     def test_flow_lumon_config_without_lumon_is_error(self) -> None:
@@ -1833,9 +1840,9 @@ class TestLM1LumonConfigRequiresLumon:
             lumon=LumonConfig(enabled=False, plugins=None, config_path="strict.lumon.json")
         )
         errors = check_flow(flow)
-        lm1 = _errors_with_rule(errors, "LM1")
-        assert len(lm1) == 1
-        assert "lumon_config requires lumon = true" in lm1[0].message
+        l1 = _errors_with_rule(errors, "L1")
+        assert len(l1) == 1
+        assert "enabled" in l1[0].message
 
     def test_flow_lumon_false_with_config_is_error(self) -> None:
         """Explicit enabled=False with config_path."""
@@ -1843,19 +1850,19 @@ class TestLM1LumonConfigRequiresLumon:
             lumon=LumonConfig(enabled=False, plugins=None, config_path="strict.lumon.json")
         )
         errors = check_flow(flow)
-        assert len(_errors_with_rule(errors, "LM1")) == 1
+        assert len(_errors_with_rule(errors, "L1")) == 1
 
     def test_flow_lumon_true_with_config_is_valid(self) -> None:
         flow = _minimal_flow(
             lumon=LumonConfig(enabled=True, plugins=None, config_path="strict.lumon.json")
         )
         errors = check_flow(flow)
-        assert len(_errors_with_rule(errors, "LM1")) == 0
+        assert len(_errors_with_rule(errors, "L1")) == 0
 
     def test_flow_lumon_true_without_config_is_valid(self) -> None:
         flow = _minimal_flow(lumon=LumonConfig(enabled=True))
         errors = check_flow(flow)
-        assert len(_errors_with_rule(errors, "LM1")) == 0
+        assert len(_errors_with_rule(errors, "L1")) == 0
 
     def test_node_lumon_false_with_config_is_error(self) -> None:
         """Node has its own LumonConfig with config_path but enabled=False."""
@@ -1870,9 +1877,9 @@ class TestLM1LumonConfigRequiresLumon:
         }
         flow = _minimal_flow(nodes=nodes, lumon=LumonConfig(enabled=True))
         errors = check_flow(flow)
-        lm1 = _errors_with_rule(errors, "LM1")
-        assert len(lm1) == 1
-        assert "start" in lm1[0].message
+        l1 = _errors_with_rule(errors, "L1")
+        assert len(l1) == 1
+        assert "start" in l1[0].message
 
     def test_node_lumon_true_with_config_overrides_flow_false(self) -> None:
         """Node-level enabled=True is valid even when flow has enabled=False."""
@@ -1887,23 +1894,23 @@ class TestLM1LumonConfigRequiresLumon:
         }
         flow = _minimal_flow(nodes=nodes, lumon=LumonConfig(enabled=False))
         errors = check_flow(flow)
-        assert len(_errors_with_rule(errors, "LM1")) == 0
+        assert len(_errors_with_rule(errors, "L1")) == 0
 
     def test_no_lumon_attrs_is_valid(self) -> None:
-        """Default flow (no lumon attrs) has no LM1 errors."""
+        """Default flow (no lumon attrs) has no L1 errors."""
         flow = _minimal_flow()
         errors = check_flow(flow)
-        assert len(_errors_with_rule(errors, "LM1")) == 0
+        assert len(_errors_with_rule(errors, "L1")) == 0
 
     def test_lumon_fixture_type_checks(self) -> None:
-        """The valid_lumon.flow fixture has no LM1 errors."""
+        """The valid_lumon.flow fixture has no L1 errors."""
         flow = parse_flow(load_fixture("valid_lumon.flow"))
         errors = check_flow(flow)
-        assert len(_errors_with_rule(errors, "LM1")) == 0
+        assert len(_errors_with_rule(errors, "L1")) == 0
 
     def test_flow_lumon_config_via_parser_flagged(self) -> None:
         """Parser-layer compat: ``lumon_config`` without ``lumon = true``
-        still flags LM1 through the parser (round-trip with old syntax).
+        still flags L1 through the parser (round-trip with old syntax).
         """
         source = (
             "flow f { budget = 1h on_error = pause context = handoff "
@@ -1913,7 +1920,7 @@ class TestLM1LumonConfigRequiresLumon:
         )
         flow = parse_flow(source)
         errors = check_flow(flow)
-        assert len(_errors_with_rule(errors, "LM1")) == 1
+        assert len(_errors_with_rule(errors, "L1")) == 1
 
 
 # ===========================================================================
@@ -2167,3 +2174,251 @@ class TestWP1WorktreePersistRequiresWorktree:
         assert len(wp1) == 1
         assert "worktree_persist" in wp1[0].message
         assert "worktree" in wp1[0].message
+
+
+# ===========================================================================
+# DSL-016: Lumon config block rules (L1, L2, L3)
+# ===========================================================================
+
+
+class TestL1PluginsOrConfigRequireEnabled:
+    """L1: setting ``plugins`` (non-empty) or ``config`` in a lumon block
+    requires ``enabled = true`` in the same scope. This generalizes the
+    legacy LM1 (which only covered ``config_path``) — same name, broader
+    semantics.
+    """
+
+    def test_plugins_without_enabled_flow_level(self) -> None:
+        flow = _minimal_flow(
+            lumon=LumonConfig(enabled=False, plugins=("sample",), config_path=None)
+        )
+        errors = check_flow(flow, flow_file_dir=FIXTURES)
+        l1 = _errors_with_rule(errors, "L1")
+        assert len(l1) == 1
+        assert "enabled" in l1[0].message
+
+    def test_plugins_without_enabled_via_fixture(self) -> None:
+        """L1 via the fixture parser path. Uses ``flow_file_dir=FIXTURES`` so
+        the ``sample`` plugin name resolves under L3 (we want L1 only).
+        """
+        flow = parse_flow(load_fixture("invalid_lumon_block_l1.flow"))
+        errors = check_flow(flow, flow_file_dir=FIXTURES)
+        l1 = _errors_with_rule(errors, "L1")
+        assert len(l1) == 1
+        assert "enabled" in l1[0].message
+
+    def test_config_without_enabled_flow_level(self) -> None:
+        flow = _minimal_flow(
+            lumon=LumonConfig(enabled=False, plugins=None, config_path="policy.json")
+        )
+        errors = check_flow(flow)
+        l1 = _errors_with_rule(errors, "L1")
+        assert len(l1) == 1
+
+    def test_plugins_with_enabled_no_L1(self) -> None:
+        """``plugins`` set with ``enabled = true`` is fine for L1 (L3 still
+        applies — checked separately).
+        """
+        flow = _minimal_flow(lumon=LumonConfig(enabled=True, plugins=("sample",), config_path=None))
+        errors = check_flow(flow, flow_file_dir=FIXTURES)
+        assert _errors_with_rule(errors, "L1") == []
+
+    def test_empty_plugins_does_not_require_enabled(self) -> None:
+        """``plugins = ()`` (explicit empty tuple) is "no plugins beyond the
+        built-in flowstate plugin" — it does NOT trigger L1 by itself
+        because there's nothing actually being requested.
+        """
+        flow = _minimal_flow(lumon=LumonConfig(enabled=False, plugins=(), config_path=None))
+        errors = check_flow(flow)
+        assert _errors_with_rule(errors, "L1") == []
+
+    def test_L1_at_node_scope(self) -> None:
+        """L1 fires when ``plugins`` is set on a node whose own block has
+        ``enabled = false`` — node-level lumon fully overrides flow-level.
+        """
+        nodes = {
+            "start": Node(
+                name="start",
+                node_type=NodeType.ENTRY,
+                prompt="begin",
+                lumon=LumonConfig(enabled=False, plugins=("sample",), config_path=None),
+            ),
+            "end": Node(name="end", node_type=NodeType.EXIT, prompt="done"),
+        }
+        # Flow has enabled=true, but node fully overrides — so node's enabled=False wins.
+        flow = _minimal_flow(nodes=nodes, lumon=LumonConfig(enabled=True))
+        errors = check_flow(flow, flow_file_dir=FIXTURES)
+        l1 = _errors_with_rule(errors, "L1")
+        assert len(l1) == 1
+        assert "start" in l1[0].message
+
+    def test_disabled_node_with_no_plugins_or_config_is_valid(self) -> None:
+        """A node may explicitly opt out of lumon (``LumonConfig(enabled=False)``)
+        even when the flow has it enabled — no L1, no L2, no L3.
+        """
+        nodes = {
+            "start": Node(
+                name="start",
+                node_type=NodeType.ENTRY,
+                prompt="begin",
+                lumon=LumonConfig(enabled=False),
+            ),
+            "end": Node(name="end", node_type=NodeType.EXIT, prompt="done"),
+        }
+        flow = _minimal_flow(
+            nodes=nodes,
+            lumon=LumonConfig(enabled=True, plugins=("sample",), config_path=None),
+        )
+        errors = check_flow(flow, flow_file_dir=FIXTURES)
+        assert _errors_with_rule(errors, "L1") == []
+
+
+class TestL2PluginsAndConfigMutex:
+    """L2: ``plugins`` and ``config`` are mutually exclusive within the same
+    lumon block (one block, one source-of-truth shape).
+    """
+
+    def test_plugins_and_config_in_same_block_fires_L2(self) -> None:
+        flow = _minimal_flow(
+            lumon=LumonConfig(enabled=True, plugins=("sample",), config_path="policy.json")
+        )
+        errors = check_flow(flow, flow_file_dir=FIXTURES)
+        l2 = _errors_with_rule(errors, "L2")
+        assert len(l2) == 1
+        assert "plugins" in l2[0].message
+        assert "config" in l2[0].message
+
+    def test_plugins_only_no_L2(self) -> None:
+        flow = _minimal_flow(lumon=LumonConfig(enabled=True, plugins=("sample",), config_path=None))
+        errors = check_flow(flow, flow_file_dir=FIXTURES)
+        assert _errors_with_rule(errors, "L2") == []
+
+    def test_config_only_no_L2(self) -> None:
+        flow = _minimal_flow(
+            lumon=LumonConfig(enabled=True, plugins=None, config_path="policy.json")
+        )
+        errors = check_flow(flow)
+        assert _errors_with_rule(errors, "L2") == []
+
+    def test_L2_via_fixture(self) -> None:
+        flow = parse_flow(load_fixture("invalid_lumon_block_l2.flow"))
+        errors = check_flow(flow, flow_file_dir=FIXTURES)
+        l2 = _errors_with_rule(errors, "L2")
+        assert len(l2) == 1
+
+    def test_L2_at_node_scope(self) -> None:
+        """L2 fires on a node-level block too — each scope is checked
+        independently. (The node fully overrides the flow, so a node with
+        both plugins and config in a single block is invalid even if the
+        flow has only one of them.)
+        """
+        nodes = {
+            "start": Node(
+                name="start",
+                node_type=NodeType.ENTRY,
+                prompt="begin",
+                lumon=LumonConfig(enabled=True, plugins=("sample",), config_path="x.json"),
+            ),
+            "end": Node(name="end", node_type=NodeType.EXIT, prompt="done"),
+        }
+        flow = _minimal_flow(nodes=nodes)
+        errors = check_flow(flow, flow_file_dir=FIXTURES)
+        l2 = _errors_with_rule(errors, "L2")
+        assert len(l2) == 1
+        assert "start" in l2[0].message
+
+
+class TestL3PluginNamesResolve:
+    """L3: each name in ``plugins`` must resolve to a plugin directory under
+    ``<flow_dir>/plugins/``, ``<flowstate_data_dir>/plugins/``, or the
+    built-in flowstate plugin.
+    """
+
+    def test_known_plugin_resolves_no_L3(self) -> None:
+        """``sample`` is a real directory under tests/dsl/fixtures/plugins/."""
+        flow = _minimal_flow(lumon=LumonConfig(enabled=True, plugins=("sample",), config_path=None))
+        errors = check_flow(flow, flow_file_dir=FIXTURES)
+        assert _errors_with_rule(errors, "L3") == []
+
+    def test_unknown_plugin_fires_L3(self) -> None:
+        flow = _minimal_flow(
+            lumon=LumonConfig(
+                enabled=True,
+                plugins=("definitely_not_a_plugin_xyz",),
+                config_path=None,
+            )
+        )
+        errors = check_flow(flow, flow_file_dir=FIXTURES)
+        l3 = _errors_with_rule(errors, "L3")
+        assert len(l3) == 1
+        msg = l3[0].message
+        assert "definitely_not_a_plugin_xyz" in msg
+        # All three lookup locations must be mentioned in the error per spec.
+        assert "plugins" in msg  # <flow_dir>/plugins
+        assert "built-in" in msg  # built-in flowstate plugin
+
+    def test_L3_via_fixture(self) -> None:
+        flow = parse_flow(load_fixture("invalid_lumon_block_l3.flow"))
+        errors = check_flow(flow, flow_file_dir=FIXTURES)
+        l3 = _errors_with_rule(errors, "L3")
+        assert len(l3) == 1
+
+    def test_flowstate_builtin_plugin_resolves(self) -> None:
+        """The literal name ``flowstate`` resolves via the built-in plugin
+        directory bundled with the engine package (no per-flow override).
+        """
+        flow = _minimal_flow(
+            lumon=LumonConfig(enabled=True, plugins=("flowstate",), config_path=None)
+        )
+        errors = check_flow(flow, flow_file_dir=FIXTURES)
+        assert _errors_with_rule(errors, "L3") == []
+
+    def test_L3_at_node_scope(self) -> None:
+        nodes = {
+            "start": Node(
+                name="start",
+                node_type=NodeType.ENTRY,
+                prompt="begin",
+                lumon=LumonConfig(
+                    enabled=True,
+                    plugins=("nope_not_a_plugin_xyz",),
+                    config_path=None,
+                ),
+            ),
+            "end": Node(name="end", node_type=NodeType.EXIT, prompt="done"),
+        }
+        flow = _minimal_flow(nodes=nodes)
+        errors = check_flow(flow, flow_file_dir=FIXTURES)
+        l3 = _errors_with_rule(errors, "L3")
+        assert len(l3) == 1
+        assert "start" in l3[0].message
+
+    def test_L3_only_reports_unresolved_names(self) -> None:
+        """A mix of resolved and unresolved names reports L3 only for the
+        unresolved ones.
+        """
+        flow = _minimal_flow(
+            lumon=LumonConfig(
+                enabled=True,
+                plugins=("sample", "definitely_not_a_plugin_xyz", "second_sample"),
+                config_path=None,
+            )
+        )
+        errors = check_flow(flow, flow_file_dir=FIXTURES)
+        l3 = _errors_with_rule(errors, "L3")
+        assert len(l3) == 1
+        assert "definitely_not_a_plugin_xyz" in l3[0].message
+
+
+class TestLumonBlockFixturesTypeCheck:
+    """End-to-end fixture coverage for the new block syntax."""
+
+    def test_valid_block_fixture_type_checks_clean(self) -> None:
+        flow = parse_flow(load_fixture("valid_lumon_block.flow"))
+        errors = check_flow(flow, flow_file_dir=FIXTURES)
+        assert errors == [], f"unexpected errors: {errors}"
+
+    def test_valid_block_node_override_fixture_type_checks_clean(self) -> None:
+        flow = parse_flow(load_fixture("valid_lumon_block_node_override.flow"))
+        errors = check_flow(flow, flow_file_dir=FIXTURES)
+        assert errors == [], f"unexpected errors: {errors}"

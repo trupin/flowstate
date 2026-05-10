@@ -1,0 +1,22 @@
+// Test fixture: a flow that mixes the lumon { ... } block with the
+// deprecated flat ``lumon = true`` attribute in the same flow scope.
+// This must fail at parse time. (DSL-016, TEST-37b.10)
+flow lumon_block_mixed {
+    budget = 1h
+    on_error = pause
+    context = handoff
+    lumon = true
+    lumon {
+        enabled = true
+        plugins = ["sample"]
+    }
+
+    input {
+        task_name: string
+    }
+
+    entry start { prompt = "begin" }
+    exit done { prompt = "wrap up" }
+
+    start -> done
+}

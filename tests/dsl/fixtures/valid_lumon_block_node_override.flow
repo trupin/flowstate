@@ -1,0 +1,37 @@
+// Test fixture: node-level lumon { ... } block overriding the flow-level
+// block. The "audit" task fully replaces the flow's plugin list with its
+// own narrower set. The "passthrough" task has no lumon block and inherits
+// from the flow scope. (DSL-016)
+flow lumon_block_override_pipeline {
+    budget = 1h
+    on_error = pause
+    context = handoff
+    lumon {
+        enabled = true
+        plugins = ["sample"]
+    }
+
+    input {
+        task_name: string
+    }
+
+    entry start { prompt = "begin" }
+
+    task audit {
+        prompt = "audit"
+        lumon {
+            enabled = true
+            plugins = ["second_sample"]
+        }
+    }
+
+    task passthrough {
+        prompt = "passthrough"
+    }
+
+    exit done { prompt = "wrap up" }
+
+    start -> audit
+    audit -> passthrough
+    passthrough -> done
+}

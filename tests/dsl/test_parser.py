@@ -2178,6 +2178,312 @@ class TestLumonFlatSyntaxRoundTrip:
 
 
 # ---------------------------------------------------------------------------
+# DSL-016: lumon { ... } block syntax (preferred over flat attrs)
+# ---------------------------------------------------------------------------
+
+
+class TestLumonBlockParsing:
+    """Parser-layer behavior of the new ``lumon { ... }`` block (DSL-016).
+
+    Exercises every shape that goes into the block, at both flow and node
+    scope, plus the per-scope mixed-syntax parse error.
+    """
+
+    def test_flow_block_with_plugins(self):
+        """``lumon { enabled = true, plugins = ["filesystem"] }`` at flow
+        level produces a ``LumonConfig`` with the plugin list as a tuple
+        (TEST-37b.5).
+        """
+        from flowstate.dsl.ast import LumonConfig
+
+        source = (
+            "flow f { budget = 1h on_error = pause context = handoff "
+            'lumon { enabled = true plugins = ["filesystem"] } '
+            "input { task_name: string } "
+            'entry a { prompt = "x" } exit b { prompt = "y" } a -> b }'
+        )
+        flow = parse_flow(source)
+        assert flow.lumon == LumonConfig(enabled=True, plugins=("filesystem",), config_path=None)
+
+    def test_flow_block_with_multiple_plugins(self):
+        from flowstate.dsl.ast import LumonConfig
+
+        source = (
+            "flow f { budget = 1h on_error = pause context = handoff "
+            'lumon { enabled = true plugins = ["filesystem", "git"] } '
+            "input { task_name: string } "
+            'entry a { prompt = "x" } exit b { prompt = "y" } a -> b }'
+        )
+        flow = parse_flow(source)
+        assert flow.lumon == LumonConfig(
+            enabled=True, plugins=("filesystem", "git"), config_path=None
+        )
+
+    def test_flow_block_with_bare_name_plugins(self):
+        """Plugin names accept bare identifiers too (``plugins = [name]``)."""
+        from flowstate.dsl.ast import LumonConfig
+
+        source = (
+            "flow f { budget = 1h on_error = pause context = handoff "
+            "lumon { enabled = true plugins = [filesystem, git] } "
+            "input { task_name: string } "
+            'entry a { prompt = "x" } exit b { prompt = "y" } a -> b }'
+        )
+        flow = parse_flow(source)
+        assert flow.lumon == LumonConfig(
+            enabled=True, plugins=("filesystem", "git"), config_path=None
+        )
+
+    def test_flow_block_with_config_path(self):
+        from flowstate.dsl.ast import LumonConfig
+
+        source = (
+            "flow f { budget = 1h on_error = pause context = handoff "
+            'lumon { enabled = true config = "policy.json" } '
+            "input { task_name: string } "
+            'entry a { prompt = "x" } exit b { prompt = "y" } a -> b }'
+        )
+        flow = parse_flow(source)
+        assert flow.lumon == LumonConfig(enabled=True, plugins=None, config_path="policy.json")
+
+    def test_flow_block_enabled_only(self):
+        """``lumon { enabled = true }`` (no plugins, no config) is the
+        equivalent of the legacy ``lumon = true`` flat syntax.
+        """
+        from flowstate.dsl.ast import LumonConfig
+
+        source = (
+            "flow f { budget = 1h on_error = pause context = handoff "
+            "lumon { enabled = true } "
+            "input { task_name: string } "
+            'entry a { prompt = "x" } exit b { prompt = "y" } a -> b }'
+        )
+        flow = parse_flow(source)
+        assert flow.lumon == LumonConfig(enabled=True, plugins=None, config_path=None)
+
+    def test_flow_block_empty_is_disabled(self):
+        """``lumon { }`` parses to ``LumonConfig(enabled=False)`` — valid but
+        a no-op (equivalent to no block at all).
+        """
+        from flowstate.dsl.ast import LumonConfig
+
+        source = (
+            "flow f { budget = 1h on_error = pause context = handoff "
+            "lumon { } "
+            "input { task_name: string } "
+            'entry a { prompt = "x" } exit b { prompt = "y" } a -> b }'
+        )
+        flow = parse_flow(source)
+        assert flow.lumon == LumonConfig(enabled=False, plugins=None, config_path=None)
+
+    def test_flow_block_empty_plugins_list(self):
+        """``plugins = []`` is distinct from ``plugins`` omitted — it's an
+        explicit empty tuple meaning "no plugins beyond the built-in".
+        """
+        from flowstate.dsl.ast import LumonConfig
+
+        source = (
+            "flow f { budget = 1h on_error = pause context = handoff "
+            "lumon { enabled = true plugins = [] } "
+            "input { task_name: string } "
+            'entry a { prompt = "x" } exit b { prompt = "y" } a -> b }'
+        )
+        flow = parse_flow(source)
+        assert flow.lumon == LumonConfig(enabled=True, plugins=(), config_path=None)
+
+    def test_block_at_entry_node(self):
+        from flowstate.dsl.ast import LumonConfig
+
+        source = (
+            "flow f { budget = 1h on_error = pause context = handoff "
+            "input { task_name: string } "
+            'entry a { prompt = "x" lumon { enabled = true plugins = ["a"] } } '
+            'exit b { prompt = "y" } a -> b }'
+        )
+        flow = parse_flow(source)
+        assert flow.nodes["a"].lumon == LumonConfig(enabled=True, plugins=("a",), config_path=None)
+
+    def test_block_at_task_node(self):
+        from flowstate.dsl.ast import LumonConfig
+
+        source = (
+            "flow f { budget = 1h on_error = pause context = handoff "
+            "input { task_name: string } "
+            'entry a { prompt = "x" } '
+            'task t { prompt = "work" lumon { enabled = true plugins = ["x"] } } '
+            'exit b { prompt = "y" } a -> t t -> b }'
+        )
+        flow = parse_flow(source)
+        assert flow.nodes["t"].lumon == LumonConfig(enabled=True, plugins=("x",), config_path=None)
+
+    def test_block_at_exit_node(self):
+        from flowstate.dsl.ast import LumonConfig
+
+        source = (
+            "flow f { budget = 1h on_error = pause context = handoff "
+            "input { task_name: string } "
+            'entry a { prompt = "x" } '
+            'exit b { prompt = "y" lumon { enabled = true plugins = ["z"] } } '
+            "a -> b }"
+        )
+        flow = parse_flow(source)
+        assert flow.nodes["b"].lumon == LumonConfig(enabled=True, plugins=("z",), config_path=None)
+
+    def test_block_at_atomic_node(self):
+        from flowstate.dsl.ast import LumonConfig
+
+        source = (
+            "flow f { budget = 1h on_error = pause context = handoff "
+            "input { task_name: string } "
+            'entry a { prompt = "x" } '
+            'atomic d { prompt = "deploy" lumon { enabled = true config = "c.json" } } '
+            'exit b { prompt = "y" } a -> d d -> b }'
+        )
+        flow = parse_flow(source)
+        assert flow.nodes["d"].lumon == LumonConfig(
+            enabled=True, plugins=None, config_path="c.json"
+        )
+
+    def test_node_block_overrides_flow_block(self):
+        """Node-level block fully overrides the flow-level block; a node with
+        no block of its own inherits silently (lumon == None) (TEST-37b.6).
+        """
+        from flowstate.dsl.ast import LumonConfig
+
+        source = (
+            "flow f { budget = 1h on_error = pause context = handoff "
+            'lumon { enabled = true plugins = ["a"] } '
+            "input { task_name: string } "
+            'entry start { prompt = "begin" } '
+            'task overriding { prompt = "x" lumon { enabled = true plugins = ["b"] } } '
+            'task inheriting { prompt = "y" } '
+            'exit done { prompt = "end" } '
+            "start -> overriding overriding -> inheriting inheriting -> done }"
+        )
+        flow = parse_flow(source)
+        assert flow.lumon == LumonConfig(enabled=True, plugins=("a",), config_path=None)
+        assert flow.nodes["overriding"].lumon == LumonConfig(
+            enabled=True, plugins=("b",), config_path=None
+        )
+        assert flow.nodes["inheriting"].lumon is None
+
+    def test_block_attributes_are_order_independent(self):
+        """Inside the block, the order of ``enabled``/``plugins``/``config``
+        doesn't matter — they're attribute statements, not positional.
+        """
+        from flowstate.dsl.ast import LumonConfig
+
+        a = parse_flow(
+            "flow f { budget = 1h on_error = pause context = handoff "
+            'lumon { enabled = true plugins = ["x"] } '
+            "input { task_name: string } "
+            'entry s { prompt = "x" } exit e { prompt = "y" } s -> e }'
+        )
+        b = parse_flow(
+            "flow f { budget = 1h on_error = pause context = handoff "
+            'lumon { plugins = ["x"] enabled = true } '
+            "input { task_name: string } "
+            'entry s { prompt = "x" } exit e { prompt = "y" } s -> e }'
+        )
+        assert a.lumon == b.lumon == LumonConfig(enabled=True, plugins=("x",), config_path=None)
+
+    def test_mixed_block_and_flat_in_flow_is_parse_error(self):
+        """A flow scope that combines the block AND any of the deprecated flat
+        keys (lumon/lumon_config/sandbox/sandbox_policy) fails at parse time
+        (TEST-37b.10).
+        """
+        import pytest
+
+        from flowstate.dsl.exceptions import FlowParseError
+
+        source = (
+            "flow f { budget = 1h on_error = pause context = handoff "
+            "lumon = true "
+            "lumon { enabled = true } "
+            "input { task_name: string } "
+            'entry a { prompt = "x" } exit b { prompt = "y" } a -> b }'
+        )
+
+        with pytest.raises(FlowParseError, match=r"(?i)not both|mutually exclusive|mix"):
+            parse_flow(source)
+
+    def test_mixed_block_and_sandbox_policy_in_flow_is_parse_error(self):
+        import pytest
+
+        from flowstate.dsl.exceptions import FlowParseError
+
+        source = (
+            "flow f { budget = 1h on_error = pause context = handoff "
+            'sandbox_policy = "policy.yaml" '
+            "lumon { enabled = true } "
+            "input { task_name: string } "
+            'entry a { prompt = "x" } exit b { prompt = "y" } a -> b }'
+        )
+
+        with pytest.raises(FlowParseError):
+            parse_flow(source)
+
+    def test_mixed_block_and_flat_in_node_is_parse_error(self):
+        """Same per-scope rule applies to node bodies."""
+        import pytest
+
+        from flowstate.dsl.exceptions import FlowParseError
+
+        source = (
+            "flow f { budget = 1h on_error = pause context = handoff "
+            "input { task_name: string } "
+            'entry a { prompt = "x" lumon = true lumon { enabled = true } } '
+            'exit b { prompt = "y" } a -> b }'
+        )
+
+        with pytest.raises(FlowParseError):
+            parse_flow(source)
+
+    def test_flat_at_flow_with_block_at_node_is_valid(self):
+        """Per-scope mixed-syntax check: flow scope using the legacy flat
+        syntax while a node scope uses the block is allowed (different
+        scopes are evaluated independently).
+        """
+        from flowstate.dsl.ast import LumonConfig
+
+        source = (
+            "flow f { budget = 1h on_error = pause context = handoff "
+            "lumon = true "
+            "input { task_name: string } "
+            'entry a { prompt = "x" lumon { enabled = true plugins = ["x"] } } '
+            'exit b { prompt = "y" } a -> b }'
+        )
+        flow = parse_flow(source)
+        assert flow.lumon == LumonConfig(enabled=True, plugins=None, config_path=None)
+        assert flow.nodes["a"].lumon == LumonConfig(enabled=True, plugins=("x",), config_path=None)
+
+    def test_fixture_valid_lumon_block(self):
+        flow = parse_flow(load_fixture("valid_lumon_block.flow"))
+        assert flow.lumon is not None
+        assert flow.lumon.enabled is True
+        assert flow.lumon.plugins == ("sample",)
+        assert flow.lumon.config_path is None
+
+    def test_fixture_valid_lumon_block_node_override(self):
+        flow = parse_flow(load_fixture("valid_lumon_block_node_override.flow"))
+        assert flow.lumon is not None
+        assert flow.lumon.plugins == ("sample",)
+        audit = flow.nodes["audit"].lumon
+        assert audit is not None
+        assert audit.plugins == ("second_sample",)
+        # Node without its own block inherits — its node.lumon stays None.
+        assert flow.nodes["passthrough"].lumon is None
+
+    def test_fixture_invalid_lumon_block_mixed_raises_parse_error(self):
+        import pytest
+
+        from flowstate.dsl.exceptions import FlowParseError
+
+        with pytest.raises(FlowParseError):
+            parse_flow(load_fixture("invalid_lumon_block_mixed.flow"))
+
+
+# ---------------------------------------------------------------------------
 # DSL-015: agent persona attribute
 # ---------------------------------------------------------------------------
 

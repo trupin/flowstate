@@ -1,0 +1,2 @@
+// Minimal Lumon plugin manifest stub used by DSL-016 fixtures.
+name = "second_sample"
