@@ -78,11 +78,20 @@ pip install 'flowstate[lumon]'
 ### Desktop app (macOS, optional)
 
 If you'd rather run Flowstate from the menubar than the terminal, the
-unsigned `.dmg` (UI-077) bundles its own portable Python — no system
-Python install needed. The menubar app supervises a local `flowstate
-server` per project; click the tray icon to switch projects, open the
-UI, or quit cleanly. Source: `desktop/`. Build instructions live in
-`RELEASING.md`.
+unsigned `.dmg` bundles its own portable Python — no system Python
+install needed. The menubar app supervises a local `flowstate server`
+per project; click the tray icon to switch projects, open the UI, or
+quit cleanly.
+
+Download from [GitHub Releases][releases] (Apple Silicon: `*-aarch64.dmg`,
+Intel: `*-x86_64.dmg`). First launch: **right-click → Open** to bypass
+the Gatekeeper warning ([details + alternatives][desktop-readme]).
+
+Source: [`desktop/`](desktop/README.md). Build instructions live in
+[`RELEASING.md`](RELEASING.md#desktop-app).
+
+[releases]: https://github.com/trupin/flowstate/releases
+[desktop-readme]: desktop/README.md
 
 ## Quickstart
 
