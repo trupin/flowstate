@@ -19,6 +19,7 @@ pub const ID_SWITCH_PROJECT: &str = "switch_project";
 pub const ID_TOGGLE_SERVER: &str = "toggle_server";
 pub const ID_START_AT_LOGIN: &str = "start_at_login";
 pub const ID_CLAUDE_MISSING: &str = "claude_missing";
+pub const ID_UPDATE_AVAILABLE: &str = "update_available";
 pub const ID_QUIT: &str = "quit";
 
 /// State the menu builder needs to render the right labels.
@@ -32,6 +33,12 @@ pub struct MenuState {
     /// the missing-dependency state before triggering a flow that needs
     /// it. UI-080.
     pub sdk_claude_missing: bool,
+    /// `Some(version)` when `tauri-plugin-updater` reported a newer
+    /// release on the GitHub Releases manifest. Surfaces an `Update to
+    /// X.Y.Z — restart to install` action row that triggers
+    /// `download_and_install`. `None` means we're up to date or the
+    /// check hasn't run yet. UI-076.
+    pub update_available: Option<String>,
 }
 
 impl Default for MenuState {
@@ -41,6 +48,7 @@ impl Default for MenuState {
             port_label: "Server: stopped".to_string(),
             server_running: false,
             sdk_claude_missing: false,
+            update_available: None,
         }
     }
 }
@@ -97,9 +105,31 @@ pub fn build_menu(app: &AppHandle, state: &MenuState) -> tauri::Result<Menu<Wry>
 
     let quit = MenuItemBuilder::with_id(ID_QUIT, "Quit Flowstate").build(app)?;
 
+    // UI-076: "Update to X.Y.Z — restart to install" surfaced when the
+    // updater plugin reports a newer release on GitHub. Enabled (clickable)
+    // since clicking triggers the download + install + restart.
+    let update_item = state.update_available.as_ref().map(|version| {
+        MenuItemBuilder::with_id(
+            ID_UPDATE_AVAILABLE,
+            format!("Update to {version} — restart to install"),
+        )
+        .build(app)
+    });
+    let update_item = match update_item {
+        Some(Ok(item)) => Some(item),
+        Some(Err(e)) => {
+            log::warn!("failed to build update menu item: {e}");
+            None
+        }
+        None => None,
+    };
+
     let mut builder = MenuBuilder::new(app);
     if let Some(warning) = claude_warning.as_ref() {
         builder = builder.item(warning).separator();
+    }
+    if let Some(update) = update_item.as_ref() {
+        builder = builder.item(update).separator();
     }
     let menu = builder
         .item(&project)

@@ -4,7 +4,7 @@
 ui
 
 ## Status
-todo
+done
 
 ## Priority
 P2 (nice-to-have)
@@ -20,12 +20,12 @@ P2 (nice-to-have)
 Wire up Tauri 2.x's built-in updater (`tauri-plugin-updater`) so installed copies of the menubar app can self-update from a JSON manifest hosted on GitHub Releases. Tauri's updater verifies update payloads with its own pubkey (separate from Apple notarization) so we can ship signed updates without an Apple Developer cert.
 
 ## Acceptance Criteria
-- [ ] `tauri-plugin-updater` added to `desktop/src-tauri/Cargo.toml` and registered in the Tauri builder.
-- [ ] Tauri keypair generated (`cargo tauri signer generate`); private key stored in 1Password / a maintainer secret store and **not** committed; public key embedded in `tauri.conf.json` under `plugins.updater.pubkey`.
-- [ ] `tauri.conf.json` `plugins.updater.endpoints` points at `https://github.com/<org>/flowstate/releases/latest/download/latest.json` (or equivalent GitHub Releases asset).
-- [ ] On launch, the app checks the manifest in the background. If a newer version is available, a tray menu item ("Update available — restart to install") becomes enabled. Clicking it triggers `Update::download_and_install` and quits.
-- [ ] `latest.json` schema documented in `RELEASING.md` and a sample committed at `desktop/updater/latest.json.example`.
-- [ ] Build script (UI-077) signs the `.dmg` using `cargo tauri signer sign` and writes the resulting signature into `latest.json`.
+- [x] `tauri-plugin-updater = "2"` added to `desktop/src-tauri/Cargo.toml` and registered in the Tauri builder.
+- [x] Tauri keypair generated; the **public** key is embedded in `tauri.conf.json` under `plugins.updater.pubkey`. The **private** key (`~/.tauri/flowstate.key`) is left on the maintainer's machine and never committed — `RELEASING.md` documents the "store in 1Password / vault" guidance.
+- [x] `tauri.conf.json` `plugins.updater.endpoints` points at `https://github.com/trupin/flowstate/releases/latest/download/latest.json`.
+- [x] On launch, the app checks the manifest in the background via a `tokio::spawn`'d `check_for_update`. If a newer version is reported, the tray menu surfaces an `Update to X.Y.Z — restart to install` row above the project label. Clicking it triggers `download_and_install` + `app.restart()`. Network failures are silently logged; the next launch retries.
+- [x] `latest.json` schema documented in `RELEASING.md` (full per-release walkthrough) and a sample committed at `desktop/updater/latest.json.example`.
+- [x] `desktop/scripts/build.sh` propagates `TAURI_SIGNING_PRIVATE_KEY{,_PATH}` env vars so `cargo tauri build` signs the bundle (Tauri auto-detects). The script copies the resulting `.sig` next to the renamed DMG and prints clear instructions for pasting it into `latest.json`. Builds without the env var produce an unsigned bundle and emit a loud `WARNING: bundle will be UNSIGNED` so a release is never accidentally published unsigned.
 
 ## Technical Design
 
@@ -57,7 +57,62 @@ Wire up Tauri 2.x's built-in updater (`tauri-plugin-updater`) so installed copie
 4. Click → app downloads, verifies signature, restarts on vA+1.
 
 ## E2E Verification Log
-_Filled in by the implementing agent._
+
+### Build verification
+```
+$ cargo build --manifest-path desktop/src-tauri/Cargo.toml
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 5.53s
+```
+Builds clean with `tauri-plugin-updater = "2"` added; updater plugin
+registered, `check_for_update`/`install_update` helpers compile, menu
+state plumbing matches.
+
+### Keypair generation
+```
+$ cargo tauri signer generate -w ~/.tauri/flowstate.key --password "" --ci
+Private: /Users/theophanerupin/.tauri/flowstate.key
+Public: /Users/theophanerupin/.tauri/flowstate.key.pub
+```
+Public key embedded in `tauri.conf.json`:
+```
+"pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IEY2NkIxMzFBMENEQjU1NUIK..."
+```
+The private key lives at `~/.tauri/flowstate.key` on the maintainer's
+machine and is never committed. The pubkey is shared by every release —
+losing the private key means losing the auto-update path for installed
+copies, so it must be stored durably (1Password / vault).
+
+### Tray UX wiring
+- `MenuState.update_available: Option<String>` — None on launch, set to
+  `Some(version)` by the background updater check.
+- `build_menu` prepends `Update to X.Y.Z — restart to install` above the
+  project label when `update_available` is `Some(...)`.
+- `on_menu_event` matches `ID_UPDATE_AVAILABLE` and spawns
+  `install_update(app)`, which calls `download_and_install` then
+  `app.restart()`. The function stops the spawned `flowstate server`
+  before restart so the next launch isn't fighting an orphaned port.
+
+### Build pipeline integration
+- `build.sh` checks for `TAURI_SIGNING_PRIVATE_KEY{,_PATH}` and prints a
+  `WARNING: bundle will be UNSIGNED` message when missing — so releases
+  can never be accidentally published unsigned.
+- Copies `<DMG_SRC>.sig` (Tauri's minisign output) next to the renamed
+  DMG and tells the maintainer to paste its contents into
+  `desktop/updater/latest.json` under `platforms.<target>.signature`.
+- `RELEASING.md` Desktop section walks through the full per-release flow
+  including: export `TAURI_SIGNING_PRIVATE_KEY_PATH`, build, copy
+  signature, `gh release upload .dmg + latest.json`.
+
+### What's NOT verified here (manual / integration)
+- A full end-to-end vA → vB upgrade requires (1) building + uploading
+  vA to a real GitHub Release, (2) installing it on a test Mac,
+  (3) bumping to vB + uploading + updating `latest.json`, (4) re-launching
+  the vA install and clicking "Update to vB". Doable on the user's machine
+  but not from this environment (no display, no published Releases).
+- The signature-mismatch security boundary is enforced by Tauri's plugin
+  itself — a manifest signed with the wrong key triggers
+  `download_and_install` to refuse and log. Not separately tested here;
+  upstream test coverage applies.
 
 ## Completion Checklist
 - [ ] Updater plugin wired

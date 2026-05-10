@@ -1,0 +1,15 @@
+{
+  "version": "0.0.2",
+  "notes": "Bug fixes and improvements. See release notes on GitHub.",
+  "pub_date": "2026-05-10T18:00:00.000Z",
+  "platforms": {
+    "darwin-aarch64": {
+      "signature": "PASTE-CONTENTS-OF-Flowstate-0.0.2-aarch64.dmg.sig-HERE",
+      "url": "https://github.com/trupin/flowstate/releases/download/v0.0.2/Flowstate-0.0.2-aarch64.dmg"
+    },
+    "darwin-x86_64": {
+      "signature": "PASTE-CONTENTS-OF-Flowstate-0.0.2-x86_64.dmg.sig-HERE",
+      "url": "https://github.com/trupin/flowstate/releases/download/v0.0.2/Flowstate-0.0.2-x86_64.dmg"
+    }
+  }
+}

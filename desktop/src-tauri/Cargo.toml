@@ -20,6 +20,7 @@ tauri-build = { version = "2", features = [] }
 tauri = { version = "2", features = ["tray-icon", "image-png"] }
 tauri-plugin-dialog = "2"
 tauri-plugin-shell = "2"
+tauri-plugin-updater = "2"
 
 # HTTP client for /health polling. rustls avoids the OpenSSL system-library
 # dependency, which simplifies the unsigned macOS .dmg story.

@@ -37,7 +37,15 @@
     },
     "resources": {
       "../python/": "python"
-    }
+    },
+    "createUpdaterArtifacts": true
   },
-  "plugins": {}
+  "plugins": {
+    "updater": {
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IEY2NkIxMzFBMENEQjU1NUIKUldSYlZkc01HaE5yOWlOWkJlMFRNLytFM1ZXRy9iN202V1VOOEdXWFh0UWpzVmh3cEhPNWs0RGgK",
+      "endpoints": [
+        "https://github.com/trupin/flowstate/releases/latest/download/latest.json"
+      ]
+    }
+  }
 }

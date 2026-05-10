@@ -27,6 +27,7 @@ use tauri::tray::TrayIconBuilder;
 use tauri::{AppHandle, Listener, Manager, Wry};
 use tauri_plugin_dialog::DialogExt;
 use tauri_plugin_shell::ShellExt;
+use tauri_plugin_updater::UpdaterExt;
 use tokio::sync::watch;
 
 mod health;
@@ -80,6 +81,7 @@ fn main() {
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_shell::init())
+        .plugin(tauri_plugin_updater::Builder::new().build())
         .manage(Mutex::new(AppState::new()))
         .setup(|app| {
             // macOS: hide the Dock icon. Menubar-only.
@@ -127,6 +129,14 @@ fn main() {
                     );
                 }
             }
+
+            // UI-076: kick off a background updater check. Doesn't block
+            // the tray from rendering — silently logs network failures so
+            // the user isn't bothered by transient errors.
+            let updater_handle = app.handle().clone();
+            tauri::async_runtime::spawn(async move {
+                check_for_update(updater_handle).await;
+            });
 
             Ok(())
         })
@@ -206,6 +216,13 @@ fn on_menu_event(app: &AppHandle, id: &str) {
         }
         crate::menu::ID_START_AT_LOGIN => {
             log::info!("Start-at-Login toggle is a TODO (UI-078).");
+        }
+        crate::menu::ID_UPDATE_AVAILABLE => {
+            // UI-076: trigger the download/install/restart flow.
+            let app_for_update = app.clone();
+            tauri::async_runtime::spawn(async move {
+                install_update(app_for_update).await;
+            });
         }
         // Disabled labels (project name, port) emit events too — ignore.
         _ => {}
@@ -380,6 +397,81 @@ fn pick_project(app: AppHandle) {
             // UI-080: re-evaluate the SDK-claude warning for the new project.
             refresh_sdk_claude_warning(&app_for_callback, Some(&path));
         });
+}
+
+/// UI-076: probe the GitHub Releases updater manifest in the background.
+///
+/// Runs once at launch from a tokio task spawned in `setup`. On success,
+/// stores the new version in `MenuState.update_available` and rebuilds
+/// the tray menu so the user sees an "Update to X.Y.Z" action row.
+/// On error (network down, no manifest yet, signature mismatch) we log
+/// at warn-level and move on — the next launch will retry. Never bother
+/// the user with a transient error dialog.
+async fn check_for_update(app: AppHandle) {
+    let updater = match app.updater() {
+        Ok(u) => u,
+        Err(e) => {
+            log::warn!("updater unavailable: {e}");
+            return;
+        }
+    };
+    let result = updater.check().await;
+    let update = match result {
+        Ok(Some(update)) => update,
+        Ok(None) => {
+            log::info!("updater: no update available");
+            return;
+        }
+        Err(e) => {
+            log::warn!("updater check failed: {e}");
+            return;
+        }
+    };
+    let version = update.version.clone();
+    log::info!("updater: {version} available");
+    update_menu(&app, |m| m.update_available = Some(version));
+}
+
+/// UI-076: download + install the pending update, then restart the app.
+///
+/// Tauri's `download_and_install` handles signature verification against
+/// the embedded `pubkey` from `tauri.conf.json` — if the manifest is
+/// signed with anything other than the maintainer's private key the
+/// install is rejected and the existing app keeps running. That's the
+/// security boundary; never bypass it.
+async fn install_update(app: AppHandle) {
+    let updater = match app.updater() {
+        Ok(u) => u,
+        Err(e) => {
+            log::warn!("updater unavailable at install time: {e}");
+            return;
+        }
+    };
+    let update = match updater.check().await {
+        Ok(Some(u)) => u,
+        Ok(None) => {
+            log::info!("updater: no update at install time (raced?)");
+            return;
+        }
+        Err(e) => {
+            log::warn!("updater re-check before install failed: {e}");
+            return;
+        }
+    };
+    log::info!("updater: downloading {}", update.version);
+    let result = update
+        .download_and_install(|_chunk, _total| {}, || log::info!("updater: download finished"))
+        .await;
+    match result {
+        Ok(()) => {
+            log::info!("updater: install complete, restarting");
+            // Stop the spawned flowstate server cleanly before restart so
+            // the next launch isn't fighting an orphaned port binding.
+            stop_server(&app);
+            app.restart();
+        }
+        Err(e) => log::warn!("updater install failed: {e}"),
+    }
 }
 
 /// UI-080: scan a project's `flows/*.flow` files for `harness = "sdk"`
