@@ -1,0 +1,12 @@
+# Rust build output
+target/
+
+# Tauri build output
+src-tauri/target/
+src-tauri/gen/
+
+# DMG / .app bundling output
+dist/
+
+# Vendored portable Python (UI-075). Populated at build time, never committed.
+python/

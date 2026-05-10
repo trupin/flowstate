@@ -1,0 +1,41 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "Flowstate",
+  "version": "0.0.1",
+  "identifier": "dev.flowstate.desktop",
+  "build": {
+    "beforeBuildCommand": "",
+    "beforeDevCommand": "",
+    "devUrl": null,
+    "frontendDist": null
+  },
+  "app": {
+    "withGlobalTauri": false,
+    "macOSPrivateApi": false,
+    "windows": [],
+    "security": {
+      "csp": null
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": ["app", "dmg"],
+    "category": "DeveloperTool",
+    "shortDescription": "Flowstate menubar app",
+    "longDescription": "Menubar app that supervises a local flowstate server and surfaces project status from the system tray.",
+    "icon": [
+      "icons/32x32.png",
+      "icons/icon.png",
+      "icons/icon@2x.png"
+    ],
+    "macOS": {
+      "frameworks": [],
+      "minimumSystemVersion": "11.0",
+      "exceptionDomain": "127.0.0.1",
+      "signingIdentity": null,
+      "providerShortName": null
+    },
+    "resources": []
+  },
+  "plugins": {}
+}

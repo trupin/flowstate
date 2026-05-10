@@ -492,7 +492,7 @@
 
 | Issue      | Title                                                        | Domain | Priority | Depends On  | Status |
 | ---------- | ------------------------------------------------------------ | ------ | -------- | ----------- | ------ |
-| UI-070     | Cancel button succeeds on backend but UI does not reflect it | ui     | P1       | —           | todo   |
+| UI-070     | Cancel button succeeds on backend but UI does not reflect it | ui     | P1       | —           | done   |
 | UI-072     | Retry Task button click appears to do nothing                | ui     | P1       | —           | done        |
 
 
@@ -569,16 +569,28 @@ Stepping stone before the full menubar app: add a PWA manifest + service worker 
 
 | Issue   | Title                                              | Domain | Priority | Depends On  | Status |
 | ------- | -------------------------------------------------- | ------ | -------- | ----------- | ------ |
-| UI-073  | Make Flowstate UI installable as a PWA from the browser | ui | P2       | SHARED-008  | todo   |
+| UI-073  | Make Flowstate UI installable as a PWA from the browser | ui | P2       | SHARED-008  | done   |
 
 
 ### Phase 35 — Tauri menubar app (macOS)
 
 Native menubar app that manages the `flowstate server` lifecycle and surfaces status / project switching from the system tray. Same UX category as Postgres.app, OrbStack, Tailscale. Bundles a portable Python so no system install needed. Phase 1 is macOS-only **and unsigned** (users right-click → Open on first launch); Apple Developer cert + notarization is a deferred follow-up. Windows/Linux are P2 follow-ups.
 
+UI-074 landed only the v0 scaffold (compiles via `cargo check`; no installable artifact yet). The remaining issues build on top to deliver a real, downloadable `.dmg`.
+
 | Issue   | Title                                              | Domain      | Priority | Depends On                                  | Status |
 | ------- | -------------------------------------------------- | ----------- | -------- | ------------------------------------------- | ------ |
-| UI-074  | Tauri menubar app for Flowstate                    | ui (+ shared) | P1     | SHARED-008, SHARED-010, SERVER-031, SERVER-028 | todo   |
+| UI-074  | Tauri menubar app for Flowstate (v0 scaffold)      | ui (+ shared) | P1     | SHARED-008, SHARED-010, SERVER-031, SERVER-028 | done   |
+| UI-075  | Bundle portable Python via `python-build-standalone` | ui        | P1       | UI-074                                      | todo   |
+| UI-076  | Tauri auto-updater + GitHub Releases manifest      | ui          | P2       | UI-074, UI-077                              | todo   |
+| UI-077  | Unsigned `.dmg` build pipeline + `desktop/scripts/build.sh` | ui  | P1       | UI-074, UI-075                              | todo   |
+
+
+### Phase 36 — Test housekeeping
+
+| Issue      | Title                                                        | Domain | Priority | Depends On  | Status |
+| ---------- | ------------------------------------------------------------ | ------ | -------- | ----------- | ------ |
+| ENGINE-085 | EventType count test pins stale value (19) — actual is 21    | engine | P2       | —           | done   |
 
 ---
 

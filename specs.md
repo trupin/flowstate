@@ -2024,6 +2024,45 @@ Node 20+ is a **build-time** prerequisite for maintainers. It is **not** require
 
 **Non-goals for v0.1:** Docker images, Homebrew formulae, systemd units, auth, multi-tenancy, remote dashboards, hosted SaaS. These are deferred to future releases.
 
+### 13.5 Desktop App (Menubar)
+
+> **Status:** v0 scaffold landed in UI-074. Bundled Python (UI-075), unsigned `.dmg` build pipeline (UI-077), and the Tauri auto-updater (UI-076) are deferred follow-ups. Until those land, the desktop app is a developer-only artifact you compile from source.
+
+The desktop app lives at `desktop/` and is a **Tauri 2.x** binary written in Rust. It runs in the macOS menubar (system tray) — no Dock icon, no main window — and supervises a child `flowstate server` process whose lifecycle it owns end-to-end. Same UX category as Postgres.app, OrbStack, and Tailscale: the user clicks the menubar icon to switch projects, open the UI in the browser, or stop the server.
+
+**Architecture (v0):**
+
+| Concern | Implementation |
+|---|---|
+| Menubar shell | Tauri 2.x with `ActivationPolicy::Accessory` so there's no Dock icon. The tray menu is built from native `MenuItem`s — there is no HTML/JS frontend in the app. |
+| Server child process | `python3 -m flowstate server --port N --host 127.0.0.1` spawned via `std::process::Command`. Port is picked from a 9090–9099 scan. Stop is SIGTERM with a 5s grace, then SIGKILL. `Drop` ensures we never leak a Python process. |
+| Project anchor | `flowstate.toml` in the picked directory, validated before start. The most-recently-used project root is persisted at `~/.flowstate/desktop_state.json` so re-launching the app restores the last project. |
+| Health polling | A `tokio` task polls `http://127.0.0.1:{port}/health` every 5 seconds and emits Tauri events (`health://running`, `health://down`, `health://error`) the tray listens on. Cancellation is via `tokio::sync::watch` so we cleanly retire the old poller when the server is restarted on a new port. |
+| Tray icon | Three states (idle / running / error) ship as embedded PNGs (`include_bytes!`). v0 uses static placeholder icons; an animated "flow executing" state is a polish follow-up. |
+| "Open UI" / "Open in Browser" | Delegates to the user's default browser via `tauri-plugin-shell`. v0 does not embed a Tauri webview — the React UI is what's already served from `/` by the running `flowstate server`, so no duplication. |
+
+**v0 assumes Flowstate is on `PATH`.** The user installs Flowstate the normal way (`pipx install flowstate` or `uv tool install flowstate`) and the desktop app shells out to `python3 -m flowstate`. UI-075 will replace this with a portable Python (`python-build-standalone`) bundled inside the `.app` so end users don't need a system Python install.
+
+**Distribution model (planned, not yet automated):**
+
+- Unsigned macOS `.app` / `.dmg` published to GitHub Releases. No Apple Developer cert is required for v1; users will see a Gatekeeper warning on first launch and need to right-click → Open (or `xattr -d com.apple.quarantine /Applications/Flowstate.app`). The `RELEASING.md` "Desktop app" section documents this.
+- Tauri's auto-updater (UI-076) will sit in front of GitHub Releases. Update payload integrity is via Tauri's own pubkey, separate from Apple notarization.
+- Apple Developer signing + notarization is a P3 follow-up — only worth the $99/yr if/when distribution friction becomes a real problem.
+- Windows / Linux desktop builds are out of scope for v0.
+
+**What is _not_ in v0:**
+
+- Bundled portable Python (UI-075).
+- Auto-updater wiring + Tauri pubkey (UI-076).
+- DMG bundling / signing pipeline + `desktop/scripts/build.sh` + RELEASING walkthrough (UI-077).
+- "Start at Login" toggle is stubbed in the menu (disabled label) — proper LaunchAgent implementation is UI-078.
+- Animated tray icon for an in-flight flow execution.
+- Multi-project (one server per project simultaneously) — v0 is one active project at a time.
+
+**Why Tauri vs Electron:** Electron ships Chromium (~150 MB binary). Tauri uses the system webview (~5 MB). For a tool dev users install on every machine, the size matters. For v0 we don't even use the webview — the menubar UI is native menu items and the React UI opens in the user's default browser — so Tauri is just acting as a small, well-supported tray + lifecycle host with a path to bundling later if we want it.
+
+**Why not pyinstaller:** produces a single-binary executable but doesn't address the menubar / lifecycle / signing story. Tauri does both.
+
 ---
 
 ## 14. Agent Subtask Management
