@@ -252,7 +252,13 @@ class FlowstateDB:
     ) -> None:
         """Update flow run status, setting timestamps for terminal/running states."""
         now = datetime.now(UTC).isoformat()
-        terminal = {"completed", "failed", "cancelled", "budget_exceeded"}
+        terminal = {
+            "completed",
+            "failed",
+            "cancelled",
+            "budget_exceeded",
+            "completed_with_conflicts",
+        }
         if status in terminal:
             self._execute(
                 "UPDATE flow_runs SET status = ?, completed_at = ?, error_message = ? WHERE id = ?",

@@ -146,6 +146,65 @@ class FlowstateDB:
             self._conn.execute("PRAGMA user_version=2")
             self._conn.commit()
 
+        if version < 3:
+            # Migration 3 (ENGINE-088): Add 'completed_with_conflicts' to the
+            # flow_runs.status CHECK constraint. Used when worktree_persist =
+            # true and the merge into the source branch has conflicts (or CAS
+            # exhausted) -- the run is still considered terminal but the exit
+            # branch is preserved for the user to merge manually.
+            #
+            # SQLite cannot ALTER a CHECK constraint, so we recreate the table.
+            # Columns are listed explicitly (not SELECT *) so this is robust
+            # against later additive migrations.
+            self._conn.executescript("""
+                PRAGMA foreign_keys=OFF;
+                BEGIN;
+
+                CREATE TABLE flow_runs_new (
+                    id TEXT PRIMARY KEY,
+                    flow_definition_id TEXT NOT NULL REFERENCES flow_definitions(id),
+                    status TEXT NOT NULL CHECK(status IN (
+                        'created', 'running', 'pausing', 'paused', 'completed',
+                        'failed', 'cancelled', 'budget_exceeded',
+                        'completed_with_conflicts'
+                    )),
+                    default_workspace TEXT,
+                    data_dir TEXT NOT NULL,
+                    params_json TEXT,
+                    budget_seconds INTEGER NOT NULL,
+                    elapsed_seconds REAL DEFAULT 0,
+                    on_error TEXT NOT NULL CHECK(on_error IN ('pause', 'abort', 'skip')),
+                    started_at TIMESTAMP,
+                    completed_at TIMESTAMP,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    error_message TEXT,
+                    worktree_path TEXT,
+                    task_id TEXT REFERENCES tasks(id),
+                    source_branch TEXT
+                );
+
+                INSERT OR IGNORE INTO flow_runs_new (
+                    id, flow_definition_id, status, default_workspace, data_dir,
+                    params_json, budget_seconds, elapsed_seconds, on_error,
+                    started_at, completed_at, created_at, error_message,
+                    worktree_path, task_id, source_branch
+                ) SELECT
+                    id, flow_definition_id, status, default_workspace, data_dir,
+                    params_json, budget_seconds, elapsed_seconds, on_error,
+                    started_at, completed_at, created_at, error_message,
+                    worktree_path, task_id, source_branch
+                FROM flow_runs;
+
+                DROP TABLE flow_runs;
+                ALTER TABLE flow_runs_new RENAME TO flow_runs;
+
+                CREATE INDEX IF NOT EXISTS idx_flow_runs_status ON flow_runs(status);
+
+                COMMIT;
+                PRAGMA foreign_keys=ON;
+                PRAGMA user_version=3;
+            """)
+
     @property
     def connection(self) -> sqlite3.Connection:
         """Return the underlying sqlite3 connection."""

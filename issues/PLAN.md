@@ -622,7 +622,7 @@ Opt-in `worktree_persist = true` flow attribute. On successful flow completion, 
 | ----------- | ------------------------------------------------------------------ | ------ | -------- | --------------------- | ------ |
 | DSL-017     | Add `worktree_persist` flow attribute (type-check rule WP1)        | dsl    | P1       | —                     | done   |
 | STATE-013   | Add `source_branch` column to `flow_runs`                          | state  | P1       | —                     | done   |
-| ENGINE-088  | Persist exit worktree via detached worktree + ref CAS              | engine | P1       | DSL-017, STATE-013    | todo   |
+| ENGINE-088  | Persist exit worktree via detached worktree + ref CAS              | engine | P1       | DSL-017, STATE-013    | done   |
 
 ---
 

@@ -4,7 +4,7 @@
 engine
 
 ## Status
-todo
+done
 
 ## Priority
 P1 (important)
@@ -281,7 +281,135 @@ Integration tests exercise the executor → state → persist path with a mocked
 ## E2E Verification Log
 
 ### Post-Implementation Verification
-_[Agent fills this in: exact commands, observed output, confirmation fix/feature works]_
+
+**1. Test suite (real-git operations against `tmp_path`):**
+
+```
+$ uv run pytest tests/engine/test_persist_exit_worktree.py -v
+============================== 17 passed in 2.05s ==============================
+```
+
+All 17 tests pass, covering: capture-source-branch (3), happy-path advance,
+dirty-working-tree-untouched, real merge conflict, CAS retry via the
+`pre_cas_hook` injection seam, CAS exhaustion, concurrent lock serialization,
+helper skip cases, and four executor-integration skip cases plus two
+executor-integration end-to-end cases (advanced + conflict).
+
+**2. Full engine test suite (excluding `test_executor.py` pre-existing hang):**
+
+```
+$ uv run pytest tests/engine/ --ignore=tests/engine/test_executor.py -q
+490 passed in 69.74s
+```
+
+**3. Sample `test_executor.py` classes (verifying no regression in the
+sync→async `_complete_flow` change):**
+
+```
+$ uv run pytest tests/engine/test_executor.py::TestMinimalFlow \
+                tests/engine/test_executor.py::TestFlowRunRecord \
+                tests/engine/test_executor.py::TestLinear3NodeFlow \
+                tests/engine/test_executor.py::TestForkJoin2Targets \
+                tests/engine/test_executor.py::TestSubprocessManagerCalled -q
+8 passed in 0.10s
+```
+
+`TestContextModeHandoff` hangs — this is the **pre-existing** hang explicitly
+called out in the issue and the sprint-planner notes, not a regression from
+ENGINE-088.
+
+**4. State and DSL regression (migration 3 + new status):**
+
+```
+$ uv run pytest tests/state/ tests/dsl/ -q
+675 passed in 3.10s
+```
+
+**5. Lint and type checks:**
+
+```
+$ uv run ruff check src/flowstate/engine/ src/flowstate/state/ tests/engine/test_persist_exit_worktree.py
+All checks passed!
+$ uv run pyright src/flowstate/engine/ src/flowstate/state/ tests/engine/test_persist_exit_worktree.py
+0 errors, 0 warnings, 0 informations
+```
+
+**6. Dirty-working-tree real-repo demonstration (TEST-37c.9 spirit):**
+
+```
+$ mkdir /tmp/flowstate-e2e-demo && cd /tmp/flowstate-e2e-demo
+$ git init --initial-branch=main
+$ git config user.email test@flowstate.dev && git config user.name "FS Demo"
+$ echo "# Journal" > README.md && git add . && git commit -m init
+$ echo "modified by user" >> README.md && git add README.md
+$ echo "untracked junk" > scratch.md
+$ git status --porcelain
+M  README.md
+?? scratch.md
+```
+
+Driver script (real Python invocation, no mocks):
+
+```
+$ uv run python -c "<persist driver — see Bash command in agent transcript>"
+```
+
+Observed output:
+
+```
+=== BEFORE persist ===
+branch: main
+HEAD: 608e10cb3c05e6187d998efbae63e29b5d23c4b5
+status:
+M  README.md
+?? scratch.md
+
+exit branch: flowstate/demo-run/exit-1
+exit HEAD: fe910afcd0bc74bfc0301e80eec619d58f0daff4
+
+=== Running persist ===
+PersistResult: PersistResult(status='advanced',
+  old_commit='608e10cb...', new_commit='0c4d1b8e...', conflict_files=[], reason=None)
+
+=== AFTER persist ===
+branch: main
+HEAD: 0c4d1b8ea7c116d40e76bb1b3889ad0a82d7ea7e
+status:
+M  README.md
+D  feature.txt
+?? scratch.md
+log:
+0c4d1b8 flowstate: persist flowstate/demo-run/exit-1
+fe910af flowstate demo: add feature
+608e10c init
+
+README in index:
+# Journal
+modified by user
+```
+
+Key invariants verified end-to-end against a real git repo:
+- `main` ref advanced atomically (608e10c → 0c4d1b8) via `git update-ref` CAS.
+- The user's checkout STILL has `M README.md` (staged user edit preserved in
+  the index) and `?? scratch.md` (untracked file preserved on disk).
+- The README blob in the index still contains "modified by user" — the
+  user's staged changes were never touched by the merge.
+- HEAD branch is still `main` — no `git checkout` or `git reset` ran in the
+  user's checkout.
+- The new `D feature.txt` line reflects that `main` now contains
+  `feature.txt` while the user's index does not — exactly the documented
+  behavior (the merge lives in the branch, the user's checkout is
+  untouched). The user can `git checkout feature.txt` to pick it up.
+
+### CAS retry seam
+
+`merge_to_source_branch_via_detached_worktree` takes an optional async
+`pre_cas_hook(attempt)` parameter. Production calls always pass `None`.
+Tests use the hook to deterministically advance `refs/heads/main` between
+the helper's `rev-parse` and `update-ref`, which forces a CAS failure on
+the first attempt and verifies the retry path. See
+`TestCasRetry.test_cas_retry_succeeds_on_second_attempt` and
+`TestCasExhausted.test_cas_exhausted_after_three_attempts`.
 
 ## Completion Checklist
 - [ ] Unit tests written and passing
