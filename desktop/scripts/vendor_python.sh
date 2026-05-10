@@ -144,6 +144,26 @@ echo "[vendor_python] installing $WHEEL"
 # break if Flowstate's deps weren't already vendored, so let pip resolve.
 "$PYTHON_BIN" -m pip install --quiet --upgrade --force-reinstall "$WHEEL"
 
+# --- Step 4: post-install pruning (UI-079). ---
+# `claude_agent_sdk` ships a 196 MB bundled `claude` Mach-O binary at
+# `_bundled/claude` for its own subprocess management. The desktop app
+# defaults to AcpHarness (which spawns `claude-agent-acp` from PATH, not
+# the SDK's bundled `claude`), so the binary is dead weight in the .app.
+# Strip it to drop ~196 MB from the vendored tree.
+#
+# Trade-off: flows that opt into ``harness="sdk"`` will need a `claude`
+# binary on PATH at runtime. The SDK's own resolver falls back to PATH
+# when the bundled copy is missing. Document the trade-off in
+# `desktop/README.md` and the UI-079 issue.
+SDK_BUNDLED="$PYTHON_DIR/lib/python3.12/site-packages/claude_agent_sdk/_bundled"
+if [[ -d "$SDK_BUNDLED" ]]; then
+  pre_size=$(du -sk "$PYTHON_DIR" | awk '{print $1}')
+  rm -rf "$SDK_BUNDLED"
+  post_size=$(du -sk "$PYTHON_DIR" | awk '{print $1}')
+  freed=$((pre_size - post_size))
+  echo "[vendor_python] stripped claude_agent_sdk/_bundled ($((freed / 1024)) MB freed)"
+fi
+
 # Sanity-check: confirm we can run flowstate from the vendored interpreter.
 "$PYTHON_BIN" -m flowstate --version
 
