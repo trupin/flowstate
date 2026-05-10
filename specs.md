@@ -261,10 +261,11 @@ Duration:       <integer>(s|m|h)  — e.g., 2h, 30m, 90s
 Path:           "./relative/path" (always quoted)
 Keywords:       flow, entry, task, exit, wait, fence, atomic,
                 when, input, output, budget, workspace, on_error,
-                context, prompt, cwd, judge, worktree, max_parallel,
-                skip_permissions, harness, schedule, on_overlap, delay,
-                files, awaits, after, at, subtasks, sandbox, sandbox_policy,
-                lumon, lumon_config
+                context, prompt, cwd, judge, worktree, worktree_persist,
+                max_parallel, skip_permissions, harness, schedule,
+                on_overlap, delay, files, awaits, after, at, subtasks,
+                sandbox, sandbox_policy, lumon, lumon_config, enabled,
+                plugins, config, agent
 Operators:      ->  =  [  ]  {  }  ,  :
 Template vars:  {{identifier}}
 ```
@@ -279,14 +280,20 @@ flow <name> {
     workspace = <path>                    // optional — auto-generated if omitted
     judge = true | false                  // optional — default: false (self-report)
     worktree = true | false               // optional — default: true (git worktree isolation)
+    worktree_persist = true | false       // optional — default: false (merge exit branch back to source on completion) [TBD: DSL-017, ENGINE-088]
     max_parallel = <number>               // optional — default: 1 (serial processing)
     harness = <string>                    // optional — default: "claude" (agent runtime)
     subtasks = true | false               // optional — default: false (agent subtask management)
     skip_permissions = true | false       // optional — default: false
-    sandbox = true | false                // optional — default: false (Lumon sandboxing, alias for lumon)
-    sandbox_policy = <path>               // optional — path to .lumon.json plugin contracts (alias for lumon_config)
-    lumon = true | false                  // optional — default: false (Lumon language-level sandboxing)
-    lumon_config = <path>                 // optional — path to .lumon.json plugin contracts
+    sandbox = true | false                // DEPRECATED — use lumon { enabled = true } [TBD: DSL-016]
+    sandbox_policy = <path>               // DEPRECATED — use lumon { config = "..." } [TBD: DSL-016]
+    lumon = true | false                  // DEPRECATED — use lumon { enabled = true } [TBD: DSL-016]
+    lumon_config = <path>                 // DEPRECATED — use lumon { config = "..." } [TBD: DSL-016]
+    lumon {                               // optional — Lumon language-level sandboxing config block [TBD: SHARED-012, DSL-016]
+        enabled = true | false            //   default: false
+        plugins = [name1, name2, ...]     //   optional — explicit plugin allowlist (mutex with `config`)
+        config = <path>                   //   optional — path to .lumon.json (mutex with `plugins`)
+    }
     schedule = <cron_expression>          // optional — recurring flow
     on_overlap = skip | queue | parallel  // optional — default: skip
 
@@ -308,9 +315,19 @@ flow <name> {
 
 `harness` sets the default agent runtime for all nodes. `"claude"` (default) uses the native Claude Code CLI. Other values (e.g., `"gemini"`, `"custom"`) use the ACP (Agent Client Protocol) to communicate with the agent subprocess. Harnesses are configured in `flowstate.toml` under `[harnesses.<name>]`. Each node can override the flow-level harness with its own `harness` attribute.
 
-`sandbox` and `lumon` both enable Lumon language-level sandboxing (see Section 9.9). They are aliases — `sandbox = true` is equivalent to `lumon = true`. When either is `true`, the engine deploys Lumon's configuration into the agent's worktree before launching the subprocess. The agent is constrained to operate only through Lumon's safe, type-checked language primitives — it cannot run arbitrary shell commands, edit files outside the sandbox directory, or bypass the language's restricted vocabulary. Enforcement is layered: a `PreToolUse` hook (`sandbox-guard.py`) blocks disallowed operations at the tool level, and a deployed `CLAUDE.md` provides procedural constraints.
+The `lumon { ... }` block enables Lumon language-level sandboxing (see Section 9.9). When `enabled = true`, the engine deploys Lumon's configuration into the agent's worktree before launching the subprocess. The agent is constrained to operate only through Lumon's safe, type-checked language primitives — it cannot run arbitrary shell commands, edit files outside the sandbox directory, or bypass the language's restricted vocabulary. Enforcement is layered: a `PreToolUse` hook (`sandbox-guard.py`) blocks disallowed operations at the tool level, and a deployed `CLAUDE.md` provides procedural constraints. [TBD: SHARED-012, DSL-016, ENGINE-087]
 
-`sandbox_policy` and `lumon_config` both specify the path to a `.lumon.json` plugin contracts file (they are aliases). The file controls which plugins are available, which functions are exposed, and parameter constraints. Resolved relative to the flow file's directory. Each node can override the flow-level settings.
+Inside the block:
+- `enabled = true | false` turns Lumon on for this scope (default `false`).
+- `plugins = [...]` lists plugin names to enable. Each name resolves to `<flow_dir>/plugins/<name>/`, `~/.flowstate/plugins/<name>/`, or the bundled flowstate plugin. The built-in `flowstate` plugin is always included.
+- `config = <path>` points at a hand-written `.lumon.json` file (resolved relative to the flow file's directory). Use this for advanced per-plugin configuration.
+- `plugins` and `config` are mutually exclusive within the same block (rule L2). Pick the sugar or the file, not both.
+
+The flat attributes `lumon`, `lumon_config`, `sandbox`, `sandbox_policy` continue to parse for backward compatibility but are deprecated. They map onto an equivalent `lumon { ... }` block at the parser layer. [TBD: SHARED-012]
+
+Per-node `lumon { ... }` blocks fully override the flow-level block (no field-level merging). To opt a single node out of flow-wide sandboxing, set `lumon { enabled = false }` on the node.
+
+`worktree_persist = true` (requires `worktree = true`) merges the exit node's worktree branch back into the original workspace's source branch on successful flow completion. The merge runs in a fresh detached temporary worktree so the user's main checkout is never modified. The source branch ref advances atomically via `git update-ref` compare-and-swap. Concurrent runs serialize via a per-workspace file lock. Merge conflicts cause the run to complete with status `completed_with_conflicts` and preserve the exit branch for manual recovery. Used to give advisor-style flows a long-term git-backed memory: each run lands its commits on the source branch, accumulating across sessions. [TBD: DSL-017, STATE-013, ENGINE-088]
 
 Lumon sandboxing requires per-node worktree isolation (Section 9.7) — each node gets its own worktree with its own Lumon deployment. Requires the `lumon` package (installed from `git+https://github.com/trupin/lumon.git`).
 
@@ -350,36 +367,30 @@ Output fields declare the structure of the flow's output (used by cross-flow `fi
 ```
 entry <name> {
     prompt = <string>
+    agent = <string>          // optional — persona file under <flow_dir>/agents/ or ~/.claude/agents/ [TBD: DSL-015, ENGINE-086]
     cwd = <path>           // optional — overrides flow-level workspace
     judge = true | false   // optional — overrides flow-level judge setting
     harness = <string>     // optional — overrides flow-level harness
     subtasks = true | false   // optional — overrides flow-level subtasks setting
-    sandbox = true | false    // optional — overrides flow-level sandbox
-    sandbox_policy = <path>   // optional — overrides flow-level sandbox_policy
-    lumon = true | false      // optional — overrides flow-level lumon
-    lumon_config = <path>     // optional — overrides flow-level lumon_config
+    lumon { ... }             // optional — fully overrides flow-level lumon block [TBD: SHARED-012, DSL-016]
 }
 
 task <name> {
     prompt = <string>
+    agent = <string>          // optional — persona file [TBD: DSL-015, ENGINE-086]
     cwd = <path>           // optional — overrides flow-level workspace
     judge = true | false   // optional — overrides flow-level judge setting
     harness = <string>     // optional — overrides flow-level harness
     subtasks = true | false   // optional — overrides flow-level subtasks setting
-    sandbox = true | false    // optional — overrides flow-level sandbox
-    sandbox_policy = <path>   // optional — overrides flow-level sandbox_policy
-    lumon = true | false      // optional — overrides flow-level lumon
-    lumon_config = <path>     // optional — overrides flow-level lumon_config
+    lumon { ... }             // optional — fully overrides flow-level lumon block [TBD: SHARED-012, DSL-016]
 }
 
 exit <name> {
     prompt = <string>
+    agent = <string>          // optional — persona file [TBD: DSL-015, ENGINE-086]
     cwd = <path>           // optional — overrides flow-level workspace
     subtasks = true | false   // optional — overrides flow-level subtasks setting
-    sandbox = true | false    // optional — overrides flow-level sandbox
-    sandbox_policy = <path>   // optional — overrides flow-level sandbox_policy
-    lumon = true | false      // optional — overrides flow-level lumon
-    lumon_config = <path>     // optional — overrides flow-level lumon_config
+    lumon { ... }             // optional — fully overrides flow-level lumon block [TBD: SHARED-012, DSL-016]
 }
 
 wait <name> {
@@ -392,19 +403,19 @@ fence <name> { }           // synchronization barrier — no body needed
 
 atomic <name> {
     prompt = <string>
+    agent = <string>          // optional — persona file [TBD: DSL-015, ENGINE-086]
     cwd = <path>           // optional
     harness = <string>     // optional — overrides flow-level harness
     subtasks = true | false   // optional — overrides flow-level subtasks setting
-    sandbox = true | false    // optional — overrides flow-level sandbox
-    sandbox_policy = <path>   // optional — overrides flow-level sandbox_policy
-    lumon = true | false      // optional — overrides flow-level lumon
-    lumon_config = <path>     // optional — overrides flow-level lumon_config
+    lumon { ... }             // optional — fully overrides flow-level lumon block [TBD: SHARED-012, DSL-016]
 }
 ```
 
 The prompt can use template variables (`{{field_name}}`) and triple-quoted strings for multiline content.
 
 `cwd` sets the working directory for the Claude Code subprocess. If omitted, the task inherits the flow-level `workspace`. If neither is set, the engine auto-generates a workspace.
+
+`agent` references a persona file (e.g. `agent = "helly"`) resolved against `<flow_dir>/agents/<name>.md` first, then `~/.claude/agents/<name>.md`. The file's body becomes the subprocess system prompt; the node's `prompt` becomes the user-facing kickoff message. Optional YAML frontmatter (`name`, `model`, `description`) is honored — `model` selects an alternate harness if a matching one is registered. Both the system prompt and kickoff message receive `{{template_var}}` substitution. Missing files surface as a type error at parse time (rule AG1). [TBD: DSL-015, ENGINE-086]
 
 `wait` nodes pause the flow — they have no prompt and don't spawn a subprocess. `fence` nodes block until all running tasks in the flow reach the fence. `atomic` nodes ensure exclusive execution — only one instance runs at a time across all concurrent runs of the same flow.
 

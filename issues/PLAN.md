@@ -594,6 +594,35 @@ UI-074 landed only the v0 scaffold (compiles via `cargo check`; no installable a
 | ---------- | ------------------------------------------------------------ | ------ | -------- | ----------- | ------ |
 | ENGINE-085 | EventType count test pins stale value (19) — actual is 21    | engine | P2       | —           | done   |
 
+### Phase 37a — Reusable `agent.md` persona references
+
+Lets nodes reference reusable persona files (e.g. `agent = "helly"`) instead of inlining long persona prompts. Resolves via Claude Code's existing precedence (`<flow_dir>/agents/`, `~/.claude/agents/`). Frontmatter (`model`, `description`) is honored. Unblocks reusable persona libraries for advisor flows.
+
+| Issue       | Title                                                        | Domain | Priority | Depends On  | Status |
+| ----------- | ------------------------------------------------------------ | ------ | -------- | ----------- | ------ |
+| DSL-015     | Add `agent` node attribute (parser, AST, type-check)         | dsl    | P1       | —           | todo   |
+| ENGINE-086  | Resolve `agent.md` and wire as subprocess system prompt      | engine | P1       | DSL-015     | todo   |
+
+### Phase 37b — `lumon { ... }` config block
+
+Replaces flat `lumon = true` / `lumon_config = "..."` / `sandbox = ...` / `sandbox_policy = "..."` with a nested `lumon { enabled, plugins, config }` block. Introduces a `LumonConfig` AST dataclass. Adds `plugins = [...]` sugar for per-node plugin allowlists. Flat syntax keeps parsing for backward compatibility (deprecated in spec).
+
+| Issue       | Title                                                                  | Domain | Priority | Depends On                | Status |
+| ----------- | ---------------------------------------------------------------------- | ------ | -------- | ------------------------- | ------ |
+| SHARED-012  | `LumonConfig` dataclass and AST migration                              | shared | P1       | —                         | todo   |
+| DSL-016     | `lumon { ... }` block syntax + type-check rules L1/L2/L3               | dsl    | P1       | SHARED-012                | todo   |
+| ENGINE-087  | Adapt Lumon resolution to `LumonConfig`; synthesize `.lumon.json`      | engine | P1       | SHARED-012                | todo   |
+
+### Phase 37c — Persist exit worktree to source branch
+
+Opt-in `worktree_persist = true` flow attribute. On successful flow completion, merges the exit node's worktree branch back into the original workspace's source branch via a detached temporary worktree (never touches the user's main checkout). Atomic ref CAS via `git update-ref`. Per-workspace file lock serializes concurrent runs. Conflicts preserve the exit branch for manual recovery. Unlocks git-as-long-term-memory for advisor flows.
+
+| Issue       | Title                                                              | Domain | Priority | Depends On            | Status |
+| ----------- | ------------------------------------------------------------------ | ------ | -------- | --------------------- | ------ |
+| DSL-017     | Add `worktree_persist` flow attribute (type-check rule WP1)        | dsl    | P1       | —                     | todo   |
+| STATE-013   | Add `source_branch` column to `flow_runs`                          | state  | P1       | —                     | todo   |
+| ENGINE-088  | Persist exit worktree via detached worktree + ref CAS              | engine | P1       | DSL-017, STATE-013    | todo   |
+
 ---
 
 ## Cross-Domain Coordination
