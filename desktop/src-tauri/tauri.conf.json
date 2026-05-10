@@ -35,7 +35,9 @@
       "signingIdentity": null,
       "providerShortName": null
     },
-    "resources": []
+    "resources": {
+      "../python": "python"
+    }
   },
   "plugins": {}
 }

@@ -1,10 +1,12 @@
 //! Flowstate server child-process supervision.
 //!
-//! v0 design: shell out to `python3 -m flowstate server --port N --host 127.0.0.1`
-//! using the system Python on `PATH`. We assume the user installed Flowstate
-//! via `pipx install flowstate` or `uv tool install flowstate` (which puts a
-//! `flowstate` console script on PATH). The bundled-Python story is deferred
-//! to UI-075.
+//! Spawns `<python> -m flowstate server --port N --host 127.0.0.1` where
+//! `<python>` is resolved by `main::resolve_python` (UI-075):
+//!   1. `FLOWSTATE_PYTHON` env var (dev override)
+//!   2. The bundled portable Python at `Resource/python/bin/python3`
+//!      shipped inside the `.app` (production)
+//!   3. `python3` from `PATH` (fallback for `cargo tauri dev` runs that
+//!      haven't been vendored yet)
 //!
 //! Lifecycle guarantees:
 //! - [`FlowstateServer::start`] spawns the child and stores its handle.
@@ -36,18 +38,14 @@ pub struct FlowstateServer {
     child: Option<Child>,
     port: u16,
     project_root: PathBuf,
-    /// Path to a `python3` (or equivalent) interpreter that has Flowstate
-    /// installed. v0: read from `FLOWSTATE_PYTHON` env var if set (useful
-    /// when developing against a venv interpreter), else fall back to
-    /// `"python3"` from PATH. UI-075 will replace this with a bundled
-    /// portable Python so neither path needs to be set by the user.
+    /// Path to a `python3` interpreter that has Flowstate installed.
+    /// Resolved by the caller (typically `main::resolve_python`) so the
+    /// supervisor stays decoupled from Tauri's resource resolver.
     python: OsString,
 }
 
 impl FlowstateServer {
-    pub fn new(project_root: PathBuf) -> Self {
-        let python = std::env::var_os("FLOWSTATE_PYTHON")
-            .unwrap_or_else(|| OsString::from("python3"));
+    pub fn new(project_root: PathBuf, python: OsString) -> Self {
         Self {
             child: None,
             port: 0,

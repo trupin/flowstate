@@ -581,9 +581,10 @@ UI-074 landed only the v0 scaffold (compiles via `cargo check`; no installable a
 | Issue   | Title                                              | Domain      | Priority | Depends On                                  | Status |
 | ------- | -------------------------------------------------- | ----------- | -------- | ------------------------------------------- | ------ |
 | UI-074  | Tauri menubar app for Flowstate (v0 scaffold)      | ui (+ shared) | P1     | SHARED-008, SHARED-010, SERVER-031, SERVER-028 | done   |
-| UI-075  | Bundle portable Python via `python-build-standalone` | ui        | P1       | UI-074                                      | todo   |
+| UI-075  | Bundle portable Python via `python-build-standalone` | ui        | P1       | UI-074                                      | done   |
 | UI-076  | Tauri auto-updater + GitHub Releases manifest      | ui          | P2       | UI-074, UI-077                              | todo   |
 | UI-077  | Unsigned `.dmg` build pipeline + `desktop/scripts/build.sh` | ui  | P1       | UI-074, UI-075                              | todo   |
+| UI-079  | Trim vendored Python size (strip claude-agent-sdk bundled binary) | ui | P2 | UI-075                                  | todo   |
 
 
 ### Phase 36 — Test housekeeping

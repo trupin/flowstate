@@ -16,11 +16,13 @@
 //! signed/notarized DMG (UI-077), Start-at-Login (UI-078), animated tray
 //! icon while a flow is executing.
 
+use std::ffi::OsString;
 use std::path::PathBuf;
 use std::sync::Mutex;
 
 use tauri::image::Image;
 use tauri::menu::Menu;
+use tauri::path::BaseDirectory;
 use tauri::tray::TrayIconBuilder;
 use tauri::{AppHandle, Listener, Manager, Wry};
 use tauri_plugin_dialog::DialogExt;
@@ -278,6 +280,36 @@ fn open_ui_window(app: &AppHandle) {
     }
 }
 
+/// Resolve the Python interpreter the supervised flowstate server should
+/// run under. Three-tier fallback:
+///
+/// 1. `FLOWSTATE_PYTHON` env var — the dev override. Useful for pointing
+///    at a project venv during `cargo tauri dev` without bundling.
+/// 2. The bundled portable Python shipped inside the `.app` at
+///    `Contents/Resources/python/bin/python3` (UI-075). Tauri's path
+///    resolver returns the absolute path inside the app bundle. We
+///    require the file to actually exist on disk before accepting it,
+///    so `cargo tauri dev` runs without a vendored tree fall through.
+/// 3. `python3` from `PATH` — last resort. Assumes the developer ran
+///    `pipx install flowstate` or has the source venv on PATH.
+fn resolve_python(app: &AppHandle) -> OsString {
+    if let Some(p) = std::env::var_os("FLOWSTATE_PYTHON") {
+        log::info!("python: using FLOWSTATE_PYTHON override");
+        return p;
+    }
+    if let Ok(bundled) = app
+        .path()
+        .resolve("python/bin/python3", BaseDirectory::Resource)
+    {
+        if bundled.is_file() {
+            log::info!("python: using bundled {}", bundled.display());
+            return bundled.into_os_string();
+        }
+    }
+    log::info!("python: falling back to system python3 on PATH");
+    OsString::from("python3")
+}
+
 /// Open the running server's UI in the user's default browser.
 fn open_ui_in_browser(app: &AppHandle) {
     let Some(url) = current_ui_url(app) else {
@@ -357,7 +389,8 @@ fn start_server_for(app: &AppHandle, project_root: PathBuf) -> anyhow::Result<()
             let _ = tx.send(true);
         }
 
-        let mut srv = FlowstateServer::new(project_root.clone());
+        let python = resolve_python(app);
+        let mut srv = FlowstateServer::new(project_root.clone(), python);
         let port = srv.start()?;
         guard.server = Some(srv);
         guard.desktop_state.last_project_root = Some(project_root.clone());
