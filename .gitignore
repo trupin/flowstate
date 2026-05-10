@@ -58,5 +58,6 @@ target/
 desktop/target/
 desktop/dist/
 desktop/python/
+desktop/.cache/
 desktop/src-tauri/target/
 desktop/src-tauri/gen/

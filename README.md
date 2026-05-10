@@ -75,6 +75,15 @@ Requires **Python 3.12+**. For sandboxed execution (optional):
 pip install 'flowstate[lumon]'
 ```
 
+### Desktop app (macOS, optional)
+
+If you'd rather run Flowstate from the menubar than the terminal, the
+unsigned `.dmg` (UI-077) bundles its own portable Python — no system
+Python install needed. The menubar app supervises a local `flowstate
+server` per project; click the tray icon to switch projects, open the
+UI, or quit cleanly. Source: `desktop/`. Build instructions live in
+`RELEASING.md`.
+
 ## Quickstart
 
 In any existing project directory:
