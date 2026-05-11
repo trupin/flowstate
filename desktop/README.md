@@ -52,6 +52,22 @@ Then launch normally from Spotlight / Launchpad.
 The bundled Python runtime ships inside the `.app` itself
 (`Contents/Resources/python/`) — no system Python install needed.
 
+### Optional: install the `flowstate` CLI to your shell PATH
+
+The menubar app contains a complete `flowstate` CLI at
+`Flowstate.app/Contents/Resources/python/bin/flowstate`, but that path
+isn't on your shell PATH by default. To use `flowstate` from the
+terminal, click **Install `flowstate` CLI to /usr/local/bin** from the
+tray menu — macOS will prompt for your password / TouchID, then drop a
+small bash shim at `/usr/local/bin/flowstate` that invokes the bundled
+Python directly.
+
+The shim guarantees CLI ↔ menubar lockstep: whatever version is in the
+`.app` is the version your terminal sees. No `pipx`, no `uv tool
+install`, no version drift.
+
+To uninstall, simply `sudo rm /usr/local/bin/flowstate`.
+
 ### `harness="sdk"` flows: `claude` must be on PATH
 
 The bundled Python tree omits `claude_agent_sdk`'s 196 MB embedded `claude`

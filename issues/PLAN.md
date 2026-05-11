@@ -586,6 +586,8 @@ UI-074 landed only the v0 scaffold (compiles via `cargo check`; no installable a
 | UI-077  | Unsigned `.dmg` build pipeline + `desktop/scripts/build.sh` | ui  | P1       | UI-074, UI-075                              | done   |
 | UI-079  | Trim vendored Python size (strip claude-agent-sdk bundled binary) | ui | P2 | UI-075                                  | done   |
 | UI-080  | Tray UX when `harness="sdk"` flows can't find `claude` on PATH    | ui | P2 | UI-079                                  | done   |
+| UI-081  | Install bundled `flowstate` CLI to `/usr/local/bin` from tray menu | ui | P2 | UI-075                                  | done   |
+| UI-082  | Directory picker title bar rendering artifact (sparkle overlay)   | ui | P2 | UI-074                                  | in_progress |
 
 
 ### Phase 36 — Test housekeeping

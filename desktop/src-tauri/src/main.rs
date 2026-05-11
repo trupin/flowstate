@@ -35,7 +35,7 @@ mod menu;
 mod project;
 mod server;
 
-use crate::menu::{build_menu, MenuState};
+use crate::menu::{build_menu, CliInstallState, MenuState};
 use crate::project::{load_state, save_state, validate_project_root, DesktopState};
 use crate::server::FlowstateServer;
 
@@ -108,6 +108,12 @@ fn main() {
             // Listen for /health events emitted by the poller. We update
             // the tray icon and menu labels in response.
             register_health_listeners(app.handle().clone());
+
+            // UI-081: reflect the current CLI-install state in the tray.
+            // Cheap filesystem probe — runs synchronously here so the
+            // initial menu doesn't briefly show "Install CLI" and then
+            // flip if a shim is already in place.
+            refresh_cli_install_state(&app_handle);
 
             // If we have a remembered project, auto-start the server.
             let last_root = {
@@ -222,6 +228,13 @@ fn on_menu_event(app: &AppHandle, id: &str) {
             let app_for_update = app.clone();
             tauri::async_runtime::spawn(async move {
                 install_update(app_for_update).await;
+            });
+        }
+        crate::menu::ID_INSTALL_CLI => {
+            // UI-081: write the CLI shim with admin-privileges osascript.
+            let app_for_install = app.clone();
+            tauri::async_runtime::spawn(async move {
+                install_cli_shim(app_for_install).await;
             });
         }
         // Disabled labels (project name, port) emit events too — ignore.
@@ -359,44 +372,194 @@ fn pick_project(app: AppHandle) {
     #[cfg(target_os = "macos")]
     let _ = app.set_activation_policy(tauri::ActivationPolicy::Regular);
 
-    let app_for_callback = app.clone();
-    app.dialog()
-        .file()
-        .set_title("Select a Flowstate project directory")
-        .pick_folder(move |maybe_path| {
-            // Always restore the menubar-only policy, even on cancel/error.
-            #[cfg(target_os = "macos")]
-            let _ = app_for_callback
-                .set_activation_policy(tauri::ActivationPolicy::Accessory);
+    // UI-082: defer the `pick_folder` call by one async tick + a short
+    // sleep so NSApp's main run-loop can fully absorb the activation
+    // policy switch above before NSOpenPanel performs its first chrome
+    // layout. Without this, the panel's title bar is drawn while the app
+    // is still mid-transition between Accessory and Regular — the chrome
+    // gets re-decorated on the next frame, leaving stale glyphs from the
+    // initial (Accessory) style overlaid on the title text and traffic-
+    // light buttons. 50 ms is invisibly fast to the user but plenty for
+    // AppKit to settle. The existing click-registration workaround
+    // (Regular ↔ Accessory dance) is preserved exactly — only the timing
+    // of when the dialog is opened changes.
+    let app_for_dialog = app.clone();
+    tauri::async_runtime::spawn(async move {
+        #[cfg(target_os = "macos")]
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
 
-            let Some(file_path) = maybe_path else {
-                return; // user cancelled
-            };
-            // tauri-plugin-dialog returns a `FilePath` enum. Convert it to
-            // a real PathBuf via `into_path()`.
-            let path: PathBuf = match file_path.into_path() {
-                Ok(p) => p,
-                Err(e) => {
-                    log::warn!("dialog returned a non-filesystem path: {e}");
+        let app_for_callback = app_for_dialog.clone();
+        app_for_dialog
+            .dialog()
+            .file()
+            .set_title("Select a Flowstate project directory")
+            .pick_folder(move |maybe_path| {
+                // Always restore the menubar-only policy, even on cancel/error.
+                #[cfg(target_os = "macos")]
+                let _ = app_for_callback
+                    .set_activation_policy(tauri::ActivationPolicy::Accessory);
+
+                let Some(file_path) = maybe_path else {
+                    return; // user cancelled
+                };
+                // tauri-plugin-dialog returns a `FilePath` enum. Convert it
+                // to a real PathBuf via `into_path()`.
+                let path: PathBuf = match file_path.into_path() {
+                    Ok(p) => p,
+                    Err(e) => {
+                        log::warn!("dialog returned a non-filesystem path: {e}");
+                        return;
+                    }
+                };
+                if let Err(e) = validate_project_root(&path) {
+                    log::warn!("invalid project root: {e:#}");
+                    // TODO(UI-074): show a native error dialog and offer to
+                    // run `flowstate init` here. Stub for v0 — user just sees
+                    // a log line.
                     return;
                 }
-            };
-            if let Err(e) = validate_project_root(&path) {
-                log::warn!("invalid project root: {e:#}");
-                // TODO(UI-074): show a native error dialog and offer to
-                // run `flowstate init` here. Stub for v0 — user just sees
-                // a log line.
-                return;
+                // Stop any existing server, then start a fresh one rooted at
+                // the new path.
+                stop_server(&app_for_callback);
+                if let Err(e) = start_server_for(&app_for_callback, path.clone()) {
+                    log::warn!("start failed after switch: {e:#}");
+                }
+                // UI-080: re-evaluate the SDK-claude warning for the new project.
+                refresh_sdk_claude_warning(&app_for_callback, Some(&path));
+            });
+    });
+}
+
+/// UI-081: filesystem location for the CLI shim. /usr/local/bin is the
+/// most-shells-have-it-on-PATH choice on macOS. Fresh Apple Silicon
+/// machines without Homebrew may not have the directory; we let the
+/// `install` invocation fail in that case and surface a dialog rather
+/// than `mkdir -p`-ing an uncreated system directory ourselves.
+const CLI_SHIM_PATH: &str = "/usr/local/bin/flowstate";
+
+/// UI-081: shell-escape a string for safe interpolation into the
+/// AppleScript `do shell script` arg. The double quoting (outer
+/// AppleScript string + inner shell single quotes) handles paths with
+/// spaces; the strip-single-quote step prevents an attacker-controlled
+/// path from breaking out of the quote — though in practice the only
+/// inputs here are paths resolved by Tauri or `std::env::temp_dir()`,
+/// not user input.
+fn shell_quote(s: &str) -> String {
+    format!("'{}'", s.replace('\'', "'\\''"))
+}
+
+/// UI-081: resolve the bundled Python interpreter inside the running
+/// `.app` (or the dev tree). Returns `None` when no bundled python
+/// exists — typically a `cargo tauri dev` run without prior vendor.
+fn bundled_python_path(app: &AppHandle) -> Option<PathBuf> {
+    app.path()
+        .resolve("python/bin/python3", BaseDirectory::Resource)
+        .ok()
+        .filter(|p| p.is_file())
+}
+
+/// UI-081: inspect /usr/local/bin/flowstate to decide what the tray menu
+/// row should say. The shim is expected to be a plain file (not a
+/// symlink, since the bundled `flowstate` entry-point has a hardcoded
+/// shebang and can't be linked safely — see issue file for rationale).
+fn current_cli_install_state(app: &AppHandle) -> CliInstallState {
+    let shim_path = Path::new(CLI_SHIM_PATH);
+    if !shim_path.is_file() {
+        return CliInstallState::NotInstalled;
+    }
+    let Some(target_python) = bundled_python_path(app) else {
+        // We don't know our own bundled python path (dev mode without
+        // vendor). Treat any existing shim as "other" so we don't claim
+        // ownership of something we can't verify.
+        return CliInstallState::InstalledForOtherApp;
+    };
+    // The shim contains an `exec "<python>" -m flowstate "$@"` line.
+    // Substring match — robust to formatting tweaks and our own
+    // shell-quote helper's escaping. If we ever generate a fundamentally
+    // different shim shape we'll need to bump a version marker.
+    match std::fs::read_to_string(shim_path) {
+        Ok(body) if body.contains(target_python.to_string_lossy().as_ref()) => {
+            CliInstallState::InstalledForThisApp
+        }
+        Ok(_) => CliInstallState::InstalledForOtherApp,
+        Err(_) => CliInstallState::InstalledForOtherApp,
+    }
+}
+
+/// UI-081: refresh the tray's CLI-install state.
+fn refresh_cli_install_state(app: &AppHandle) {
+    let state = current_cli_install_state(app);
+    update_menu(app, |m| m.cli_install_state = state);
+}
+
+/// UI-081: write the CLI shim to /usr/local/bin/flowstate via an
+/// admin-privileges AppleScript prompt. The shim is a 2-line bash
+/// wrapper that execs `<bundled-python> -m flowstate` with the user's
+/// args — keeps the CLI version in lockstep with the `.app` because
+/// it always points at this `.app`'s embedded interpreter.
+async fn install_cli_shim(app: AppHandle) {
+    let Some(python_path) = bundled_python_path(&app) else {
+        log::warn!("install_cli: bundled python not found");
+        return;
+    };
+
+    let shim_body = format!(
+        "#!/bin/bash\n# Flowstate CLI shim (UI-081). Regenerated by the menubar app.\nexec {} -m flowstate \"$@\"\n",
+        shell_quote(&python_path.to_string_lossy()),
+    );
+
+    // Write to a temp file first; AppleScript-with-admin moves it into
+    // place atomically via `install -m 0755`. macOS clears /tmp on
+    // reboot, so the tempfile is short-lived even if we crash.
+    let tmp_path = std::env::temp_dir().join("flowstate-cli-shim");
+    if let Err(e) = std::fs::write(&tmp_path, &shim_body) {
+        log::warn!("install_cli: failed to write tempfile: {e}");
+        return;
+    }
+
+    // Same Accessory→Regular toggle pattern as pick_project — the macOS
+    // auth prompt needs a real activation context to surface reliably.
+    #[cfg(target_os = "macos")]
+    let _ = app.set_activation_policy(tauri::ActivationPolicy::Regular);
+
+    let script = format!(
+        r#"do shell script "install -m 0755 {tmp} {dest}" with administrator privileges"#,
+        tmp = shell_quote(&tmp_path.to_string_lossy()),
+        dest = shell_quote(CLI_SHIM_PATH),
+    );
+
+    let app_for_restore = app.clone();
+    let result = tauri::async_runtime::spawn_blocking(move || {
+        std::process::Command::new("osascript")
+            .arg("-e")
+            .arg(&script)
+            .output()
+    })
+    .await;
+
+    #[cfg(target_os = "macos")]
+    let _ = app_for_restore.set_activation_policy(tauri::ActivationPolicy::Accessory);
+
+    let _ = std::fs::remove_file(&tmp_path);
+
+    match result {
+        Ok(Ok(out)) if out.status.success() => {
+            log::info!("install_cli: shim installed at {CLI_SHIM_PATH}");
+        }
+        Ok(Ok(out)) => {
+            // Most common failure: user clicked "Cancel" in the auth dialog.
+            let stderr = String::from_utf8_lossy(&out.stderr);
+            if stderr.contains("User canceled") {
+                log::info!("install_cli: user cancelled auth prompt");
+            } else {
+                log::warn!("install_cli: osascript exited {} — stderr={}", out.status, stderr);
             }
-            // Stop any existing server, then start a fresh one rooted at
-            // the new path.
-            stop_server(&app_for_callback);
-            if let Err(e) = start_server_for(&app_for_callback, path.clone()) {
-                log::warn!("start failed after switch: {e:#}");
-            }
-            // UI-080: re-evaluate the SDK-claude warning for the new project.
-            refresh_sdk_claude_warning(&app_for_callback, Some(&path));
-        });
+        }
+        Ok(Err(e)) => log::warn!("install_cli: failed to spawn osascript: {e}"),
+        Err(e) => log::warn!("install_cli: blocking task failed: {e}"),
+    }
+
+    refresh_cli_install_state(&app);
 }
 
 /// UI-076: probe the GitHub Releases updater manifest in the background.

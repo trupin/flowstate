@@ -20,7 +20,21 @@ pub const ID_TOGGLE_SERVER: &str = "toggle_server";
 pub const ID_START_AT_LOGIN: &str = "start_at_login";
 pub const ID_CLAUDE_MISSING: &str = "claude_missing";
 pub const ID_UPDATE_AVAILABLE: &str = "update_available";
+pub const ID_INSTALL_CLI: &str = "install_cli";
 pub const ID_QUIT: &str = "quit";
+
+/// Where the bundled `flowstate` CLI shim is (or isn't) installed on
+/// PATH. Drives the tray menu's "Install CLI" row.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum CliInstallState {
+    /// `/usr/local/bin/flowstate` doesn't exist.
+    NotInstalled,
+    /// A shim is present and points at the running app's bundled python.
+    InstalledForThisApp,
+    /// A shim is present but points at a different python (older `.app`
+    /// install, hand-written wrapper, etc.). Offer to replace.
+    InstalledForOtherApp,
+}
 
 /// State the menu builder needs to render the right labels.
 pub struct MenuState {
@@ -39,6 +53,9 @@ pub struct MenuState {
     /// `download_and_install`. `None` means we're up to date or the
     /// check hasn't run yet. UI-076.
     pub update_available: Option<String>,
+    /// Whether the bundled CLI shim is installed at /usr/local/bin/flowstate.
+    /// Drives the `Install / Update CLI in PATH` row. UI-081.
+    pub cli_install_state: CliInstallState,
 }
 
 impl Default for MenuState {
@@ -49,6 +66,7 @@ impl Default for MenuState {
             server_running: false,
             sdk_claude_missing: false,
             update_available: None,
+            cli_install_state: CliInstallState::NotInstalled,
         }
     }
 }
@@ -98,6 +116,21 @@ pub fn build_menu(app: &AppHandle, state: &MenuState) -> tauri::Result<Menu<Wry>
     };
     let toggle_server = MenuItemBuilder::with_id(ID_TOGGLE_SERVER, toggle_label).build(app)?;
 
+    // UI-081: "Install CLI to /usr/local/bin" — label reflects current state.
+    // No item at all when the shim is already correct for this app, so the
+    // menu stays uncluttered for users who set it up once and forgot.
+    let install_cli_item = match state.cli_install_state {
+        CliInstallState::NotInstalled => Some(
+            MenuItemBuilder::with_id(ID_INSTALL_CLI, "Install `flowstate` CLI to /usr/local/bin")
+                .build(app)?,
+        ),
+        CliInstallState::InstalledForOtherApp => Some(
+            MenuItemBuilder::with_id(ID_INSTALL_CLI, "Update CLI shim in /usr/local/bin")
+                .build(app)?,
+        ),
+        CliInstallState::InstalledForThisApp => None,
+    };
+
     // v0: this is a stub. Toggling does nothing yet (UI-078 follow-up).
     let start_at_login = MenuItemBuilder::with_id(ID_START_AT_LOGIN, "Start at Login (TODO)")
         .enabled(false)
@@ -131,7 +164,7 @@ pub fn build_menu(app: &AppHandle, state: &MenuState) -> tauri::Result<Menu<Wry>
     if let Some(update) = update_item.as_ref() {
         builder = builder.item(update).separator();
     }
-    let menu = builder
+    builder = builder
         .item(&project)
         .item(&port)
         .separator()
@@ -140,7 +173,11 @@ pub fn build_menu(app: &AppHandle, state: &MenuState) -> tauri::Result<Menu<Wry>
         .separator()
         .item(&switch_project)
         .item(&toggle_server)
-        .separator()
+        .separator();
+    if let Some(install_cli) = install_cli_item.as_ref() {
+        builder = builder.item(install_cli);
+    }
+    let menu = builder
         .item(&start_at_login)
         .item(&PredefinedMenuItem::separator(app)?)
         .item(&quit)
