@@ -42,9 +42,19 @@ TRIPLE="${1:-$(detect_triple)}"
 SHORT_ARCH="${TRIPLE%-apple-darwin}"  # aarch64 / x86_64
 
 if ! command -v cargo >/dev/null 2>&1; then
-  echo "ERROR: cargo not on PATH. Source ~/.cargo/env or install Rust:" >&2
-  echo "  curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh" >&2
-  exit 1
+  # Rustup installs to ~/.cargo/ and writes an env script there. Auto-
+  # source it so the build works from non-interactive shells (e.g.
+  # invoked via `bash desktop/scripts/build.sh` from a tool that hasn't
+  # sourced .zshrc / .bashrc).
+  if [[ -f "$HOME/.cargo/env" ]]; then
+    # shellcheck disable=SC1091
+    source "$HOME/.cargo/env"
+  fi
+  if ! command -v cargo >/dev/null 2>&1; then
+    echo "ERROR: cargo not on PATH and no fallback at \$HOME/.cargo/env. Install Rust:" >&2
+    echo "  curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh" >&2
+    exit 1
+  fi
 fi
 
 if ! cargo tauri --version >/dev/null 2>&1; then
