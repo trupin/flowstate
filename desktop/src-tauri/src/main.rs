@@ -359,44 +359,62 @@ fn pick_project(app: AppHandle) {
     #[cfg(target_os = "macos")]
     let _ = app.set_activation_policy(tauri::ActivationPolicy::Regular);
 
-    let app_for_callback = app.clone();
-    app.dialog()
-        .file()
-        .set_title("Select a Flowstate project directory")
-        .pick_folder(move |maybe_path| {
-            // Always restore the menubar-only policy, even on cancel/error.
-            #[cfg(target_os = "macos")]
-            let _ = app_for_callback
-                .set_activation_policy(tauri::ActivationPolicy::Accessory);
+    // UI-081: defer the `pick_folder` call by one async tick + a short
+    // sleep so NSApp's main run-loop can fully absorb the activation
+    // policy switch above before NSOpenPanel performs its first chrome
+    // layout. Without this, the panel's title bar is drawn while the app
+    // is still mid-transition between Accessory and Regular — the chrome
+    // gets re-decorated on the next frame, leaving stale glyphs from the
+    // initial (Accessory) style overlaid on the title text and traffic-
+    // light buttons. 50 ms is invisibly fast to the user but plenty for
+    // AppKit to settle. The existing click-registration workaround
+    // (Regular ↔ Accessory dance) is preserved exactly — only the timing
+    // of when the dialog is opened changes.
+    let app_for_dialog = app.clone();
+    tauri::async_runtime::spawn(async move {
+        #[cfg(target_os = "macos")]
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
 
-            let Some(file_path) = maybe_path else {
-                return; // user cancelled
-            };
-            // tauri-plugin-dialog returns a `FilePath` enum. Convert it to
-            // a real PathBuf via `into_path()`.
-            let path: PathBuf = match file_path.into_path() {
-                Ok(p) => p,
-                Err(e) => {
-                    log::warn!("dialog returned a non-filesystem path: {e}");
+        let app_for_callback = app_for_dialog.clone();
+        app_for_dialog
+            .dialog()
+            .file()
+            .set_title("Select a Flowstate project directory")
+            .pick_folder(move |maybe_path| {
+                // Always restore the menubar-only policy, even on cancel/error.
+                #[cfg(target_os = "macos")]
+                let _ = app_for_callback
+                    .set_activation_policy(tauri::ActivationPolicy::Accessory);
+
+                let Some(file_path) = maybe_path else {
+                    return; // user cancelled
+                };
+                // tauri-plugin-dialog returns a `FilePath` enum. Convert it
+                // to a real PathBuf via `into_path()`.
+                let path: PathBuf = match file_path.into_path() {
+                    Ok(p) => p,
+                    Err(e) => {
+                        log::warn!("dialog returned a non-filesystem path: {e}");
+                        return;
+                    }
+                };
+                if let Err(e) = validate_project_root(&path) {
+                    log::warn!("invalid project root: {e:#}");
+                    // TODO(UI-074): show a native error dialog and offer to
+                    // run `flowstate init` here. Stub for v0 — user just sees
+                    // a log line.
                     return;
                 }
-            };
-            if let Err(e) = validate_project_root(&path) {
-                log::warn!("invalid project root: {e:#}");
-                // TODO(UI-074): show a native error dialog and offer to
-                // run `flowstate init` here. Stub for v0 — user just sees
-                // a log line.
-                return;
-            }
-            // Stop any existing server, then start a fresh one rooted at
-            // the new path.
-            stop_server(&app_for_callback);
-            if let Err(e) = start_server_for(&app_for_callback, path.clone()) {
-                log::warn!("start failed after switch: {e:#}");
-            }
-            // UI-080: re-evaluate the SDK-claude warning for the new project.
-            refresh_sdk_claude_warning(&app_for_callback, Some(&path));
-        });
+                // Stop any existing server, then start a fresh one rooted at
+                // the new path.
+                stop_server(&app_for_callback);
+                if let Err(e) = start_server_for(&app_for_callback, path.clone()) {
+                    log::warn!("start failed after switch: {e:#}");
+                }
+                // UI-080: re-evaluate the SDK-claude warning for the new project.
+                refresh_sdk_claude_warning(&app_for_callback, Some(&path));
+            });
+    });
 }
 
 /// UI-076: probe the GitHub Releases updater manifest in the background.

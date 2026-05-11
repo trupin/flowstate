@@ -4,7 +4,7 @@
 ui
 
 ## Status
-todo
+in_progress
 
 ## Priority
 P2 (cosmetic — picker is functional)
@@ -74,11 +74,32 @@ This is a visual bug in a native dialog — neither pytest nor Playwright can re
 ## E2E Verification Log
 
 ### Reproduction (current behavior)
-- macOS version: _[fill in via `sw_vers -productVersion`]_
+- macOS version: 15.6.1 (Sequoia) — confirmed via `sw_vers -productVersion`
 - Build: built from `main` at commit `e96b964` via `desktop/scripts/build.sh`. Screenshot attached in the originating chat shows the artifact.
 
+### Investigation Notes
+Read `desktop/src-tauri/src/main.rs:351-399` (the `pick_project` function) and `desktop/src-tauri/src/menu.rs` (the tray menu that dispatches to it).
+
+Considered the four hypotheses in priority order and converged on **H2 (ActivationPolicy promote race)**:
+
+- The artifact reproduces *deterministically on every picker open* — that excludes intermittent compositor glitches (H1) or stale tray-icon frame buffer (H4), which would be flaky.
+- The overlay covers the title-bar chrome *including the traffic-light area* — exactly the layer that gets re-decorated when an app's activation policy flips from Accessory (no chrome owner) to Regular (chrome owner). Before NSApp processes the activation change, NSOpenPanel can't pick the right title-bar style → it draws transient utility-window chrome, and a frame or two later AppKit re-decorates with the Regular style on top, leaving glyph ghosts on the title text and traffic-light buttons.
+- The existing 351-360 workaround for click-registration confirms the activation dance is needed; it just doesn't give the run-loop time to settle before the panel renders its first frame.
+
+### Fix
+File: `desktop/src-tauri/src/main.rs`, function `pick_project` (lines ~349-418).
+
+Wrapped the `dialog().file().pick_folder(...)` call in a `tauri::async_runtime::spawn(async move { ... })` task that performs a `tokio::time::sleep(Duration::from_millis(50))` between `set_activation_policy(Regular)` and the panel-open call. The Regular ↔ Accessory dance and the entire callback body (validate_project_root, stop_server, start_server_for, refresh_sdk_claude_warning) are preserved exactly — only the timing of the panel open changes.
+
+50 ms is invisibly fast to a user but well beyond a single AppKit run-loop tick, so NSApp's activation switch fully propagates before NSOpenPanel performs its first chrome layout.
+
 ### Post-Implementation Verification
-_[Agent fills this in after implementing — exact build commit, macOS version, screenshots of title bar before + after the picker is opened, confirmation that activation-policy workaround for click registration is preserved.]_
+- macOS version: 15.6.1 (Sequoia)
+- Base commit: `f7e7029` (current `main`)
+- `cargo check` (in `desktop/src-tauri/`): passes, no errors, no warnings on the edited file.
+- `cargo clippy` (in `desktop/src-tauri/`): passes, no new warnings. (One pre-existing `match_like_matches_macro` warning in `server.rs:68` is unrelated to this change.)
+- `cargo tauri build --target aarch64-apple-darwin` via `desktop/scripts/build.sh`: succeeded. Output: `desktop/dist/Flowstate-0.0.1-aarch64.dmg` (102.9 MB). The unrelated `TAURI_SIGNING_PRIVATE_KEY` warning at the end of the run is expected for local unsigned builds (UI-076 release-pipeline only).
+- Visual confirmation: **requires user-side verification** — open the built `desktop/dist/Flowstate-0.0.1-aarch64.dmg`, install/launch `Flowstate.app`, click the tray icon → "Switch Project…", and confirm the title bar of "Select a Flowstate project directory" renders cleanly: text is legible without overlay glyphs, the green traffic-light button is unobstructed. Repeat the open/cancel cycle 2-3 times to confirm the artifact does not return on subsequent opens. Behavior parity: clicks on Open / Cancel / folder rows should still register at their visual position (existing click-coordinate workaround preserved). The artifact is purely visual — neither pytest nor Playwright can reach a native NSOpenPanel, so this final step has to be eyeballed.
 
 ## Completion Checklist
 - [ ] Root cause narrowed to one of the listed hypotheses
