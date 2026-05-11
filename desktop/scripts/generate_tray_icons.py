@@ -35,7 +35,11 @@ def _circle(size: int, color: tuple[int, int, int, int], filled: bool) -> Image.
     if filled:
         draw.ellipse(bbox, fill=color)
     else:
-        width = max(2, size // 12)
+        # Thick ring — at 32px this gives a 5-6px stroke, scaled to a
+        # readable ~3px ring in the NSStatusItem's 18-pt height. A thinner
+        # stroke (e.g. size // 12 = 2px) collapses to ~1px and is invisible
+        # on a translucent menubar against wallpaper.
+        width = max(4, size // 6)
         draw.ellipse(bbox, outline=color, width=width)
     return img
 
