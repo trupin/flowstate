@@ -117,19 +117,15 @@ pub fn build_menu(app: &AppHandle, state: &MenuState) -> tauri::Result<Menu<Wry>
     let toggle_server = MenuItemBuilder::with_id(ID_TOGGLE_SERVER, toggle_label).build(app)?;
 
     // UI-081: "Install CLI to /usr/local/bin" — label reflects current state.
-    // No item at all when the shim is already correct for this app, so the
-    // menu stays uncluttered for users who set it up once and forgot.
-    let install_cli_item = match state.cli_install_state {
-        CliInstallState::NotInstalled => Some(
-            MenuItemBuilder::with_id(ID_INSTALL_CLI, "Install `flowstate` CLI to /usr/local/bin")
-                .build(app)?,
-        ),
-        CliInstallState::InstalledForOtherApp => Some(
-            MenuItemBuilder::with_id(ID_INSTALL_CLI, "Update CLI shim in /usr/local/bin")
-                .build(app)?,
-        ),
-        CliInstallState::InstalledForThisApp => None,
+    // Always shown (even when correctly installed) so users can
+    // reinstall after an app update. Dropping backticks from the label
+    // since some macOS menu renderers swallow text containing them.
+    let install_cli_label = match state.cli_install_state {
+        CliInstallState::NotInstalled => "Install flowstate CLI to /usr/local/bin",
+        CliInstallState::InstalledForOtherApp => "Update CLI shim in /usr/local/bin",
+        CliInstallState::InstalledForThisApp => "Reinstall CLI shim in /usr/local/bin",
     };
+    let install_cli = MenuItemBuilder::with_id(ID_INSTALL_CLI, install_cli_label).build(app)?;
 
     // v0: this is a stub. Toggling does nothing yet (UI-078 follow-up).
     let start_at_login = MenuItemBuilder::with_id(ID_START_AT_LOGIN, "Start at Login (TODO)")
@@ -164,7 +160,7 @@ pub fn build_menu(app: &AppHandle, state: &MenuState) -> tauri::Result<Menu<Wry>
     if let Some(update) = update_item.as_ref() {
         builder = builder.item(update).separator();
     }
-    builder = builder
+    let menu = builder
         .item(&project)
         .item(&port)
         .separator()
@@ -173,11 +169,8 @@ pub fn build_menu(app: &AppHandle, state: &MenuState) -> tauri::Result<Menu<Wry>
         .separator()
         .item(&switch_project)
         .item(&toggle_server)
-        .separator();
-    if let Some(install_cli) = install_cli_item.as_ref() {
-        builder = builder.item(install_cli);
-    }
-    let menu = builder
+        .separator()
+        .item(&install_cli)
         .item(&start_at_login)
         .item(&PredefinedMenuItem::separator(app)?)
         .item(&quit)
