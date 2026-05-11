@@ -1,4 +1,4 @@
-# [UI-081] Directory picker title bar has rendering artifacts (menubar app)
+# [UI-082] Directory picker title bar has rendering artifacts (menubar app)
 
 ## Domain
 ui

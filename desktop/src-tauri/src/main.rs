@@ -359,7 +359,7 @@ fn pick_project(app: AppHandle) {
     #[cfg(target_os = "macos")]
     let _ = app.set_activation_policy(tauri::ActivationPolicy::Regular);
 
-    // UI-081: defer the `pick_folder` call by one async tick + a short
+    // UI-082: defer the `pick_folder` call by one async tick + a short
     // sleep so NSApp's main run-loop can fully absorb the activation
     // policy switch above before NSOpenPanel performs its first chrome
     // layout. Without this, the panel's title bar is drawn while the app
