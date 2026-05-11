@@ -405,13 +405,24 @@ fn pick_project(app: AppHandle) {
 /// UI-082: invoke macOS's `choose folder` dialog via osascript and
 /// return the picked POSIX path. Returns `None` on cancel or error.
 ///
-/// Why osascript instead of `tauri-plugin-dialog` / NSOpenPanel-from-
-/// our-process: see the long comment on `pick_project`. tl;dr — Tauri's
-/// dialog runs inside our menubar-only NSApp, which mispositions the
-/// panel's title bar over the macOS menubar. osascript hosts the picker
-/// from System Events, sidestepping the issue entirely.
+/// Delegated to **Finder** specifically (not the default osascript
+/// host). Finder is a normal foreground app whose NSOpenPanel host
+/// context computes window frames against `NSScreen.visibleFrame`,
+/// excluding the menubar and the MacBook Pro notch. Without the
+/// `tell application "Finder"` wrapper, osascript hosts the panel via
+/// System Events — which on notched displays mispositions the panel
+/// title bar at y=0 of the display, painting it underneath the
+/// menubar icons. Same root cause as opening NSOpenPanel from our own
+/// menubar-only NSApp; the fix is "host the panel from a normal
+/// foreground app", and Finder is the cheapest available one.
 fn run_osascript_folder_picker() -> Option<PathBuf> {
-    let script = r#"POSIX path of (choose folder with prompt "Select a Flowstate project directory")"#;
+    let script = r#"
+        tell application "Finder"
+            activate
+            set chosen to choose folder with prompt "Select a Flowstate project directory"
+            return POSIX path of chosen
+        end tell
+    "#;
     let output = match std::process::Command::new("osascript").arg("-e").arg(script).output() {
         Ok(out) => out,
         Err(e) => {
