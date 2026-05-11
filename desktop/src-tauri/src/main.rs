@@ -25,7 +25,6 @@ use tauri::menu::Menu;
 use tauri::path::BaseDirectory;
 use tauri::tray::TrayIconBuilder;
 use tauri::{AppHandle, Listener, Manager, Wry};
-use tauri_plugin_dialog::DialogExt;
 use tauri_plugin_shell::ShellExt;
 use tauri_plugin_updater::UpdaterExt;
 use tokio::sync::watch;
@@ -361,73 +360,82 @@ fn open_ui_in_browser(app: &AppHandle) {
 
 /// Show a native directory picker; if the user picks a directory that
 /// contains `flowstate.toml`, switch to it.
+///
+/// UI-082 replaced the previous tauri-plugin-dialog NSOpenPanel route
+/// with osascript's `choose folder`. The plugin route required toggling
+/// activation policy Accessory → Regular for click coordinates, and
+/// the resulting NSOpenPanel positioned its title bar at y=0 of the
+/// main display — directly underneath the macOS menubar — so menubar
+/// icons composited on top of the dialog title's pixels. No combination
+/// of pre-open sleeps or notification-wait points fixed it; the bug is
+/// in NSOpenPanel's own geometry calculation when invoked from a
+/// menubar-only host.
+///
+/// osascript runs the picker in a separate process under System
+/// Events, which already has its own UI host context. The dialog
+/// positions correctly, no activation-policy dance is needed, and the
+/// price is a slightly less branded picker chrome.
 fn pick_project(app: AppHandle) {
-    // macOS menubar-only quirk: with `ActivationPolicy::Accessory` set,
-    // the NSApp has no main window and no Dock presence, so native
-    // NSOpenPanel dialogs can't anchor to a proper coordinate frame — the
-    // panel renders at the wrong Y and clicks register at an offset from
-    // their visual position. Workaround: temporarily promote to `Regular`
-    // (briefly shows a Dock icon) so the dialog has a real activation
-    // context, then drop back to `Accessory` once the user dismisses it.
-    #[cfg(target_os = "macos")]
-    let _ = app.set_activation_policy(tauri::ActivationPolicy::Regular);
-
-    // UI-082: defer the `pick_folder` call by one async tick + a short
-    // sleep so NSApp's main run-loop can fully absorb the activation
-    // policy switch above before NSOpenPanel performs its first chrome
-    // layout. Without this, the panel's title bar is drawn while the app
-    // is still mid-transition between Accessory and Regular — the chrome
-    // gets re-decorated on the next frame, leaving stale glyphs from the
-    // initial (Accessory) style overlaid on the title text and traffic-
-    // light buttons. 50 ms is invisibly fast to the user but plenty for
-    // AppKit to settle. The existing click-registration workaround
-    // (Regular ↔ Accessory dance) is preserved exactly — only the timing
-    // of when the dialog is opened changes.
-    let app_for_dialog = app.clone();
+    let app_for_task = app.clone();
     tauri::async_runtime::spawn(async move {
-        #[cfg(target_os = "macos")]
-        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        let picked_path = tauri::async_runtime::spawn_blocking(run_osascript_folder_picker)
+            .await
+            .ok()
+            .and_then(|res| res);
 
-        let app_for_callback = app_for_dialog.clone();
-        app_for_dialog
-            .dialog()
-            .file()
-            .set_title("Select a Flowstate project directory")
-            .pick_folder(move |maybe_path| {
-                // Always restore the menubar-only policy, even on cancel/error.
-                #[cfg(target_os = "macos")]
-                let _ = app_for_callback
-                    .set_activation_policy(tauri::ActivationPolicy::Accessory);
-
-                let Some(file_path) = maybe_path else {
-                    return; // user cancelled
-                };
-                // tauri-plugin-dialog returns a `FilePath` enum. Convert it
-                // to a real PathBuf via `into_path()`.
-                let path: PathBuf = match file_path.into_path() {
-                    Ok(p) => p,
-                    Err(e) => {
-                        log::warn!("dialog returned a non-filesystem path: {e}");
-                        return;
-                    }
-                };
-                if let Err(e) = validate_project_root(&path) {
-                    log::warn!("invalid project root: {e:#}");
-                    // TODO(UI-074): show a native error dialog and offer to
-                    // run `flowstate init` here. Stub for v0 — user just sees
-                    // a log line.
-                    return;
-                }
-                // Stop any existing server, then start a fresh one rooted at
-                // the new path.
-                stop_server(&app_for_callback);
-                if let Err(e) = start_server_for(&app_for_callback, path.clone()) {
-                    log::warn!("start failed after switch: {e:#}");
-                }
-                // UI-080: re-evaluate the SDK-claude warning for the new project.
-                refresh_sdk_claude_warning(&app_for_callback, Some(&path));
-            });
+        let Some(path) = picked_path else {
+            return; // user cancelled or the picker errored
+        };
+        if let Err(e) = validate_project_root(&path) {
+            log::warn!("invalid project root: {e:#}");
+            // TODO(UI-074): show a native error dialog and offer to run
+            // `flowstate init` here. Stub for v0 — user just sees a log
+            // line.
+            return;
+        }
+        stop_server(&app_for_task);
+        if let Err(e) = start_server_for(&app_for_task, path.clone()) {
+            log::warn!("start failed after switch: {e:#}");
+        }
+        // UI-080: re-evaluate the SDK-claude warning for the new project.
+        refresh_sdk_claude_warning(&app_for_task, Some(&path));
     });
+}
+
+/// UI-082: invoke macOS's `choose folder` dialog via osascript and
+/// return the picked POSIX path. Returns `None` on cancel or error.
+///
+/// Why osascript instead of `tauri-plugin-dialog` / NSOpenPanel-from-
+/// our-process: see the long comment on `pick_project`. tl;dr — Tauri's
+/// dialog runs inside our menubar-only NSApp, which mispositions the
+/// panel's title bar over the macOS menubar. osascript hosts the picker
+/// from System Events, sidestepping the issue entirely.
+fn run_osascript_folder_picker() -> Option<PathBuf> {
+    let script = r#"POSIX path of (choose folder with prompt "Select a Flowstate project directory")"#;
+    let output = match std::process::Command::new("osascript").arg("-e").arg(script).output() {
+        Ok(out) => out,
+        Err(e) => {
+            log::warn!("pick_project: osascript spawn failed: {e}");
+            return None;
+        }
+    };
+    if !output.status.success() {
+        // osascript returns non-zero on cancel (NSUserCancelledError) —
+        // expected, log at info-level so we don't spam warn for normal
+        // cancels.
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        if stderr.contains("User canceled") || stderr.contains("(-128)") {
+            log::info!("pick_project: user cancelled");
+        } else {
+            log::warn!("pick_project: osascript exited {} — stderr={}", output.status, stderr);
+        }
+        return None;
+    }
+    let path_str = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    if path_str.is_empty() {
+        return None;
+    }
+    Some(PathBuf::from(path_str))
 }
 
 /// UI-081: filesystem location for the CLI shim. /usr/local/bin is the
