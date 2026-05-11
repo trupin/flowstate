@@ -151,6 +151,12 @@ pub fn open_picker(app: &AppHandle, initial_path: &Path) -> Result<(), String> {
         .min_inner_size(540.0, 380.0)
         .resizable(true)
         .focused(true)
+        // Center on the visible frame of the active display so the
+        // title bar never lands in the menubar / notch reservation.
+        // Crucial on notched MacBooks — without this, Tauri's default
+        // window placement can drop the title bar at y=0 and menubar
+        // items composite over it (same family of bugs as NSOpenPanel).
+        .center()
         .build()
         .map_err(|e| format!("build picker window: {e}"))?;
 
