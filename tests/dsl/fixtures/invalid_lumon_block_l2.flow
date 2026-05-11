@@ -1,0 +1,21 @@
+// Test fixture: L2 — ``plugins`` and ``config`` are mutually exclusive
+// within the same lumon block. (DSL-016)
+flow lumon_block_l2 {
+    budget = 1h
+    on_error = pause
+    context = handoff
+    lumon {
+        enabled = true
+        plugins = ["sample"]
+        config = "policy.json"
+    }
+
+    input {
+        task_name: string
+    }
+
+    entry start { prompt = "begin" }
+    exit done { prompt = "wrap up" }
+
+    start -> done
+}

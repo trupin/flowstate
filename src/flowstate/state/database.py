@@ -73,6 +73,12 @@ class FlowstateDB:
         if version < 1:
             # Migration 1: Add 'pausing' to flow_runs.status CHECK constraint.
             # SQLite doesn't support ALTER CHECK, so we recreate the table.
+            #
+            # The SELECT lists columns explicitly (not SELECT *) so this
+            # migration is robust against later additive migrations that grow
+            # the schema.sql table definition. New columns added after this
+            # one (e.g. source_branch in migration 2) are intentionally not
+            # carried over here — migration 2 re-adds them on top.
             self._conn.executescript("""
                 PRAGMA foreign_keys=OFF;
                 BEGIN;
@@ -98,8 +104,17 @@ class FlowstateDB:
                     task_id TEXT REFERENCES tasks(id)
                 );
 
-                INSERT OR IGNORE INTO flow_runs_new
-                    SELECT * FROM flow_runs;
+                INSERT OR IGNORE INTO flow_runs_new (
+                    id, flow_definition_id, status, default_workspace, data_dir,
+                    params_json, budget_seconds, elapsed_seconds, on_error,
+                    started_at, completed_at, created_at, error_message,
+                    worktree_path, task_id
+                ) SELECT
+                    id, flow_definition_id, status, default_workspace, data_dir,
+                    params_json, budget_seconds, elapsed_seconds, on_error,
+                    started_at, completed_at, created_at, error_message,
+                    worktree_path, task_id
+                FROM flow_runs;
 
                 DROP TABLE flow_runs;
                 ALTER TABLE flow_runs_new RENAME TO flow_runs;
@@ -109,6 +124,85 @@ class FlowstateDB:
                 COMMIT;
                 PRAGMA foreign_keys=ON;
                 PRAGMA user_version=1;
+            """)
+
+        if version < 2:
+            # Migration 2 (STATE-013): Add nullable source_branch column to
+            # flow_runs. Captures the original workspace's branch at run-start
+            # when worktree_persist = true so the engine can merge the exit
+            # worktree back into it at run-completion. Existing rows get NULL
+            # (no backfill).
+            #
+            # If the column already exists (e.g. the schema.sql in
+            # _initialize_schema ran first and created the table with the new
+            # column), the ALTER will raise. Use PRAGMA table_info to check
+            # first so the migration is idempotent across upgrade and fresh-DB
+            # paths.
+            existing_columns = {
+                row[1] for row in self._conn.execute("PRAGMA table_info(flow_runs)").fetchall()
+            }
+            if "source_branch" not in existing_columns:
+                self._conn.execute("ALTER TABLE flow_runs ADD COLUMN source_branch TEXT")
+            self._conn.execute("PRAGMA user_version=2")
+            self._conn.commit()
+
+        if version < 3:
+            # Migration 3 (ENGINE-088): Add 'completed_with_conflicts' to the
+            # flow_runs.status CHECK constraint. Used when worktree_persist =
+            # true and the merge into the source branch has conflicts (or CAS
+            # exhausted) -- the run is still considered terminal but the exit
+            # branch is preserved for the user to merge manually.
+            #
+            # SQLite cannot ALTER a CHECK constraint, so we recreate the table.
+            # Columns are listed explicitly (not SELECT *) so this is robust
+            # against later additive migrations.
+            self._conn.executescript("""
+                PRAGMA foreign_keys=OFF;
+                BEGIN;
+
+                CREATE TABLE flow_runs_new (
+                    id TEXT PRIMARY KEY,
+                    flow_definition_id TEXT NOT NULL REFERENCES flow_definitions(id),
+                    status TEXT NOT NULL CHECK(status IN (
+                        'created', 'running', 'pausing', 'paused', 'completed',
+                        'failed', 'cancelled', 'budget_exceeded',
+                        'completed_with_conflicts'
+                    )),
+                    default_workspace TEXT,
+                    data_dir TEXT NOT NULL,
+                    params_json TEXT,
+                    budget_seconds INTEGER NOT NULL,
+                    elapsed_seconds REAL DEFAULT 0,
+                    on_error TEXT NOT NULL CHECK(on_error IN ('pause', 'abort', 'skip')),
+                    started_at TIMESTAMP,
+                    completed_at TIMESTAMP,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    error_message TEXT,
+                    worktree_path TEXT,
+                    task_id TEXT REFERENCES tasks(id),
+                    source_branch TEXT
+                );
+
+                INSERT OR IGNORE INTO flow_runs_new (
+                    id, flow_definition_id, status, default_workspace, data_dir,
+                    params_json, budget_seconds, elapsed_seconds, on_error,
+                    started_at, completed_at, created_at, error_message,
+                    worktree_path, task_id, source_branch
+                ) SELECT
+                    id, flow_definition_id, status, default_workspace, data_dir,
+                    params_json, budget_seconds, elapsed_seconds, on_error,
+                    started_at, completed_at, created_at, error_message,
+                    worktree_path, task_id, source_branch
+                FROM flow_runs;
+
+                DROP TABLE flow_runs;
+                ALTER TABLE flow_runs_new RENAME TO flow_runs;
+
+                CREATE INDEX IF NOT EXISTS idx_flow_runs_status ON flow_runs(status);
+
+                COMMIT;
+                PRAGMA foreign_keys=ON;
+                PRAGMA user_version=3;
             """)
 
     @property

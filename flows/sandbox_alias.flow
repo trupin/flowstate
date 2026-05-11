@@ -1,0 +1,23 @@
+flow sandbox_alias {
+    budget = 10m
+    on_error = pause
+    context = handoff
+    workspace = "."
+
+    sandbox = true
+    sandbox_policy = "policies/network-none.json"
+
+    input {
+        description: string = "sandbox alias"
+    }
+
+    entry start {
+        prompt = "go"
+    }
+
+    exit done {
+        prompt = "bye"
+    }
+
+    start -> done
+}

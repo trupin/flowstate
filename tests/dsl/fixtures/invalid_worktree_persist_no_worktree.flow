@@ -1,0 +1,22 @@
+// Test fixture: WP1 — worktree_persist = true with worktree = false (invalid)
+flow persist_without_worktree {
+    budget = 1h
+    on_error = pause
+    context = handoff
+    worktree = false
+    worktree_persist = true
+
+    input {
+        task_name: string
+    }
+
+    entry start {
+        prompt = "Begin work"
+    }
+
+    exit finish {
+        prompt = "Commit the change"
+    }
+
+    start -> finish
+}

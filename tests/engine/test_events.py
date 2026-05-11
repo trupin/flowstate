@@ -88,7 +88,7 @@ class TestEventTypeCount:
     """
 
     def test_event_type_count(self) -> None:
-        assert len(EventType) == 21
+        assert len(EventType) == 23
 
 
 class TestFlowEventCreation:

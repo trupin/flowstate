@@ -1,0 +1,23 @@
+flow lumon_flat_on {
+    budget = 10m
+    on_error = pause
+    context = handoff
+    workspace = "."
+
+    lumon = true
+    lumon_config = "policies/strict.json"
+
+    input {
+        description: string = "lumon flat on"
+    }
+
+    entry start {
+        prompt = "go"
+    }
+
+    exit done {
+        prompt = "bye"
+    }
+
+    start -> done
+}

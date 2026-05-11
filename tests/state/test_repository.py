@@ -325,6 +325,86 @@ class TestFlowRuns:
                 on_error="pause",
             )
 
+    # ---------------------------------------------------------------- #
+    # source_branch (STATE-013): worktree-persist source branch capture
+    # ---------------------------------------------------------------- #
+
+    def test_source_branch_defaults_to_none(self, db: FlowstateDB, flow_def_id: str) -> None:
+        """A freshly created flow_run has source_branch == None until set."""
+        run_id = db.create_flow_run(flow_def_id, "/tmp/r", 300, "pause")
+
+        # Via the model
+        row = db.get_flow_run(run_id)
+        assert row is not None
+        assert row.source_branch is None
+
+        # Via the helper
+        assert db.get_source_branch(run_id) is None
+
+    def test_set_and_get_source_branch_round_trip(self, db: FlowstateDB, flow_def_id: str) -> None:
+        """set_source_branch then get_source_branch returns the stored value."""
+        run_id = db.create_flow_run(flow_def_id, "/tmp/r", 300, "pause")
+
+        db.set_source_branch(run_id, "main")
+        assert db.get_source_branch(run_id) == "main"
+
+        # The model exposes the same value
+        row = db.get_flow_run(run_id)
+        assert row is not None
+        assert row.source_branch == "main"
+
+    def test_set_source_branch_overwrite(self, db: FlowstateDB, flow_def_id: str) -> None:
+        """A second set_source_branch replaces the prior value."""
+        run_id = db.create_flow_run(flow_def_id, "/tmp/r", 300, "pause")
+
+        db.set_source_branch(run_id, "main")
+        db.set_source_branch(run_id, "feature/x")
+        assert db.get_source_branch(run_id) == "feature/x"
+
+    def test_set_source_branch_to_none_clears(self, db: FlowstateDB, flow_def_id: str) -> None:
+        """set_source_branch(None) clears a previously stored branch."""
+        run_id = db.create_flow_run(flow_def_id, "/tmp/r", 300, "pause")
+
+        db.set_source_branch(run_id, "main")
+        assert db.get_source_branch(run_id) == "main"
+
+        db.set_source_branch(run_id, None)
+        assert db.get_source_branch(run_id) is None
+
+        row = db.get_flow_run(run_id)
+        assert row is not None
+        assert row.source_branch is None
+
+    def test_set_source_branch_with_slashes_and_dots(
+        self, db: FlowstateDB, flow_def_id: str
+    ) -> None:
+        """Branch names with slashes and dots round-trip verbatim (opaque string)."""
+        run_id = db.create_flow_run(flow_def_id, "/tmp/r", 300, "pause")
+
+        db.set_source_branch(run_id, "feature/STATE-013.persist")
+        assert db.get_source_branch(run_id) == "feature/STATE-013.persist"
+
+    def test_get_source_branch_unknown_run_returns_none(self, db: FlowstateDB) -> None:
+        """get_source_branch on a non-existent run id returns None (not an error)."""
+        assert db.get_source_branch("nonexistent-run-id") is None
+
+    def test_set_source_branch_unknown_run_is_noop(self, db: FlowstateDB) -> None:
+        """set_source_branch on a non-existent run id is a no-op (UPDATE matches 0 rows)."""
+        # Should not raise
+        db.set_source_branch("nonexistent-run-id", "main")
+        # And still returns None on subsequent reads (row doesn't exist)
+        assert db.get_source_branch("nonexistent-run-id") is None
+
+    def test_source_branch_independent_per_run(self, db: FlowstateDB, flow_def_id: str) -> None:
+        """source_branch on one run does not bleed into another."""
+        run_a = db.create_flow_run(flow_def_id, "/tmp/ra", 300, "pause")
+        run_b = db.create_flow_run(flow_def_id, "/tmp/rb", 300, "pause")
+
+        db.set_source_branch(run_a, "main")
+        # run_b is untouched
+        assert db.get_source_branch(run_b) is None
+        assert db.get_source_branch(run_a) == "main"
+
 
 # ================================================================== #
 # Task Execution Tests

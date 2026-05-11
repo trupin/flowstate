@@ -4,7 +4,7 @@
 dsl
 
 ## Status
-todo
+done
 
 ## Priority
 P1 (important)
@@ -131,7 +131,95 @@ def _check_agent_files(flow: Flow, flow_file_dir: Path | None) -> list[FlowTypeE
 ## E2E Verification Log
 
 ### Post-Implementation Verification
-_[Agent fills this in: exact commands, observed output, confirmation fix/feature works]_
+
+DSL-015 lands only the parser + type checker portion. Engine wiring is ENGINE-086 (out of scope). The CLI ``/check`` command exercises both AG1 and AG2 against real ``.flow`` + ``agent.md`` files.
+
+**1. Valid persona resolves in `<flow_dir>/agents/<name>.md`** (AG1/AG2 clean)
+
+```
+$ uv run flowstate check tests/dsl/fixtures/valid_agent.flow
+OK
+exit=0
+```
+
+The fixture `tests/dsl/fixtures/valid_agent.flow` sets `agent = "demo"` on its entry, task, and exit nodes; `tests/dsl/fixtures/agents/demo.md` has valid YAML frontmatter and a body. The flow-dir lookup succeeds and frontmatter parses, so the type checker emits no AG1/AG2 errors.
+
+**2. Missing persona fires AG1 with both lookup paths**
+
+```
+$ uv run flowstate check tests/dsl/fixtures/invalid_agent_missing.flow
+Type error: FlowTypeError(rule='AG1', message="agent 'definitely_not_a_persona' on node 'start' not found (looked in /Users/theophanerupin/code/flowstate/tests/dsl/fixtures/agents/definitely_not_a_persona.md and /Users/theophanerupin/.claude/agents/definitely_not_a_persona.md)", location='start')
+exit=1
+```
+
+Exit code is non-zero. Error contains literal `AG1`, the persona name `definitely_not_a_persona`, AND both lookup paths (flow-dir and user-global).
+
+**3. Malformed YAML frontmatter fires AG2 with the file path**
+
+Setup (created via the bash heredoc shown below; cleaned up after):
+
+```
+$ mkdir -p /tmp/agcheck/agents
+$ cat > /tmp/agcheck/agents/bad.md <<'EOF'
+---
+name: [unterminated
+---
+body
+EOF
+$ cat > /tmp/agcheck/bad.flow <<'EOF'
+flow bad { budget = 1h on_error = pause context = handoff
+  input { topic: string }
+  entry start { prompt = "x" agent = "bad" }
+  exit done { prompt = "y" }
+  start -> done }
+EOF
+$ uv run flowstate check /tmp/agcheck/bad.flow
+Type error: FlowTypeError(rule='AG2', message='agent \'bad\' on node \'start\' has malformed frontmatter at /private/tmp/agcheck/agents/bad.md: while parsing a flow sequence...', location='start')
+exit=1
+```
+
+AG2 fires, error includes the persona name `bad`, the absolute path to the malformed file, and the underlying YAML parser message.
+
+**4. Persona resolved in `~/.claude/agents/<name>.md` (user-global fallthrough)**
+
+```
+$ uv run flowstate check /tmp/agcheck/global.flow      # before creating the persona
+Type error: FlowTypeError(rule='AG1', message="agent 'test_global_persona_dsl015' on node 'start' not found (looked in /private/tmp/agcheck/agents/test_global_persona_dsl015.md and /Users/theophanerupin/.claude/agents/test_global_persona_dsl015.md)", ...)
+exit=1
+
+$ mkdir -p ~/.claude/agents
+$ cat > ~/.claude/agents/test_global_persona_dsl015.md <<'EOF'
+---
+name: test global persona
+---
+hello
+EOF
+
+$ uv run flowstate check /tmp/agcheck/global.flow      # after creating the persona
+OK
+exit=0
+```
+
+When the persona is absent from both lookups AG1 fires. When the user-global file is created, the same flow type-checks clean — confirming the precedence falls through correctly to `~/.claude/agents/`.
+
+**5. Unit tests**
+
+```
+$ uv run pytest tests/dsl/ -q
+395 passed in 2.47s
+```
+
+All 395 DSL tests pass (existing 366 + 29 new AG1/AG2/parser tests).
+
+**6. Lint + types**
+
+```
+$ uv run ruff check src/flowstate/dsl/ tests/dsl/
+All checks passed!
+
+$ uv run pyright src/flowstate/dsl/
+0 errors, 0 warnings, 0 informations
+```
 
 ## Completion Checklist
 - [ ] Unit tests written and passing

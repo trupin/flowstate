@@ -1,12 +1,24 @@
 """Lumon sandboxing -- deploy, plugin management, and config resolution.
 
 Handles Lumon sandbox setup for task execution:
-- Resolving whether Lumon is active for a given flow/node
-- Resolving the .lumon.json config path (node overrides flow, sandbox_policy aliases lumon_config)
-- Creating and populating the plugins/ directory with symlinks
-- Copying .lumon.json config when specified
-- Running `lumon deploy` before subprocess launch
-- Creating the sandbox/ directory
+- Resolving whether Lumon is active for a given flow/node (via ``LumonConfig``).
+- Resolving the effective config (node overrides flow entirely, not merged).
+- Creating and populating the plugins/ directory with symlinks.
+- Writing ``.lumon.json``: either synthesized from ``LumonConfig.plugins``
+  or loaded from ``LumonConfig.config_path`` on disk. The built-in
+  ``flowstate`` plugin is always added regardless of the source.
+- Running `lumon deploy` before subprocess launch.
+- Creating the sandbox/ directory.
+
+SHARED-012 migrated the flat ``flow.lumon``/``flow.sandbox`` booleans and
+``flow.lumon_config``/``flow.sandbox_policy`` strings to a single
+``LumonConfig`` block on ``Flow`` and ``Node``. The legacy flat syntax is
+still accepted at the parser layer (see ``_build_lumon_from_flat``) and
+collapses to the same ``LumonConfig`` shape, so behavior is preserved.
+
+DSL-016 added the block syntax ``lumon { enabled = true, plugins = [...] }``
+which populates ``LumonConfig.plugins`` as a tuple of plugin names. When set,
+the engine synthesizes ``.lumon.json`` in-memory rather than reading from disk.
 """
 
 from __future__ import annotations
@@ -21,7 +33,7 @@ from flowstate.config import _default_data_dir
 from flowstate.engine.context import lumon_plugin_dir
 
 if TYPE_CHECKING:
-    from flowstate.dsl.ast import Flow, Node
+    from flowstate.dsl.ast import Flow, LumonConfig, Node
 
 logger = logging.getLogger(__name__)
 
@@ -34,32 +46,34 @@ class LumonNotInstalledError(Exception):
     """Raised when the `lumon` CLI binary is not found."""
 
 
-def _use_lumon(flow: Flow, node: Node) -> bool:
-    """Check if Lumon sandboxing is active for this node.
+def _effective_lumon_config(flow: Flow, node: Node) -> LumonConfig | None:
+    """Resolve the effective ``LumonConfig`` for ``node``.
 
-    Returns True when the node or flow has lumon=True or sandbox=True.
-    Node-level settings override flow-level (None means inherit).
+    Node-level ``LumonConfig`` fully overrides flow-level when present (it
+    does not merge): a node that declares its own ``lumon { ... }`` block
+    completely replaces the flow's block. A ``None`` ``lumon`` on the node
+    means "inherit from flow".
     """
-    lumon = node.lumon if node.lumon is not None else flow.lumon
-    sandbox = node.sandbox if node.sandbox is not None else flow.sandbox
-    return bool(lumon or sandbox)
+    if node.lumon is not None:
+        return node.lumon
+    return flow.lumon
+
+
+def _use_lumon(flow: Flow, node: Node) -> bool:
+    """Check if Lumon sandboxing is active for this node."""
+    cfg = _effective_lumon_config(flow, node)
+    return cfg is not None and cfg.enabled
 
 
 def _lumon_config(flow: Flow, node: Node) -> str | None:
-    """Resolve the .lumon.json config path.
+    """Resolve the ``.lumon.json`` config path on the effective config.
 
-    Priority: node.lumon_config > node.sandbox_policy > flow.lumon_config > flow.sandbox_policy.
-    Returns None if no config is specified at any level.
+    Returns ``None`` when no ``config_path`` is set in the effective scope.
+    Kept for backward compatibility with callers that only need the path.
+    Prefer ``_effective_lumon_config`` when the full block is needed.
     """
-    if node.lumon_config is not None:
-        return node.lumon_config
-    if node.sandbox_policy is not None:
-        return node.sandbox_policy
-    if flow.lumon_config is not None:
-        return flow.lumon_config
-    if flow.sandbox_policy is not None:
-        return flow.sandbox_policy
-    return None
+    cfg = _effective_lumon_config(flow, node)
+    return cfg.config_path if cfg is not None else None
 
 
 def _builtin_plugin_dir() -> Path:
@@ -127,17 +141,27 @@ async def setup_lumon(
         if not target.exists():
             target.symlink_to(builtin)
 
-    # 2. Build .lumon.json — merge user config with built-in flowstate plugin
-    config_path = _lumon_config(flow, node)
+    # 2. Build .lumon.json — synthesize from plugins list, load from disk, or
+    #    fall back to defaults. The built-in flowstate plugin is always merged
+    #    in regardless of which branch is taken.
+    cfg = _effective_lumon_config(flow, node)
     lumon_config: dict = {"plugins": {}}
 
-    # Load user config if specified
-    if config_path and flow_file_dir:
-        src = Path(flow_file_dir) / config_path
+    if cfg is not None and cfg.plugins is not None:
+        # Synthesize: explicit plugin list (including empty tuple) takes
+        # precedence over any config_path that may also be present in scope.
+        # Parser-layer L2 should prevent both being set on the same block,
+        # but defense in depth: plugins wins.
+        lumon_config = {"plugins": {name: {} for name in cfg.plugins}}
+    elif cfg is not None and cfg.config_path and flow_file_dir:
+        # Load user config from disk (preserves existing path-based behavior).
+        src = Path(flow_file_dir) / cfg.config_path
         if src.exists():
             lumon_config = json.loads(src.read_text())
         else:
-            logger.warning("Lumon config '%s' not found at '%s', using defaults", config_path, src)
+            logger.warning(
+                "Lumon config '%s' not found at '%s', using defaults", cfg.config_path, src
+            )
 
     # Always register the built-in flowstate plugin
     plugins = lumon_config.setdefault("plugins", {})

@@ -302,7 +302,7 @@ def check(
         typer.echo(f"Parse error: {e}", err=True)
         raise typer.Exit(code=1) from None
 
-    errors = check_flow(flow_ast)
+    errors = check_flow(flow_ast, flow_file_dir=file_path.parent.resolve())
     if errors:
         for error in errors:
             typer.echo(f"Type error: {error}", err=True)
@@ -394,7 +394,7 @@ def run(
         typer.echo(f"Parse error: {e}", err=True)
         raise typer.Exit(code=1) from None
 
-    errors = check_flow(flow_ast)
+    errors = check_flow(flow_ast, flow_file_dir=flow_path.parent.resolve())
     if errors:
         for error in errors:
             typer.echo(f"Type error: {error}", err=True)

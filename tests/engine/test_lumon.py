@@ -12,11 +12,12 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
-from flowstate.dsl.ast import ContextMode, ErrorPolicy, Flow, Node, NodeType
+from flowstate.dsl.ast import ContextMode, ErrorPolicy, Flow, LumonConfig, Node, NodeType
 from flowstate.engine.lumon import (
     LumonDeployError,
     LumonNotInstalledError,
     _builtin_plugin_dir,
+    _effective_lumon_config,
     _lumon_config,
     _use_lumon,
     setup_lumon,
@@ -29,6 +30,27 @@ if TYPE_CHECKING:
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
+
+def _flat_to_config(
+    *,
+    lumon: bool | None,
+    sandbox: bool | None,
+    lumon_config: str | None,
+    sandbox_policy: str | None,
+) -> LumonConfig | None:
+    """Mirror the parser-layer mapping from flat syntax onto ``LumonConfig``.
+
+    Kept in the test helpers so existing test cases keep their declarative
+    flat-keyword call sites while exercising the post-SHARED-012 AST shape.
+    Precedence for ``config_path``: ``lumon_config`` > ``sandbox_policy``
+    (preserves prior engine resolution order).
+    """
+    if lumon is None and sandbox is None and lumon_config is None and sandbox_policy is None:
+        return None
+    enabled = bool(lumon) or bool(sandbox)
+    config_path = lumon_config if lumon_config is not None else sandbox_policy
+    return LumonConfig(enabled=enabled, plugins=None, config_path=config_path)
 
 
 def _make_flow(
@@ -44,10 +66,12 @@ def _make_flow(
         on_error=ErrorPolicy.PAUSE,
         context=ContextMode.HANDOFF,
         workspace="/workspace",
-        lumon=lumon,
-        sandbox=sandbox,
-        lumon_config=lumon_config,
-        sandbox_policy=sandbox_policy,
+        lumon=_flat_to_config(
+            lumon=lumon,
+            sandbox=sandbox,
+            lumon_config=lumon_config,
+            sandbox_policy=sandbox_policy,
+        ),
     )
 
 
@@ -63,10 +87,12 @@ def _make_node(
         name=name,
         node_type=NodeType.TASK,
         prompt="Do the task",
-        lumon=lumon,
-        sandbox=sandbox,
-        lumon_config=lumon_config,
-        sandbox_policy=sandbox_policy,
+        lumon=_flat_to_config(
+            lumon=lumon,
+            sandbox=sandbox,
+            lumon_config=lumon_config,
+            sandbox_policy=sandbox_policy,
+        ),
     )
 
 
@@ -604,3 +630,284 @@ class TestBuiltinPluginDir:
         assert plugin_dir.parent.name == "engine"
         # The directory should actually exist in the source tree
         assert plugin_dir.is_dir()
+
+
+# ---------------------------------------------------------------------------
+# ENGINE-087: _effective_lumon_config + plugin-list synthesis
+# ---------------------------------------------------------------------------
+
+
+def _make_flow_with_config(cfg: LumonConfig | None) -> Flow:
+    """Build a flow with an explicit ``LumonConfig`` (or None)."""
+    return Flow(
+        name="test_flow",
+        budget_seconds=3600,
+        on_error=ErrorPolicy.PAUSE,
+        context=ContextMode.HANDOFF,
+        workspace="/workspace",
+        lumon=cfg,
+    )
+
+
+def _make_node_with_config(cfg: LumonConfig | None, name: str = "task1") -> Node:
+    """Build a node with an explicit ``LumonConfig`` (or None)."""
+    return Node(
+        name=name,
+        node_type=NodeType.TASK,
+        prompt="Do the task",
+        lumon=cfg,
+    )
+
+
+class TestEffectiveLumonConfig:
+    """``_effective_lumon_config`` returns the node's config when set, else the flow's.
+
+    Node-level config is a full override, not a merge: a node that has
+    ``LumonConfig(enabled=True)`` with no plugins/path does NOT inherit
+    the flow's plugins or path.
+    """
+
+    def test_returns_none_when_neither_set(self) -> None:
+        flow = _make_flow_with_config(None)
+        node = _make_node_with_config(None)
+        assert _effective_lumon_config(flow, node) is None
+
+    def test_returns_flow_when_node_none(self) -> None:
+        flow_cfg = LumonConfig(enabled=True, plugins=("filesystem",))
+        flow = _make_flow_with_config(flow_cfg)
+        node = _make_node_with_config(None)
+        assert _effective_lumon_config(flow, node) == flow_cfg
+
+    def test_node_fully_overrides_flow(self) -> None:
+        """Node config replaces flow config entirely, no field-merging."""
+        flow_cfg = LumonConfig(enabled=True, plugins=("a", "b"), config_path=None)
+        node_cfg = LumonConfig(enabled=True, plugins=("x",), config_path=None)
+        flow = _make_flow_with_config(flow_cfg)
+        node = _make_node_with_config(node_cfg)
+        assert _effective_lumon_config(flow, node) == node_cfg
+
+    def test_node_disabled_overrides_flow_enabled(self) -> None:
+        """``LumonConfig(enabled=False)`` on a node disables lumon for that node."""
+        flow_cfg = LumonConfig(enabled=True, plugins=("a",))
+        node_cfg = LumonConfig(enabled=False)
+        flow = _make_flow_with_config(flow_cfg)
+        node = _make_node_with_config(node_cfg)
+        assert _effective_lumon_config(flow, node) == node_cfg
+        assert _use_lumon(flow, node) is False
+
+    def test_node_with_plugins_ignores_flow_config_path(self) -> None:
+        """Node setting only ``plugins`` does NOT inherit flow's ``config_path``."""
+        flow_cfg = LumonConfig(enabled=True, plugins=None, config_path="flow.json")
+        node_cfg = LumonConfig(enabled=True, plugins=("x",), config_path=None)
+        flow = _make_flow_with_config(flow_cfg)
+        node = _make_node_with_config(node_cfg)
+        eff = _effective_lumon_config(flow, node)
+        assert eff is not None
+        assert eff.plugins == ("x",)
+        assert eff.config_path is None  # Flow's path is NOT inherited
+
+
+class TestSetupLumonPluginSynthesis:
+    """``setup_lumon`` synthesizes ``.lumon.json`` from ``LumonConfig.plugins``.
+
+    Critical sprint-37b acceptance: when ``lumon { enabled = true,
+    plugins = ["filesystem", "git"] }`` is set, the worktree's
+    ``.lumon.json`` contains exactly ``{filesystem, git, flowstate}``
+    (the two listed + the always-included built-in).
+    """
+
+    @pytest.fixture()
+    def worktree(self, tmp_path: Path) -> Path:
+        wt = tmp_path / "worktree"
+        wt.mkdir()
+        return wt
+
+    async def test_plugins_list_synthesizes_lumon_json(self, worktree: Path) -> None:
+        """``plugins = ["filesystem", "git"]`` -> {filesystem, git, flowstate}."""
+        flow = _make_flow_with_config(LumonConfig(enabled=True, plugins=("filesystem", "git")))
+        node = _make_node_with_config(None)
+
+        with patch("flowstate.engine.lumon.asyncio.create_subprocess_exec") as mock_exec:
+            mock_exec.return_value = _mock_successful_deploy()
+            await setup_lumon(str(worktree), flow, node)
+
+        config = json.loads((worktree / ".lumon.json").read_text())
+        # Exactly these three keys, no more, no less.
+        assert set(config["plugins"].keys()) == {"filesystem", "git", "flowstate"}
+        # Each listed plugin gets an empty per-plugin config object.
+        assert config["plugins"]["filesystem"] == {}
+        assert config["plugins"]["git"] == {}
+        assert config["plugins"]["flowstate"] == {}
+
+    async def test_single_plugin_synthesizes_lumon_json(self, worktree: Path) -> None:
+        """``plugins = ["filesystem"]`` -> {filesystem, flowstate}."""
+        flow = _make_flow_with_config(LumonConfig(enabled=True, plugins=("filesystem",)))
+        node = _make_node_with_config(None)
+
+        with patch("flowstate.engine.lumon.asyncio.create_subprocess_exec") as mock_exec:
+            mock_exec.return_value = _mock_successful_deploy()
+            await setup_lumon(str(worktree), flow, node)
+
+        config = json.loads((worktree / ".lumon.json").read_text())
+        assert set(config["plugins"].keys()) == {"filesystem", "flowstate"}
+
+    async def test_empty_plugins_tuple_synthesizes_only_flowstate(self, worktree: Path) -> None:
+        """``plugins = ()`` (explicit empty) -> only the built-in flowstate plugin."""
+        flow = _make_flow_with_config(LumonConfig(enabled=True, plugins=()))
+        node = _make_node_with_config(None)
+
+        with patch("flowstate.engine.lumon.asyncio.create_subprocess_exec") as mock_exec:
+            mock_exec.return_value = _mock_successful_deploy()
+            await setup_lumon(str(worktree), flow, node)
+
+        config = json.loads((worktree / ".lumon.json").read_text())
+        # Empty tuple means "no plugins beyond flowstate".
+        assert set(config["plugins"].keys()) == {"flowstate"}
+
+    async def test_plugins_none_falls_back_to_default(self, worktree: Path) -> None:
+        """``plugins = None`` (unspecified) with no config_path -> only flowstate."""
+        flow = _make_flow_with_config(LumonConfig(enabled=True, plugins=None, config_path=None))
+        node = _make_node_with_config(None)
+
+        with patch("flowstate.engine.lumon.asyncio.create_subprocess_exec") as mock_exec:
+            mock_exec.return_value = _mock_successful_deploy()
+            await setup_lumon(str(worktree), flow, node)
+
+        config = json.loads((worktree / ".lumon.json").read_text())
+        assert set(config["plugins"].keys()) == {"flowstate"}
+
+    async def test_node_plugins_fully_override_flow_config_path(
+        self, worktree: Path, tmp_path: Path
+    ) -> None:
+        """Node with ``plugins`` ignores flow's ``config_path`` entirely.
+
+        Sprint TEST-37b.14: node-level lumon fully overrides flow-level.
+        Flow has ``config = "flow.json"``, node has ``plugins = ["x"]``.
+        Result: ``.lumon.json`` plugins are exactly {x, flowstate}; the
+        flow's ``flow.json`` is NOT loaded.
+        """
+        flow_dir = tmp_path / "flow_dir"
+        flow_dir.mkdir()
+        # Write a flow-level config that should NOT be picked up.
+        (flow_dir / "flow.json").write_text('{"plugins": {"should_not_appear": {}}}')
+
+        flow = _make_flow_with_config(
+            LumonConfig(enabled=True, plugins=None, config_path="flow.json")
+        )
+        node = _make_node_with_config(LumonConfig(enabled=True, plugins=("x",), config_path=None))
+
+        with patch("flowstate.engine.lumon.asyncio.create_subprocess_exec") as mock_exec:
+            mock_exec.return_value = _mock_successful_deploy()
+            await setup_lumon(str(worktree), flow, node, flow_file_dir=str(flow_dir))
+
+        config = json.loads((worktree / ".lumon.json").read_text())
+        assert set(config["plugins"].keys()) == {"x", "flowstate"}
+        assert "should_not_appear" not in config["plugins"]
+
+    async def test_config_path_branch_preserves_existing_behavior(
+        self, worktree: Path, tmp_path: Path
+    ) -> None:
+        """``config = "policy.json"`` still loads from disk and merges flowstate.
+
+        Sprint TEST-37b.13: backward-compat path-based config still works.
+        """
+        flow_dir = tmp_path / "flow_dir"
+        flow_dir.mkdir()
+        (flow_dir / "policy.json").write_text('{"plugins": {"custom": {}}}')
+
+        flow = _make_flow_with_config(
+            LumonConfig(enabled=True, plugins=None, config_path="policy.json")
+        )
+        node = _make_node_with_config(None)
+
+        with patch("flowstate.engine.lumon.asyncio.create_subprocess_exec") as mock_exec:
+            mock_exec.return_value = _mock_successful_deploy()
+            await setup_lumon(str(worktree), flow, node, flow_file_dir=str(flow_dir))
+
+        config = json.loads((worktree / ".lumon.json").read_text())
+        assert set(config["plugins"].keys()) == {"custom", "flowstate"}
+
+    async def test_node_overrides_flow_plugins_with_different_plugins(self, worktree: Path) -> None:
+        """Node ``plugins = ["b"]`` fully overrides flow ``plugins = ["a"]``."""
+        flow = _make_flow_with_config(LumonConfig(enabled=True, plugins=("a",)))
+        node = _make_node_with_config(LumonConfig(enabled=True, plugins=("b",)))
+
+        with patch("flowstate.engine.lumon.asyncio.create_subprocess_exec") as mock_exec:
+            mock_exec.return_value = _mock_successful_deploy()
+            await setup_lumon(str(worktree), flow, node)
+
+        config = json.loads((worktree / ".lumon.json").read_text())
+        assert set(config["plugins"].keys()) == {"b", "flowstate"}
+        assert "a" not in config["plugins"]
+
+    async def test_plugins_set_ignores_config_path_on_same_block(
+        self, worktree: Path, tmp_path: Path
+    ) -> None:
+        """If both ``plugins`` and ``config_path`` are set, plugins wins.
+
+        L2 should prevent this at parse time, but defense in depth: the
+        engine should not crash and should prefer the synthesized list.
+        """
+        flow_dir = tmp_path / "flow_dir"
+        flow_dir.mkdir()
+        (flow_dir / "policy.json").write_text('{"plugins": {"from_file": {}}}')
+
+        flow = _make_flow_with_config(
+            LumonConfig(enabled=True, plugins=("from_list",), config_path="policy.json")
+        )
+        node = _make_node_with_config(None)
+
+        with patch("flowstate.engine.lumon.asyncio.create_subprocess_exec") as mock_exec:
+            mock_exec.return_value = _mock_successful_deploy()
+            await setup_lumon(str(worktree), flow, node, flow_file_dir=str(flow_dir))
+
+        config = json.loads((worktree / ".lumon.json").read_text())
+        # plugins list wins; config_path is ignored.
+        assert set(config["plugins"].keys()) == {"from_list", "flowstate"}
+        assert "from_file" not in config["plugins"]
+
+
+class TestSetupLumonBackwardCompat:
+    """Flat-syntax flows (``lumon = true``) produce the same ``.lumon.json``
+    after ENGINE-087 as before. The parser collapses flat syntax to
+    ``LumonConfig(enabled=True, plugins=None, config_path=...)``, which takes
+    the default/path branch — never the synthesis branch.
+
+    Sprint TEST-37b.3.
+    """
+
+    @pytest.fixture()
+    def worktree(self, tmp_path: Path) -> Path:
+        wt = tmp_path / "worktree"
+        wt.mkdir()
+        return wt
+
+    async def test_flat_lumon_true_only_writes_flowstate(self, worktree: Path) -> None:
+        """``lumon = true`` (no config) -> ``.lumon.json`` has only flowstate."""
+        flow = _make_flow(lumon=True)
+        node = _make_node()
+
+        with patch("flowstate.engine.lumon.asyncio.create_subprocess_exec") as mock_exec:
+            mock_exec.return_value = _mock_successful_deploy()
+            await setup_lumon(str(worktree), flow, node)
+
+        config = json.loads((worktree / ".lumon.json").read_text())
+        assert set(config["plugins"].keys()) == {"flowstate"}
+
+    async def test_flat_lumon_with_config_loads_from_disk(
+        self, worktree: Path, tmp_path: Path
+    ) -> None:
+        """``lumon = true; lumon_config = "x.json"`` still loads from disk."""
+        flow_dir = tmp_path / "flow_dir"
+        flow_dir.mkdir()
+        (flow_dir / "x.json").write_text('{"plugins": {"existing": {}}}')
+
+        flow = _make_flow(lumon=True, lumon_config="x.json")
+        node = _make_node()
+
+        with patch("flowstate.engine.lumon.asyncio.create_subprocess_exec") as mock_exec:
+            mock_exec.return_value = _mock_successful_deploy()
+            await setup_lumon(str(worktree), flow, node, flow_file_dir=str(flow_dir))
+
+        config = json.loads((worktree / ".lumon.json").read_text())
+        assert set(config["plugins"].keys()) == {"existing", "flowstate"}

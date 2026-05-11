@@ -1,0 +1,5 @@
+{
+  "name": "git",
+  "description": "Test fixture plugin for ENGINE-087: minimal git plugin stub.",
+  "version": "0.0.0"
+}

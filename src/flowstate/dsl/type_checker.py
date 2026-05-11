@@ -5,30 +5,44 @@ Implements the rules from specs.md Section 4:
   - E1-E9: Edge rules (edge semantics)
   - C1-C3: Cycle rules (safe cycles)
   - F1-F3: Fork-join rules (parallel region scoping)
+  - L1-L3: Lumon config block rules (DSL-016)
+  - AG1-AG2: Agent persona file rules (DSL-015)
+  - WP1: Worktree persist rule (DSL-017)
 """
 
 from __future__ import annotations
 
 from collections import deque
 from dataclasses import dataclass
+from pathlib import Path
 
+import yaml
 from croniter import croniter
 
+from flowstate.config import _default_data_dir
 from flowstate.dsl.ast import (
     ContextMode,
     Edge,
     EdgeType,
     Flow,
+    LumonConfig,
     NodeType,
 )
 from flowstate.dsl.exceptions import FlowTypeError
 
 
-def check_flow(flow: Flow) -> list[FlowTypeError]:
+def check_flow(flow: Flow, flow_file_dir: Path | None = None) -> list[FlowTypeError]:
     """Validate a Flow AST against all type checking rules.
 
     Returns an empty list if the flow is valid, or a list of FlowTypeError
     instances describing each violation found.
+
+    ``flow_file_dir`` is the directory of the source ``.flow`` file. When
+    provided, agent persona files are resolved against it (AG1/AG2) and
+    plugin directories referenced by the lumon block are resolved against it
+    (L3). When omitted (e.g. parsing from a string with no path), only the
+    user-global ``~/.claude/agents/`` lookup is performed for AG1, and only
+    the global flowstate data dir + built-in plugin dir are searched for L3.
     """
     errors: list[FlowTypeError] = []
     errors.extend(_check_structural(flow))
@@ -36,8 +50,9 @@ def check_flow(flow: Flow) -> list[FlowTypeError]:
     errors.extend(_check_cycles(flow))
     errors.extend(_check_fork_join(flow))
     errors.extend(_check_scheduling(flow))
-    errors.extend(_check_sandbox(flow))
-    errors.extend(_check_lumon(flow))
+    errors.extend(_check_lumon(flow, flow_file_dir))
+    errors.extend(_check_agents(flow, flow_file_dir))
+    errors.extend(_check_worktree_persist(flow))
     return errors
 
 
@@ -856,72 +871,321 @@ def _check_scheduling(flow: Flow) -> list[FlowTypeError]:
 
 
 # ---------------------------------------------------------------------------
-# SB1: Sandbox rules
+# L1-L3: Lumon config block rules (DSL-016)
 # ---------------------------------------------------------------------------
 
 
-def _check_sandbox(flow: Flow) -> list[FlowTypeError]:
-    errors: list[FlowTypeError] = []
+def _plugin_search_paths(flow_file_dir: Path | None) -> list[Path]:
+    """Return the ordered set of directories where lumon plugin names resolve.
 
-    # SB1 (flow level): sandbox_policy requires sandbox = true
-    if flow.sandbox_policy is not None and not flow.sandbox:
+    Mirrors the resolution order used by :func:`flowstate.engine.lumon.setup_lumon`
+    so a name that type-checks here will resolve at deploy time too:
+
+      1. ``<flow_dir>/plugins/`` (per-flow plugins, only when ``flow_file_dir``
+         is known — i.e. when type-checking from a real ``.flow`` file)
+      2. ``<flowstate_data_dir>/plugins/`` (global plugins, honors
+         ``FLOWSTATE_DATA_DIR`` via :func:`flowstate.config._default_data_dir`)
+      3. The bundled flowstate plugin directory (a special-case below — the
+         only valid name at this location is literally ``flowstate``)
+    """
+    paths: list[Path] = []
+    if flow_file_dir is not None:
+        paths.append(flow_file_dir / "plugins")
+    paths.append(_default_data_dir() / "plugins")
+    return paths
+
+
+def _builtin_plugin_dir() -> Path:
+    """Return the bundled flowstate plugin directory.
+
+    Imported lazily from ``flowstate.engine.context`` to keep the DSL package
+    independent of the engine import graph at module-load time (the DSL is
+    upstream of the engine in the dependency direction). The function is only
+    called from within :func:`_plugin_exists`, which is only called when L3
+    is being evaluated.
+    """
+    from flowstate.engine.context import lumon_plugin_dir
+
+    return Path(lumon_plugin_dir())
+
+
+def _plugin_exists(name: str, flow_file_dir: Path | None) -> bool:
+    """Return True iff a plugin with the given name resolves on disk.
+
+    Resolution mirrors :func:`flowstate.engine.lumon.setup_lumon`:
+
+      - ``<flow_dir>/plugins/<name>/`` is a directory, OR
+      - ``<data_dir>/plugins/<name>/`` is a directory (honors
+        ``FLOWSTATE_DATA_DIR``), OR
+      - the name is exactly ``flowstate`` AND the bundled plugin dir exists
+        (the built-in is always auto-merged at deploy time, so naming it
+        explicitly in ``plugins = [...]`` is fine).
+    """
+    for parent in _plugin_search_paths(flow_file_dir):
+        candidate = parent / name
+        if candidate.is_dir():
+            return True
+    # Built-in flowstate plugin: special-case the literal name and check that
+    # the bundled directory itself exists (which it always should — it's part
+    # of the source tree).
+    if name == "flowstate":
+        builtin = _builtin_plugin_dir()
+        if builtin.is_dir():
+            return True
+    return False
+
+
+def _validate_lumon_block(
+    cfg: LumonConfig,
+    scope: str,
+    flow_file_dir: Path | None,
+) -> list[FlowTypeError]:
+    """Apply rules L1, L2, L3 to a single ``LumonConfig`` instance.
+
+    L1: ``plugins`` (non-empty) or ``config`` require ``enabled = true`` in
+        the same scope.
+    L2: ``plugins`` (non-empty) and ``config`` are mutually exclusive in the
+        same block.
+    L3: each name in ``plugins`` must resolve to a plugin directory under
+        ``<flow_dir>/plugins/``, ``<flowstate_data_dir>/plugins/``, or the
+        built-in flowstate plugin.
+    """
+    errors: list[FlowTypeError] = []
+    has_plugins = cfg.plugins is not None and len(cfg.plugins) > 0
+    has_config = cfg.config_path is not None
+
+    # L1: plugins/config require enabled. Empty plugin tuple ``()`` is *not*
+    # treated as "plugins are set" — it means "explicitly no plugins beyond
+    # the built-in flowstate plugin" and does not require enabled by itself.
+    if (has_plugins or has_config) and not cfg.enabled:
         errors.append(
             FlowTypeError(
-                "SB1",
-                "sandbox_policy requires sandbox = true at flow level",
-                flow.name,
+                "L1",
+                f"lumon.plugins/config at {scope} require lumon.enabled = true",
+                scope,
             )
         )
 
-    # SB1 (node level): sandbox_policy requires sandbox = true (explicit or inherited)
-    for node in flow.nodes.values():
-        if node.sandbox_policy is not None:
-            # Determine the effective sandbox value for this node
-            effective_sandbox = node.sandbox if node.sandbox is not None else flow.sandbox
-            if not effective_sandbox:
+    # L2: plugins and config are mutually exclusive within the same block.
+    if has_plugins and has_config:
+        errors.append(
+            FlowTypeError(
+                "L2",
+                f"lumon.plugins and lumon.config are mutually exclusive at {scope} "
+                "(pick the curated plugin allowlist OR the hand-written .lumon.json file)",
+                scope,
+            )
+        )
+
+    # L3: each plugin name must resolve to an existing plugin directory.
+    if has_plugins and cfg.plugins is not None:
+        flow_dir_repr = (
+            str(flow_file_dir / "plugins") if flow_file_dir is not None else "<flow_dir>/plugins"
+        )
+        data_dir_repr = str(_default_data_dir() / "plugins")
+        for name in cfg.plugins:
+            if not _plugin_exists(name, flow_file_dir):
                 errors.append(
                     FlowTypeError(
-                        "SB1",
-                        f"Node '{node.name}' sets sandbox_policy but sandbox is not enabled"
-                        " (sandbox must be true, either on the node or inherited from flow)",
-                        node.name,
+                        "L3",
+                        f"lumon plugin '{name}' at {scope} not found "
+                        f"(looked in {flow_dir_repr}/{name}/, "
+                        f"{data_dir_repr}/{name}/, and the built-in flowstate plugin)",
+                        scope,
                     )
                 )
 
     return errors
 
 
-# ---------------------------------------------------------------------------
-# LM1: Lumon rules
-# ---------------------------------------------------------------------------
+def _check_lumon(flow: Flow, flow_file_dir: Path | None) -> list[FlowTypeError]:
+    """Validate the lumon configuration block at flow and node scopes.
 
+    Implements DSL-016's L1, L2, L3 rules. L1 supersedes the legacy LM1 rule
+    (config_path requires enabled = true) by also covering the new
+    ``plugins`` attribute. The flat ``sandbox``/``sandbox_policy`` aliases
+    are still collapsed into the same ``LumonConfig`` at the parser layer
+    (SHARED-012), so flat-syntax flows continue to surface the same
+    "config without enabled" diagnostic — now under rule L1.
 
-def _check_lumon(flow: Flow) -> list[FlowTypeError]:
+    Node-level ``LumonConfig`` fully overrides flow-level when present, so
+    each scope is validated against its own ``enabled`` value. A node with
+    no lumon block of its own (``Node.lumon is None``) inherits silently.
+    """
     errors: list[FlowTypeError] = []
 
-    # LM1 (flow level): lumon_config requires lumon = true
-    if flow.lumon_config is not None and not flow.lumon:
-        errors.append(
-            FlowTypeError(
-                "LM1",
-                "lumon_config requires lumon = true at flow level",
-                flow.name,
-            )
-        )
+    if flow.lumon is not None:
+        errors.extend(_validate_lumon_block(flow.lumon, f"flow '{flow.name}'", flow_file_dir))
 
-    # LM1 (node level): lumon_config requires lumon = true (explicit or inherited)
     for node in flow.nodes.values():
-        if node.lumon_config is not None:
-            # Determine the effective lumon value for this node
-            effective_lumon = node.lumon if node.lumon is not None else flow.lumon
-            if not effective_lumon:
-                errors.append(
-                    FlowTypeError(
-                        "LM1",
-                        f"Node '{node.name}' sets lumon_config but lumon is not enabled"
-                        " (lumon must be true, either on the node or inherited from flow)",
-                        node.name,
-                    )
-                )
+        if node.lumon is None:
+            continue
+        errors.extend(_validate_lumon_block(node.lumon, f"node '{node.name}'", flow_file_dir))
 
     return errors
+
+
+# ---------------------------------------------------------------------------
+# AG1-AG2: Agent persona rules (DSL-015)
+# ---------------------------------------------------------------------------
+
+
+def _user_global_agents_dir() -> Path:
+    """Return ``~/.claude/agents`` (the user-global persona lookup directory)."""
+    return Path.home() / ".claude" / "agents"
+
+
+def _resolve_agent_md(name: str, flow_file_dir: Path | None) -> Path | None:
+    """Resolve an agent name to an existing ``agent.md`` file.
+
+    Lookup precedence (matches Claude Code's standard resolution):
+      1. ``<flow_dir>/agents/<name>.md`` (when ``flow_file_dir`` is provided)
+      2. ``~/.claude/agents/<name>.md``
+
+    Returns the first existing path, or ``None`` if neither exists.
+    """
+    candidates: list[Path] = []
+    if flow_file_dir is not None:
+        candidates.append(flow_file_dir / "agents" / f"{name}.md")
+    candidates.append(_user_global_agents_dir() / f"{name}.md")
+    for candidate in candidates:
+        if candidate.is_file():
+            return candidate
+    return None
+
+
+def _parse_agent_frontmatter(path: Path) -> None:
+    """Parse YAML frontmatter at the top of ``path`` if present.
+
+    A frontmatter block is a YAML document delimited by ``---`` on its own
+    line as the first non-empty line, terminated by another ``---`` on its
+    own line. If the file does not start with ``---`` the frontmatter is
+    considered absent (no-op).
+
+    Raises an exception (yaml or ValueError) if a frontmatter block is
+    started but malformed (unterminated or invalid YAML). Successful parse
+    is a no-op — we don't currently use the parsed values at type-check
+    time; we only verify they parse.
+    """
+    text = path.read_text()
+    if not text.startswith("---\n") and not text.startswith("---\r\n"):
+        # No frontmatter — nothing to validate.
+        return
+    # Split off the leading ``---`` line and find the closing one.
+    lines = text.splitlines()
+    if not lines or lines[0].strip() != "---":
+        return
+    closing_idx: int | None = None
+    for i in range(1, len(lines)):
+        if lines[i].strip() == "---":
+            closing_idx = i
+            break
+    if closing_idx is None:
+        raise ValueError("frontmatter started with '---' but has no closing '---'")
+    frontmatter_text = "\n".join(lines[1:closing_idx])
+    # ``yaml.safe_load`` raises ``yaml.YAMLError`` on malformed YAML. Empty
+    # frontmatter (returning None) is allowed.
+    yaml.safe_load(frontmatter_text)
+
+
+def _check_agents(flow: Flow, flow_file_dir: Path | None) -> list[FlowTypeError]:
+    """AG1/AG2: validate that ``agent`` references resolve to a parseable file.
+
+    AG1: when ``Node.agent`` is set, the resolved persona file must exist
+    in either ``<flow_dir>/agents/<name>.md`` or ``~/.claude/agents/<name>.md``.
+    Bare names only — values containing path separators or ``.`` are rejected
+    with a clear "only bare names allowed" error.
+
+    AG2: when AG1 succeeds, the resolved file's YAML frontmatter (if any)
+    must parse without error.
+    """
+    errors: list[FlowTypeError] = []
+    flow_dir_repr = (
+        str(flow_file_dir / "agents") if flow_file_dir is not None else "<flow_dir>/agents"
+    )
+    user_dir_repr = str(_user_global_agents_dir())
+
+    for node in flow.nodes.values():
+        if node.agent is None:
+            continue
+        agent_name = node.agent
+
+        # Empty string is not a valid bare name — surface AG1 with a clear
+        # message rather than letting an empty path resolve oddly.
+        if agent_name == "":
+            errors.append(
+                FlowTypeError(
+                    "AG1",
+                    f"agent attribute on node '{node.name}' is empty; "
+                    'expected a bare persona name (e.g. agent = "helly")',
+                    node.name,
+                )
+            )
+            continue
+
+        # Reject path-like values up front — only bare names allowed.
+        if any(ch in agent_name for ch in ("/", "\\", ".")):
+            errors.append(
+                FlowTypeError(
+                    "AG1",
+                    f"agent '{agent_name}' on node '{node.name}' is not a bare name "
+                    "(only bare persona names allowed; path separators and '.' are not "
+                    'permitted — use e.g. agent = "helly", not agent = "foo/bar" '
+                    'or agent = "helly.md")',
+                    node.name,
+                )
+            )
+            continue
+
+        path = _resolve_agent_md(agent_name, flow_file_dir)
+        if path is None:
+            errors.append(
+                FlowTypeError(
+                    "AG1",
+                    f"agent '{agent_name}' on node '{node.name}' not found "
+                    f"(looked in {flow_dir_repr}/{agent_name}.md and "
+                    f"{user_dir_repr}/{agent_name}.md)",
+                    node.name,
+                )
+            )
+            continue
+
+        # AG2: parse frontmatter if present.
+        try:
+            _parse_agent_frontmatter(path)
+        except (yaml.YAMLError, ValueError, OSError) as e:
+            errors.append(
+                FlowTypeError(
+                    "AG2",
+                    f"agent '{agent_name}' on node '{node.name}' has malformed "
+                    f"frontmatter at {path}: {e}",
+                    node.name,
+                )
+            )
+
+    return errors
+
+
+# ---------------------------------------------------------------------------
+# WP1: Worktree persist rule (DSL-017)
+# ---------------------------------------------------------------------------
+
+
+def _check_worktree_persist(flow: Flow) -> list[FlowTypeError]:
+    """WP1: ``worktree_persist = true`` requires ``worktree = true``.
+
+    The persist mechanism (merge exit branch back into the source branch at
+    run-completion, ENGINE-088) only applies when worktree isolation is on.
+    Setting ``worktree_persist`` without ``worktree`` is a meaningless
+    combination and surfaces as a type error here.
+    """
+    if flow.worktree_persist and not flow.worktree:
+        return [
+            FlowTypeError(
+                "WP1",
+                "worktree_persist = true requires worktree = true "
+                "(the persist mechanism only applies when worktree isolation is enabled)",
+                flow.name,
+            )
+        ]
+    return []

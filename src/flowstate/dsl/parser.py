@@ -13,6 +13,7 @@ from flowstate.dsl.ast import (
     EdgeType,
     ErrorPolicy,
     Flow,
+    LumonConfig,
     Node,
     NodeType,
     OverlapPolicy,
@@ -67,6 +68,85 @@ def _strip_string(token: Token | str) -> str:
     if text.startswith('"') and text.endswith('"'):
         return text[1:-1]
     return text
+
+
+_FLAT_LUMON_KEYS: tuple[str, ...] = ("lumon", "lumon_config", "sandbox", "sandbox_policy")
+"""Flat-syntax attribute keys that map onto :class:`LumonConfig`.
+
+Used by the per-scope mixed-syntax detector — if any of these keys appears
+alongside a ``lumon { ... }`` block in the same scope (flow body or a single
+node body), the parser raises a clear error rather than silently picking one
+shape over the other.
+"""
+
+
+def _build_lumon_from_flat(
+    body: dict[str, Any],
+) -> LumonConfig | None:
+    """Build a ``LumonConfig`` from flat-syntax attributes (backward compat).
+
+    Maps the legacy flat keys ``lumon``, ``lumon_config``, ``sandbox``, and
+    ``sandbox_policy`` onto a single ``LumonConfig``. Returns ``None`` when
+    none of them are present (preserves the "inherit / unset" sentinel).
+
+    Precedence for ``config_path`` (preserves prior engine resolution order):
+    ``lumon_config`` > ``sandbox_policy``.
+    """
+    has_lumon_key = "lumon" in body
+    has_sandbox_key = "sandbox" in body
+    lumon_config = body.get("lumon_config")
+    sandbox_policy = body.get("sandbox_policy")
+    if (
+        not has_lumon_key
+        and not has_sandbox_key
+        and lumon_config is None
+        and sandbox_policy is None
+    ):
+        return None
+    # An explicit ``true`` on either flat key enables the block. If only the
+    # *_config / *_policy keys are present without an explicit enable, the
+    # resulting ``enabled=False`` will be flagged by L1 in the type checker
+    # (same semantics as before this migration).
+    enabled = bool(body.get("lumon")) or bool(body.get("sandbox"))
+    config_path: str | None = None
+    if lumon_config is not None:
+        config_path = str(lumon_config)
+    elif sandbox_policy is not None:
+        config_path = str(sandbox_policy)
+    return LumonConfig(enabled=enabled, plugins=None, config_path=config_path)
+
+
+def _resolve_lumon_for_scope(
+    body: dict[str, Any],
+    scope: str,
+) -> LumonConfig | None:
+    """Resolve the effective ``LumonConfig`` for a single scope (flow or node).
+
+    Detects per-scope mixed-syntax: if a ``lumon { ... }`` block is present
+    alongside any of the deprecated flat keys (``lumon``, ``lumon_config``,
+    ``sandbox``, ``sandbox_policy``) in the **same scope**, raises a
+    ``FlowParseError``. Block syntax in one scope and flat syntax in another
+    (e.g. flow + node) is permitted — node-level fully overrides flow-level
+    anyway, so the two scopes are evaluated independently.
+
+    When only the block is present, returns its ``LumonConfig`` directly.
+    When only flat keys are present, delegates to :func:`_build_lumon_from_flat`.
+    When neither is present, returns ``None``.
+    """
+    has_block = "__lumon_block__" in body
+    flat_keys_present = [key for key in _FLAT_LUMON_KEYS if key in body]
+    if has_block and flat_keys_present:
+        flat_repr = ", ".join(flat_keys_present)
+        raise FlowParseError(
+            f"in {scope}: cannot mix the lumon {{ ... }} block with flat lumon/sandbox "
+            f"attributes ({flat_repr}). Use the lumon block or the flat attributes, "
+            "not both, within the same scope."
+        )
+    if has_block:
+        cfg = body["__lumon_block__"]
+        assert isinstance(cfg, LumonConfig)
+        return cfg
+    return _build_lumon_from_flat(body)
 
 
 def _meta_line(meta: Any) -> int:
@@ -153,8 +233,57 @@ class _FlowTransformer(Transformer[Token, Flow]):
     def node_lumon_config(self, items: list[Token]) -> tuple[str, str]:
         return ("lumon_config", _strip_string(items[0]))
 
-    def node_body(self, items: list[tuple[str, str | bool]]) -> dict[str, str | bool]:
-        result: dict[str, str | bool] = {}
+    def node_agent(self, items: list[Token]) -> tuple[str, str]:
+        return ("agent", _strip_string(items[0]))
+
+    # -- Lumon block (preferred syntax, DSL-016) --
+
+    def lumon_enabled(self, items: list[Token]) -> tuple[str, bool]:
+        return ("enabled", str(items[0]) == "true")
+
+    def plugin_name_bare(self, items: list[Token]) -> str:
+        return str(items[0])
+
+    def plugin_name_string(self, items: list[Token]) -> str:
+        return _strip_string(items[0])
+
+    def plugin_list(self, items: list[str]) -> list[str]:
+        return [str(item) for item in items]
+
+    def lumon_plugins(self, items: list[list[str]]) -> tuple[str, tuple[str, ...]]:
+        # ``plugin_list`` returns a ``list[str]``; coerce to tuple for AST shape.
+        names = items[0]
+        return ("plugins", tuple(names))
+
+    def lumon_plugins_empty(self, _items: list[Token]) -> tuple[str, tuple[str, ...]]:
+        # Empty plugin list — distinct from "plugins not specified" (None).
+        return ("plugins", ())
+
+    def lumon_config_path(self, items: list[Token]) -> tuple[str, str]:
+        return ("config_path", _strip_string(items[0]))
+
+    def lumon_block(self, items: list[tuple[str, bool | str | tuple[str, ...]]]) -> LumonConfig:
+        attrs: dict[str, bool | str | tuple[str, ...]] = {}
+        for key, value in items:
+            attrs[key] = value
+        enabled = bool(attrs.get("enabled", False))
+        plugins_raw = attrs.get("plugins")
+        plugins: tuple[str, ...] | None = plugins_raw if isinstance(plugins_raw, tuple) else None
+        config_path_raw = attrs.get("config_path")
+        config_path = config_path_raw if isinstance(config_path_raw, str) else None
+        return LumonConfig(enabled=enabled, plugins=plugins, config_path=config_path)
+
+    def flow_lumon_block(self, items: list[LumonConfig]) -> tuple[str, LumonConfig]:
+        # Wrap the block inside flow_attr so it shows up in the flow body dict
+        # under the dedicated ``__lumon_block__`` key. Surface key collisions
+        # with the flat syntax in :func:`_resolve_lumon_for_scope`.
+        return ("__lumon_block__", items[0])
+
+    def node_lumon_block(self, items: list[LumonConfig]) -> tuple[str, LumonConfig]:
+        return ("__lumon_block__", items[0])
+
+    def node_body(self, items: list[tuple[str, Any]]) -> dict[str, Any]:
+        result: dict[str, Any] = {}
         for key, value in items:
             result[key] = value
         return result
@@ -162,20 +291,15 @@ class _FlowTransformer(Transformer[Token, Flow]):
     # -- Nodes (with meta for line/column) --
 
     @v_args(meta=True)
-    def entry_node(self, meta: Any, items: list[Token | dict[str, str | bool]]) -> Node:
+    def entry_node(self, meta: Any, items: list[Token | dict[str, Any]]) -> Node:
         name = str(items[0])
-        body: dict[str, str | bool] = (
-            items[1] if len(items) > 1 and isinstance(items[1], dict) else {}
-        )
+        body: dict[str, Any] = items[1] if len(items) > 1 and isinstance(items[1], dict) else {}
         prompt = body.get("prompt", "")
         cwd = body.get("cwd")
         judge = body.get("judge")
         harness = body.get("harness")
         subtasks = body.get("subtasks")
-        sandbox = body.get("sandbox")
-        sandbox_policy = body.get("sandbox_policy")
-        lumon = body.get("lumon")
-        lumon_config = body.get("lumon_config")
+        agent = body.get("agent")
         return Node(
             name=name,
             node_type=NodeType.ENTRY,
@@ -184,29 +308,22 @@ class _FlowTransformer(Transformer[Token, Flow]):
             judge=bool(judge) if judge is not None else None,
             harness=str(harness) if harness is not None else None,
             subtasks=bool(subtasks) if subtasks is not None else None,
-            sandbox=bool(sandbox) if sandbox is not None else None,
-            sandbox_policy=str(sandbox_policy) if sandbox_policy is not None else None,
-            lumon=bool(lumon) if lumon is not None else None,
-            lumon_config=str(lumon_config) if lumon_config is not None else None,
+            lumon=_resolve_lumon_for_scope(body, f"node '{name}'"),
+            agent=str(agent) if agent is not None else None,
             line=_meta_line(meta),
             column=_meta_column(meta),
         )
 
     @v_args(meta=True)
-    def task_node(self, meta: Any, items: list[Token | dict[str, str | bool]]) -> Node:
+    def task_node(self, meta: Any, items: list[Token | dict[str, Any]]) -> Node:
         name = str(items[0])
-        body: dict[str, str | bool] = (
-            items[1] if len(items) > 1 and isinstance(items[1], dict) else {}
-        )
+        body: dict[str, Any] = items[1] if len(items) > 1 and isinstance(items[1], dict) else {}
         prompt = body.get("prompt", "")
         cwd = body.get("cwd")
         judge = body.get("judge")
         harness = body.get("harness")
         subtasks = body.get("subtasks")
-        sandbox = body.get("sandbox")
-        sandbox_policy = body.get("sandbox_policy")
-        lumon = body.get("lumon")
-        lumon_config = body.get("lumon_config")
+        agent = body.get("agent")
         return Node(
             name=name,
             node_type=NodeType.TASK,
@@ -215,29 +332,22 @@ class _FlowTransformer(Transformer[Token, Flow]):
             judge=bool(judge) if judge is not None else None,
             harness=str(harness) if harness is not None else None,
             subtasks=bool(subtasks) if subtasks is not None else None,
-            sandbox=bool(sandbox) if sandbox is not None else None,
-            sandbox_policy=str(sandbox_policy) if sandbox_policy is not None else None,
-            lumon=bool(lumon) if lumon is not None else None,
-            lumon_config=str(lumon_config) if lumon_config is not None else None,
+            lumon=_resolve_lumon_for_scope(body, f"node '{name}'"),
+            agent=str(agent) if agent is not None else None,
             line=_meta_line(meta),
             column=_meta_column(meta),
         )
 
     @v_args(meta=True)
-    def exit_node(self, meta: Any, items: list[Token | dict[str, str | bool]]) -> Node:
+    def exit_node(self, meta: Any, items: list[Token | dict[str, Any]]) -> Node:
         name = str(items[0])
-        body: dict[str, str | bool] = (
-            items[1] if len(items) > 1 and isinstance(items[1], dict) else {}
-        )
+        body: dict[str, Any] = items[1] if len(items) > 1 and isinstance(items[1], dict) else {}
         prompt = body.get("prompt", "")
         cwd = body.get("cwd")
         judge = body.get("judge")
         harness = body.get("harness")
         subtasks = body.get("subtasks")
-        sandbox = body.get("sandbox")
-        sandbox_policy = body.get("sandbox_policy")
-        lumon = body.get("lumon")
-        lumon_config = body.get("lumon_config")
+        agent = body.get("agent")
         return Node(
             name=name,
             node_type=NodeType.EXIT,
@@ -246,10 +356,8 @@ class _FlowTransformer(Transformer[Token, Flow]):
             judge=bool(judge) if judge is not None else None,
             harness=str(harness) if harness is not None else None,
             subtasks=bool(subtasks) if subtasks is not None else None,
-            sandbox=bool(sandbox) if sandbox is not None else None,
-            sandbox_policy=str(sandbox_policy) if sandbox_policy is not None else None,
-            lumon=bool(lumon) if lumon is not None else None,
-            lumon_config=str(lumon_config) if lumon_config is not None else None,
+            lumon=_resolve_lumon_for_scope(body, f"node '{name}'"),
+            agent=str(agent) if agent is not None else None,
             line=_meta_line(meta),
             column=_meta_column(meta),
         )
@@ -300,20 +408,15 @@ class _FlowTransformer(Transformer[Token, Flow]):
         )
 
     @v_args(meta=True)
-    def atomic_node(self, meta: Any, items: list[Token | dict[str, str | bool]]) -> Node:
+    def atomic_node(self, meta: Any, items: list[Token | dict[str, Any]]) -> Node:
         name = str(items[0])
-        body: dict[str, str | bool] = (
-            items[1] if len(items) > 1 and isinstance(items[1], dict) else {}
-        )
+        body: dict[str, Any] = items[1] if len(items) > 1 and isinstance(items[1], dict) else {}
         prompt = body.get("prompt", "")
         cwd = body.get("cwd")
         judge = body.get("judge")
         harness = body.get("harness")
         subtasks = body.get("subtasks")
-        sandbox = body.get("sandbox")
-        sandbox_policy = body.get("sandbox_policy")
-        lumon = body.get("lumon")
-        lumon_config = body.get("lumon_config")
+        agent = body.get("agent")
         return Node(
             name=name,
             node_type=NodeType.ATOMIC,
@@ -322,10 +425,8 @@ class _FlowTransformer(Transformer[Token, Flow]):
             judge=bool(judge) if judge is not None else None,
             harness=str(harness) if harness is not None else None,
             subtasks=bool(subtasks) if subtasks is not None else None,
-            sandbox=bool(sandbox) if sandbox is not None else None,
-            sandbox_policy=str(sandbox_policy) if sandbox_policy is not None else None,
-            lumon=bool(lumon) if lumon is not None else None,
-            lumon_config=str(lumon_config) if lumon_config is not None else None,
+            lumon=_resolve_lumon_for_scope(body, f"node '{name}'"),
+            agent=str(agent) if agent is not None else None,
             line=_meta_line(meta),
             column=_meta_column(meta),
         )
@@ -518,6 +619,9 @@ class _FlowTransformer(Transformer[Token, Flow]):
     def flow_worktree(self, items: list[Token]) -> tuple[str, bool]:
         return ("worktree", str(items[0]) == "true")
 
+    def flow_worktree_persist(self, items: list[Token]) -> tuple[str, bool]:
+        return ("worktree_persist", str(items[0]) == "true")
+
     def flow_subtasks(self, items: list[Token]) -> tuple[str, bool]:
         return ("subtasks", str(items[0]) == "true")
 
@@ -549,7 +653,7 @@ class _FlowTransformer(Transformer[Token, Flow]):
         name = str(items[0])
         body_items = items[1] if isinstance(items[1], list) else []
 
-        attrs: dict[str, str | int] = {}
+        attrs: dict[str, Any] = {}
         input_fields: tuple[TaskTypeField, ...] = ()
         output_fields: tuple[TaskTypeField, ...] = ()
         nodes: dict[str, Node] = {}
@@ -563,7 +667,7 @@ class _FlowTransformer(Transformer[Token, Flow]):
                 elif key == "output_fields":
                     output_fields = value  # type: ignore[assignment]
                 else:
-                    attrs[key] = value  # type: ignore[assignment]
+                    attrs[key] = value
             elif isinstance(item, Node):
                 nodes[item.name] = item
             elif isinstance(item, Edge):
@@ -582,6 +686,13 @@ class _FlowTransformer(Transformer[Token, Flow]):
             OverlapPolicy(str(attrs["on_overlap"])) if "on_overlap" in attrs else OverlapPolicy.SKIP
         )
 
+        # Resolve the lumon configuration for the flow scope. Per-scope
+        # mixed-syntax detection lives in ``_resolve_lumon_for_scope`` — a
+        # ``lumon { ... }`` block at flow level cannot co-exist with the
+        # deprecated flat ``lumon``/``lumon_config``/``sandbox``/
+        # ``sandbox_policy`` keys in the same flow body (DSL-016).
+        lumon_cfg = _resolve_lumon_for_scope(attrs, f"flow '{name}'")
+
         return Flow(
             name=name,
             budget_seconds=int(attrs["budget_seconds"]),
@@ -594,11 +705,9 @@ class _FlowTransformer(Transformer[Token, Flow]):
             judge=bool(attrs.get("judge", False)),
             harness=str(attrs["harness"]) if "harness" in attrs else "claude",
             worktree=bool(attrs.get("worktree", True)),
+            worktree_persist=bool(attrs.get("worktree_persist", False)),
             subtasks=bool(attrs.get("subtasks", False)),
-            sandbox=bool(attrs.get("sandbox", False)),
-            sandbox_policy=(str(attrs["sandbox_policy"]) if "sandbox_policy" in attrs else None),
-            lumon=bool(attrs.get("lumon", False)),
-            lumon_config=(str(attrs["lumon_config"]) if "lumon_config" in attrs else None),
+            lumon=lumon_cfg,
             max_parallel=int(attrs.get("max_parallel", 1)),
             input_fields=input_fields,
             output_fields=output_fields,

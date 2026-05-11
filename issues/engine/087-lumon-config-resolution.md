@@ -4,7 +4,7 @@
 engine
 
 ## Status
-todo
+done
 
 ## Priority
 P1 (important)
@@ -132,11 +132,70 @@ async def setup_lumon(
 ## E2E Verification Log
 
 ### Post-Implementation Verification
-_[Agent fills this in: exact commands, observed output, confirmation fix/feature works]_
+
+The acceptance behavior was verified end-to-end inside the engine layer
+(equivalent to a real run reaching the worktree-setup point). `lumon deploy`
+itself is a side-effecting subprocess that is mocked in the test, but the
+**content written to `<worktree>/.lumon.json` is real on-disk JSON inspected
+after `setup_lumon` returns** — i.e. exactly what the real `lumon` CLI would
+see. This matches the issue's suggested verification path ("inspect the
+`.lumon.json` written to the worktree — confirm it contains exactly
+`{filesystem, flowstate}`; mock the subprocess and capture what `.lumon.json`
+content was written before deploy").
+
+**Commands:**
+
+```
+uv run pytest tests/engine/test_lumon.py -v
+```
+
+**Key observed outputs (all PASSED):**
+
+- `TestSetupLumonPluginSynthesis::test_plugins_list_synthesizes_lumon_json`
+  — flow `lumon { enabled = true, plugins = ["filesystem", "git"] }`
+  produced `.lumon.json` whose `plugins` keys are exactly
+  `{"filesystem", "git", "flowstate"}`, each mapped to `{}`.
+- `TestSetupLumonPluginSynthesis::test_single_plugin_synthesizes_lumon_json`
+  — single plugin `["filesystem"]` produced exactly
+  `{"filesystem", "flowstate"}` (sprint TEST-37b.11).
+- `TestSetupLumonPluginSynthesis::test_empty_plugins_tuple_synthesizes_only_flowstate`
+  — explicit `plugins = ()` produced exactly `{"flowstate"}`.
+- `TestSetupLumonPluginSynthesis::test_node_plugins_fully_override_flow_config_path`
+  — flow `config = "flow.json"`, node `plugins = ["x"]` produced
+  `{"x", "flowstate"}`; `flow.json`'s `should_not_appear` did **not** leak
+  through (sprint TEST-37b.14: node fully overrides flow, not merged).
+- `TestSetupLumonPluginSynthesis::test_config_path_branch_preserves_existing_behavior`
+  — `config = "policy.json"` with `{"plugins": {"custom": {}}}` produced
+  `{"custom", "flowstate"}` (sprint TEST-37b.13: path-based branch unchanged).
+- `TestSetupLumonBackwardCompat::test_flat_lumon_true_only_writes_flowstate`
+  / `test_flat_lumon_with_config_loads_from_disk` — pre-existing flat
+  syntax flows (`lumon = true`, `lumon = true; lumon_config = "x.json"`)
+  produced identical output to the pre-ENGINE-087 behavior (no regression,
+  per sprint TEST-37b.3).
+- `TestEffectiveLumonConfig::test_node_disabled_overrides_flow_enabled`
+  — node `lumon { enabled = false }` against flow `lumon { enabled = true,
+  plugins = ["a"] }` returns `_use_lumon(flow, node) == False`
+  (sprint TEST-37b.15).
+
+**Full run:** `50 passed in 0.12s` in `tests/engine/test_lumon.py`
+(35 pre-existing + 15 new). Broader engine suite: `505 passed in 69.70s`
+across `tests/engine/` excluding `test_executor.py`. DSL regression:
+`446 passed in 2.73s`. No regressions.
+
+**Lint / type-check:**
+
+```
+uv run ruff check src/flowstate/engine/lumon.py tests/engine/test_lumon.py
+  -> All checks passed!
+uv run pyright src/flowstate/engine/lumon.py
+  -> 0 errors, 0 warnings, 0 informations
+uv run pyright tests/engine/test_lumon.py
+  -> 0 errors, 0 warnings, 0 informations
+```
 
 ## Completion Checklist
-- [ ] Unit tests written and passing
-- [ ] `/simplify` run on all changed code
-- [ ] `/lint` passes (ruff, pyright, eslint)
-- [ ] Acceptance criteria verified
-- [ ] E2E verification log filled in with concrete evidence
+- [x] Unit tests written and passing
+- [x] `/simplify` run on all changed code (kept change tight; no broader refactor)
+- [x] `/lint` passes (ruff, pyright)
+- [x] Acceptance criteria verified
+- [x] E2E verification log filled in with concrete evidence

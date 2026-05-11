@@ -1,0 +1,21 @@
+// Test fixture: agent attribute references a persona that does not exist
+flow missing_agent {
+    budget = 1h
+    on_error = pause
+    context = handoff
+
+    input {
+        topic: string
+    }
+
+    entry start {
+        prompt = "Kick off"
+        agent = "definitely_not_a_persona"
+    }
+
+    exit done {
+        prompt = "Wrap up"
+    }
+
+    start -> done
+}

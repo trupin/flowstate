@@ -252,7 +252,13 @@ class FlowstateDB:
     ) -> None:
         """Update flow run status, setting timestamps for terminal/running states."""
         now = datetime.now(UTC).isoformat()
-        terminal = {"completed", "failed", "cancelled", "budget_exceeded"}
+        terminal = {
+            "completed",
+            "failed",
+            "cancelled",
+            "budget_exceeded",
+            "completed_with_conflicts",
+        }
         if status in terminal:
             self._execute(
                 "UPDATE flow_runs SET status = ?, completed_at = ?, error_message = ? WHERE id = ?",
@@ -286,6 +292,40 @@ class FlowstateDB:
             (worktree_path, run_id),
         )
         self._commit()
+
+    def set_source_branch(self, flow_run_id: str, branch: str | None) -> None:
+        """Persist the original workspace's branch for a flow run.
+
+        Used when ``worktree_persist = true`` to remember which branch the
+        engine should merge the exit worktree back into at run-completion.
+        Passing ``None`` clears the value (e.g. detached HEAD at run-start).
+
+        Args:
+            flow_run_id: Flow run primary key. No-op if the row does not exist.
+            branch: Branch name (e.g. ``"main"``, ``"feature/x"``) or ``None``
+                if no branch should be recorded.
+        """
+        self._execute(
+            "UPDATE flow_runs SET source_branch = ? WHERE id = ?",
+            (branch, flow_run_id),
+        )
+        self._commit()
+
+    def get_source_branch(self, flow_run_id: str) -> str | None:
+        """Return the recorded source branch for a flow run, or ``None``.
+
+        Returns ``None`` if the run does not exist OR if no branch was ever set
+        (older runs predate this feature). Callers in the engine must treat
+        both cases as "skip the merge".
+        """
+        row = self._fetchone(
+            "SELECT source_branch FROM flow_runs WHERE id = ?",
+            (flow_run_id,),
+        )
+        if row is None:
+            return None
+        value = row[0]
+        return str(value) if value is not None else None
 
     # ================================================================== #
     # Task Executions

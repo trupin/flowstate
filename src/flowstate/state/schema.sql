@@ -14,7 +14,7 @@ CREATE TABLE IF NOT EXISTS flow_runs (
     flow_definition_id TEXT NOT NULL REFERENCES flow_definitions(id),
     status TEXT NOT NULL CHECK(status IN (
         'created', 'running', 'pausing', 'paused', 'completed',
-        'failed', 'cancelled', 'budget_exceeded'
+        'failed', 'cancelled', 'budget_exceeded', 'completed_with_conflicts'
     )),
     default_workspace TEXT,
     data_dir TEXT NOT NULL,
@@ -27,7 +27,8 @@ CREATE TABLE IF NOT EXISTS flow_runs (
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     error_message TEXT,
     worktree_path TEXT,
-    task_id TEXT REFERENCES tasks(id)
+    task_id TEXT REFERENCES tasks(id),
+    source_branch TEXT
 );
 
 -- Task executions (individual node runs within a flow run)

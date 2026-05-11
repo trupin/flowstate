@@ -40,20 +40,24 @@ from flowstate.engine.context import (
     build_task_management_instructions,
     expand_templates,
     get_context_mode,
+    load_agent_persona,
     resolve_cwd,
 )
 from flowstate.engine.events import EventType, FlowEvent
-from flowstate.engine.harness import DEFAULT_HARNESS, HarnessManager
+from flowstate.engine.harness import DEFAULT_HARNESS, HarnessManager, HarnessNotFoundError
 from flowstate.engine.judge import JudgeContext, JudgeDecision, JudgePauseError, JudgeProtocol
 from flowstate.engine.lumon import _use_lumon, setup_lumon
 from flowstate.engine.subprocess_mgr import StreamEvent, StreamEventType
 from flowstate.engine.worktree import (
+    PersistResult,
     WorktreeInfo,
+    capture_source_branch,
     cleanup_worktree,
     create_node_worktree,
     is_existing_worktree,
     is_git_repo,
     map_cwd_to_worktree,
+    merge_to_source_branch_via_detached_worktree,
     merge_worktrees,
     worktree_artifact_from_json,
     worktree_artifact_to_json,
@@ -280,6 +284,11 @@ class FlowExecutor:
         self._flow: Flow | None = None
         self._flow_run_id: str | None = None
         self._expanded_prompts: dict[str, str] = {}
+        # ENGINE-086: params dict from execute(...) — used at task-launch time
+        # to expand template vars inside agent.md persona bodies (the kickoff
+        # prompt's params are baked into prompt_text at task-creation time;
+        # the persona body is loaded fresh per task and needs the same dict).
+        self._params: dict[str, str | float | bool] = {}
         self._budget: BudgetGuard | None = None
         self._completed_queue: asyncio.Queue[str] | None = None
         # Per-node worktree cleanup setting
@@ -296,6 +305,11 @@ class FlowExecutor:
         self._interrupted_tasks: set[str] = set()
         # Map task_execution_id -> session_id for interrupt dispatch
         self._task_session: dict[str, str] = {}
+        # ENGINE-088: branches that must NOT be cleaned up on flow shutdown
+        # because the persist step left them around for the user to merge
+        # manually (conflict / cas_exhausted). Populated by
+        # _persist_exit_worktree before _cleanup_all_worktrees runs.
+        self._preserved_branches: set[str] = set()
 
     def _emit(self, event: FlowEvent) -> None:
         """Emit an event via the callback, catching any callback exceptions."""
@@ -447,10 +461,37 @@ class FlowExecutor:
         self._flow = flow
         self._flow_run_id = flow_run_id
         self._expanded_prompts = expanded_prompts
+        # ENGINE-086: persist params so agent.md bodies can be expanded at
+        # task-launch time (the kickoff prompt was already expanded during
+        # _create_task_execution, but the persona body is loaded fresh).
+        self._params = dict(params)
         self._budget = budget
         self._paused = False
         self._cancelled = False
         self._resume_event.clear()
+        # ENGINE-088: reset per-run preserved-branch tracker.
+        self._preserved_branches = set()
+
+        # ENGINE-088: capture original workspace's source branch BEFORE any
+        # worktree is created. Only when worktree_persist is enabled and the
+        # workspace is a git repo (and not already a worktree). Detached HEAD
+        # yields None and is recorded as NULL in the DB so the persist step
+        # can later skip cleanly.
+        if (
+            flow.worktree_persist
+            and flow.worktree
+            and is_git_repo(workspace)
+            and not is_existing_worktree(workspace)
+        ):
+            captured = await capture_source_branch(workspace)
+            if captured is None:
+                logger.warning(
+                    "worktree_persist enabled but workspace %s is on detached HEAD "
+                    "(or symbolic-ref failed); skipping source-branch capture for run %s",
+                    workspace,
+                    flow_run_id,
+                )
+            self._db.set_source_branch(flow_run_id, captured)
 
         # 6. Enqueue entry node
         entry_node = _find_entry_node(flow)
@@ -589,7 +630,7 @@ class FlowExecutor:
         # Check for exit node
         node = flow.nodes[task_exec.node_name]
         if node.node_type == NodeType.EXIT:
-            self._complete_flow(flow_run_id, budget)
+            await self._complete_flow(flow_run_id, budget, flow=flow)
             return True
 
         # Evaluate outgoing edges -- separate cross-flow edges (FILE/AWAIT)
@@ -2044,6 +2085,9 @@ class FlowExecutor:
         self._flow = flow
         self._flow_run_id = flow_run_id
         self._expanded_prompts = expanded_prompts
+        # ENGINE-086: persist params so agent.md bodies can be expanded at
+        # task-launch time (see execute()).
+        self._params = dict(params)
         self._budget = budget
         self._paused = False
         self._cancelled = False
@@ -2662,6 +2706,34 @@ class FlowExecutor:
 
             # Resolve harness: node-level overrides flow-level
             harness_name = node.harness or flow.harness
+
+            # ENGINE-086: agent.md persona loading and harness override.
+            # Load the persona BEFORE selecting the harness so frontmatter
+            # `model:` can swap the active harness (with fallback warning).
+            # Raises AgentPersonaError if the file is missing/malformed at
+            # run-time — defense in depth vs. the type checker's AG1/AG2.
+            persona_flow_dir: Path | None = None
+            if self._flow_file_dir is not None:
+                persona_flow_dir = Path(self._flow_file_dir)
+            elif self._flow_file is not None:
+                persona_flow_dir = self._flow_file.parent
+            persona = load_agent_persona(node, persona_flow_dir, self._params)
+
+            if persona is not None and persona.model:
+                try:
+                    self._harness_mgr.get(persona.model)
+                except HarnessNotFoundError:
+                    logger.warning(
+                        "agent.md frontmatter on node %r requested model %r but no "
+                        "matching harness is registered; falling back to node/flow "
+                        "harness %r",
+                        node.name,
+                        persona.model,
+                        harness_name,
+                    )
+                else:
+                    harness_name = persona.model
+
             harness: Harness = self._harness_mgr.get(harness_name)
             # Track session -> harness name for kill() dispatch
             self._session_harness[session_id] = harness_name
@@ -2692,13 +2764,27 @@ class FlowExecutor:
             if lumon_active:
                 lumon_settings = str(Path(task_exec.cwd) / ".claude" / "settings.json")
 
-            # Determine if this is a session resume or fresh task
+            # Determine if this is a session resume or fresh task.
+            # ENGINE-086: when node.agent is set on a fresh task, dispatch via
+            # the system-prompt variant. For session resumes, we re-use the
+            # existing session (the system prompt was set on the original
+            # run-task call); subsequent resume prompts don't re-set it.
             if task_exec.context_mode == ContextMode.SESSION.value and task_exec.claude_session_id:
                 stream = harness.run_task_resume(
                     task_exec.prompt_text,
                     task_exec.cwd,
                     task_exec.claude_session_id,
                     skip_permissions=skip_perms,
+                    settings=lumon_settings,
+                )
+            elif persona is not None:
+                stream = harness.run_task_with_system_prompt(
+                    persona.system_prompt,
+                    task_exec.prompt_text,
+                    task_exec.cwd,
+                    session_id,
+                    skip_permissions=skip_perms,
+                    model=None,
                     settings=lumon_settings,
                 )
             else:
@@ -3186,10 +3272,45 @@ class FlowExecutor:
             )
         )
 
-    def _complete_flow(self, flow_run_id: str, budget: BudgetGuard) -> None:
-        """Mark the flow as completed: update DB and emit event."""
+    async def _complete_flow(
+        self,
+        flow_run_id: str,
+        budget: BudgetGuard,
+        flow: Flow | None = None,
+    ) -> None:
+        """Mark the flow as completed: persist exit worktree, update DB, emit event.
+
+        ENGINE-088: when ``flow.worktree_persist`` is true, attempts to merge
+        the exit task's worktree branch back into the original workspace's
+        source branch before the normal completion bookkeeping. The merge
+        runs in a fresh detached worktree so the user's main checkout is
+        never touched. On merge conflict or CAS exhaustion the final run
+        status is ``completed_with_conflicts`` instead of ``completed`` and
+        the exit branch is preserved for manual resolution.
+        """
         self._db.update_flow_run_elapsed(flow_run_id, budget.elapsed)
-        self._db.update_flow_run_status(flow_run_id, "completed")
+
+        # ENGINE-088: persist exit worktree (if requested). Fall back to the
+        # legacy "completed" status if persist is disabled, skipped, or fails
+        # unexpectedly. Conflicts and CAS-exhaustion map to
+        # "completed_with_conflicts".
+        final_status = "completed"
+        # Use the supplied flow if given (preferred — passed by the main
+        # loop); fall back to self._flow for safety in legacy call sites.
+        active_flow = flow if flow is not None else self._flow
+        if active_flow is not None and active_flow.worktree_persist:
+            try:
+                persist_result = await self._persist_exit_worktree(flow_run_id, active_flow)
+                if persist_result.status in ("conflict", "cas_exhausted"):
+                    final_status = "completed_with_conflicts"
+            except Exception:
+                logger.exception(
+                    "persist_exit_worktree raised an unexpected exception for run %s",
+                    flow_run_id,
+                )
+                final_status = "completed_with_conflicts"
+
+        self._db.update_flow_run_status(flow_run_id, final_status)
 
         # Mark the queue task as completed
         task_id = self._task_id
@@ -3202,11 +3323,107 @@ class FlowExecutor:
                 flow_run_id=flow_run_id,
                 timestamp=_now_iso(),
                 payload={
-                    "final_status": "completed",
+                    "final_status": final_status,
                     "elapsed_seconds": budget.elapsed,
                 },
             )
         )
+
+    async def _persist_exit_worktree(
+        self,
+        flow_run_id: str,
+        flow: Flow,
+    ) -> PersistResult:
+        """Merge the exit task's worktree branch into the source branch.
+
+        Returns a PersistResult describing the outcome. Never raises for
+        normal failure modes -- caller treats "conflict" / "cas_exhausted"
+        as ``completed_with_conflicts``. Emits the appropriate event.
+
+        Skip conditions (return ``status="skipped"`` with a non-empty reason):
+          - no source branch recorded on the run (detached HEAD at run-start,
+            or worktree_persist was disabled at run-start),
+          - no completed exit task,
+          - the exit task has no ``worktree`` artifact (worktree was disabled
+            for that path, e.g. auto-generated workspace or non-git fs),
+          - the exit task was reached via a ``context = none`` edge (its
+            worktree contains nothing the user wanted persisted),
+          - the exit branch no longer exists,
+          - the source branch no longer exists.
+
+        Side effects:
+          - On ``advanced``: emits :data:`EventType.SOURCE_BRANCH_ADVANCED`.
+          - On ``conflict`` / ``cas_exhausted``: adds the exit branch to
+            ``self._preserved_branches`` so :meth:`_cleanup_all_worktrees`
+            skips it, and emits
+            :data:`EventType.SOURCE_BRANCH_PERSIST_CONFLICT`.
+        """
+        source_branch = self._db.get_source_branch(flow_run_id)
+        if source_branch is None:
+            return PersistResult(status="skipped", reason="no_source_branch")
+
+        tasks = self._db.list_task_executions(flow_run_id)
+        exit_tasks = [t for t in tasks if t.node_type == "exit" and t.status == "completed"]
+        if not exit_tasks:
+            return PersistResult(status="skipped", reason="no_exit_task")
+
+        # Pick the most recent completed exit -- handles the (rare) case of
+        # multiple exit nodes by deferring to whichever fired last.
+        exit_task = max(
+            exit_tasks,
+            key=lambda t: (t.completed_at or "", t.created_at),
+        )
+
+        # context = none into the exit means the worktree was created fresh
+        # from the original workspace HEAD; it contains nothing the user
+        # wanted persisted. Skip explicitly.
+        if exit_task.context_mode == "none":
+            return PersistResult(status="skipped", reason="none_context_exit")
+
+        wt_artifact = self._db.get_artifact(exit_task.id, "worktree")
+        if wt_artifact is None:
+            return PersistResult(status="skipped", reason="no_worktree_artifact")
+
+        exit_wt = worktree_artifact_from_json(wt_artifact.content)
+
+        result = await merge_to_source_branch_via_detached_worktree(
+            original_workspace=exit_wt.original_workspace,
+            source_branch=source_branch,
+            exit_branch=exit_wt.branch_name,
+        )
+
+        if result.status == "advanced":
+            self._emit(
+                FlowEvent(
+                    type=EventType.SOURCE_BRANCH_ADVANCED,
+                    flow_run_id=flow_run_id,
+                    timestamp=_now_iso(),
+                    payload={
+                        "source_branch": source_branch,
+                        "old_commit": result.old_commit,
+                        "new_commit": result.new_commit,
+                        "exit_branch": exit_wt.branch_name,
+                    },
+                )
+            )
+        elif result.status in ("conflict", "cas_exhausted"):
+            # Preserve the exit branch so the user can merge manually.
+            self._preserved_branches.add(exit_wt.branch_name)
+            self._emit(
+                FlowEvent(
+                    type=EventType.SOURCE_BRANCH_PERSIST_CONFLICT,
+                    flow_run_id=flow_run_id,
+                    timestamp=_now_iso(),
+                    payload={
+                        "source_branch": source_branch,
+                        "conflict_files": list(result.conflict_files),
+                        "preserved_branch": exit_wt.branch_name,
+                        "reason": result.reason or result.status,
+                    },
+                )
+            )
+
+        return result
 
     def _emit_judge_activity(
         self,
@@ -3259,6 +3476,11 @@ class FlowExecutor:
         in the run and removes each one. Skipped when ``_worktree_cleanup``
         is False. Idempotent (safe to call from both main loop exit and
         ``cancel()``).
+
+        ENGINE-088: any branch name in ``self._preserved_branches`` is left
+        untouched (both worktree and branch). This preserves the exit
+        branch for the user after a persist conflict or CAS exhaustion so
+        they can resolve manually.
         """
         if not self._worktree_cleanup:
             return
@@ -3274,6 +3496,12 @@ class FlowExecutor:
             if info.worktree_path in seen_paths:
                 continue
             seen_paths.add(info.worktree_path)
+            if info.branch_name in self._preserved_branches:
+                logger.info(
+                    "Preserving worktree branch %s (persist conflict); skipping cleanup",
+                    info.branch_name,
+                )
+                continue
             try:
                 await cleanup_worktree(info)
                 logger.info("Cleaned up worktree at %s", info.worktree_path)

@@ -774,32 +774,91 @@ SAMPLE_FLOW_LUMON = DiscoveredFlow(
     ast_json={
         "name": "secure_flow",
         "harness": "claude",
-        "lumon": True,
-        "lumon_config": "strict",
-        "sandbox": True,
-        "sandbox_policy": "network-none",
+        # Post-SHARED-012 nested LumonConfig shape (SERVER-033).
+        # `sandbox` and `sandbox_policy` are aliases for `lumon` and
+        # `lumon_config` and collapse onto the same block at the parser
+        # layer — there is no separate `sandbox` key in the AST anymore.
+        "lumon": {"enabled": True, "plugins": None, "config_path": "strict"},
         "nodes": {
             "start": {
                 "name": "start",
                 "node_type": "entry",
                 "prompt": "go",
                 "cwd": None,
-                "sandbox": True,
-                "sandbox_policy": "network-none",
-                "lumon": True,
-                "lumon_config": "strict",
+                "lumon": {
+                    "enabled": True,
+                    "plugins": None,
+                    "config_path": "strict",
+                },
             },
             "done": {
                 "name": "done",
                 "node_type": "exit",
                 "prompt": "bye",
                 "cwd": None,
-                "sandbox": None,
-                "sandbox_policy": None,
+                # No `lumon` block on this node — inherit from flow.
                 "lumon": None,
-                "lumon_config": None,
             },
         },
+        "edges": [],
+    },
+    params=[],
+)
+
+
+# A flow with an explicit `lumon { enabled = false }` override and a
+# non-null config_path. The pre-SERVER-033 flat reads would have wrongly
+# reported this as `lumon: True` because `bool({"enabled": False, ...})`
+# is `True` for any non-empty dict.
+SAMPLE_FLOW_LUMON_DISABLED = DiscoveredFlow(
+    id="explicit_disabled",
+    name="explicit_disabled",
+    file_path="/flows/explicit_disabled.flow",
+    source_dsl="...",
+    status="valid",
+    errors=[],
+    ast_json={
+        "name": "explicit_disabled",
+        "harness": "claude",
+        "lumon": {"enabled": False, "plugins": None, "config_path": "strict"},
+        "nodes": {
+            "start": {
+                "name": "start",
+                "node_type": "entry",
+                "prompt": "go",
+                "cwd": None,
+                "lumon": {
+                    "enabled": False,
+                    "plugins": None,
+                    "config_path": "strict",
+                },
+            },
+        },
+        "edges": [],
+    },
+    params=[],
+)
+
+
+# A flow that uses `lumon { enabled = true }` block syntax with plugins
+# but no config_path — the response should report lumon: true with
+# lumon_config: None.
+SAMPLE_FLOW_LUMON_PLUGINS_ONLY = DiscoveredFlow(
+    id="plugins_only",
+    name="plugins_only",
+    file_path="/flows/plugins_only.flow",
+    source_dsl="...",
+    status="valid",
+    errors=[],
+    ast_json={
+        "name": "plugins_only",
+        "harness": "claude",
+        "lumon": {
+            "enabled": True,
+            "plugins": ["filesystem"],
+            "config_path": None,
+        },
+        "nodes": {},
         "edges": [],
     },
     params=[],
@@ -836,7 +895,12 @@ class TestFlowLumonSandboxFields:
         assert body[0]["sandbox"] is False
 
     def test_flow_detail_includes_all_lumon_sandbox_fields(self) -> None:
-        """GET /api/flows/:id includes lumon, lumon_config, sandbox, sandbox_policy."""
+        """GET /api/flows/:id includes lumon, lumon_config, sandbox, sandbox_policy.
+
+        Post-SHARED-012 ``sandbox_policy`` is an alias for ``lumon_config``
+        (both flat keys collapsed onto the same nested block at the parser
+        layer), so they share a value.
+        """
         client = _make_test_app({"secure_flow": SAMPLE_FLOW_LUMON})
         response = client.get("/api/flows/secure_flow")
         assert response.status_code == 200
@@ -844,7 +908,7 @@ class TestFlowLumonSandboxFields:
         assert body["lumon"] is True
         assert body["lumon_config"] == "strict"
         assert body["sandbox"] is True
-        assert body["sandbox_policy"] == "network-none"
+        assert body["sandbox_policy"] == "strict"
 
     def test_flow_detail_lumon_config_absent_when_not_set(self) -> None:
         """Flow detail without lumon_config/sandbox_policy returns None."""
@@ -867,7 +931,12 @@ class TestFlowLumonSandboxFields:
         assert "sandbox_policy" not in body[0]
 
     def test_per_node_lumon_sandbox_fields(self) -> None:
-        """Nodes in the response include lumon/sandbox per-node settings."""
+        """Nodes in the response include lumon/sandbox per-node settings.
+
+        Post-SHARED-012 the AST stores nested ``LumonConfig`` blocks per
+        node; ``sandbox``/``sandbox_policy`` are aliases for
+        ``lumon``/``lumon_config`` and share values.
+        """
         client = _make_test_app({"secure_flow": SAMPLE_FLOW_LUMON})
         response = client.get("/api/flows/secure_flow")
         assert response.status_code == 200
@@ -878,7 +947,7 @@ class TestFlowLumonSandboxFields:
         # Find the "start" node which has lumon/sandbox set
         start_node = next(n for n in nodes if n["name"] == "start")
         assert start_node["sandbox"] is True
-        assert start_node["sandbox_policy"] == "network-none"
+        assert start_node["sandbox_policy"] == "strict"
         assert start_node["lumon"] is True
         assert start_node["lumon_config"] == "strict"
 
@@ -888,3 +957,49 @@ class TestFlowLumonSandboxFields:
         assert done_node["sandbox_policy"] is None
         assert done_node["lumon"] is None
         assert done_node["lumon_config"] is None
+
+    def test_flow_explicit_disabled_with_config_path(self) -> None:
+        """SERVER-033 regression: ``lumon { enabled = false, config_path = "x" }``.
+
+        Pre-SERVER-033 the flat reads would have wrongly reported this as
+        ``lumon: true`` because ``bool({"enabled": False, ...})`` is ``True``
+        for any non-empty dict. The fix reads the nested ``enabled`` flag,
+        not the wrapping dict's truthiness.
+        """
+        client = _make_test_app({"explicit_disabled": SAMPLE_FLOW_LUMON_DISABLED})
+        # List endpoint
+        response = client.get("/api/flows")
+        assert response.status_code == 200
+        body = response.json()
+        assert body[0]["lumon"] is False
+        assert body[0]["sandbox"] is False
+
+        # Detail endpoint exposes config_path even when enabled=False.
+        response = client.get("/api/flows/explicit_disabled")
+        assert response.status_code == 200
+        body = response.json()
+        assert body["lumon"] is False
+        assert body["sandbox"] is False
+        assert body["lumon_config"] == "strict"
+        assert body["sandbox_policy"] == "strict"
+
+        # Per-node: same explicit-disable should propagate
+        start_node = next(n for n in body["nodes"] if n["name"] == "start")
+        assert start_node["lumon"] is False
+        assert start_node["sandbox"] is False
+        assert start_node["lumon_config"] == "strict"
+        assert start_node["sandbox_policy"] == "strict"
+
+    def test_flow_block_syntax_plugins_no_config_path(self) -> None:
+        """``lumon { enabled = true, plugins = [...] }`` with no config_path.
+
+        Should report ``lumon: true`` with ``lumon_config: None``.
+        """
+        client = _make_test_app({"plugins_only": SAMPLE_FLOW_LUMON_PLUGINS_ONLY})
+        response = client.get("/api/flows/plugins_only")
+        assert response.status_code == 200
+        body = response.json()
+        assert body["lumon"] is True
+        assert body["sandbox"] is True
+        assert body["lumon_config"] is None
+        assert body["sandbox_policy"] is None

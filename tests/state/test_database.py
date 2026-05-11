@@ -314,6 +314,176 @@ def test_check_constraints_on_task_execution_node_type(db: FlowstateDB) -> None:
         )
 
 
+def test_flow_runs_has_source_branch_column(db: FlowstateDB) -> None:
+    """STATE-013 / TEST-37c.3: flow_runs has a nullable TEXT source_branch column.
+
+    Verifies via PRAGMA table_info that the column exists, is TEXT, is nullable
+    (notnull == 0), and has no default.
+    """
+    cursor = db.connection.execute("PRAGMA table_info(flow_runs)")
+    columns = {row[1]: row for row in cursor.fetchall()}
+    assert (
+        "source_branch" in columns
+    ), f"source_branch column missing from flow_runs. Columns: {list(columns)}"
+    # PRAGMA table_info row shape: (cid, name, type, notnull, dflt_value, pk)
+    col = columns["source_branch"]
+    assert col[2] == "TEXT", f"expected TEXT type, got {col[2]!r}"
+    assert col[3] == 0, f"expected nullable (notnull == 0), got notnull={col[3]}"
+    assert col[4] is None, f"expected no default value, got {col[4]!r}"
+    assert col[5] == 0, f"expected non-pk (pk == 0), got pk={col[5]}"
+
+
+def test_user_version_at_least_two() -> None:
+    """STATE-013: a freshly initialized DB has PRAGMA user_version >= 2.
+
+    Each STATE-013 migration bumps user_version by 1; verifying it advanced
+    past 1 catches a regression where the new migration block is dropped.
+    """
+    db = FlowstateDB(":memory:")
+    try:
+        version = db.connection.execute("PRAGMA user_version").fetchone()[0]
+        assert version >= 2, f"expected user_version >= 2, got {version}"
+    finally:
+        db.close()
+
+
+def test_source_branch_migration_is_additive_on_existing_db(tmp_path: object) -> None:
+    """STATE-013 / TEST-37c.4: migration adds source_branch without dropping rows.
+
+    Simulates a pre-existing DB at the previous schema version (no
+    source_branch column on flow_runs) with a real row in it, then opens it
+    with the current code and verifies:
+      - migration succeeds
+      - source_branch column is present
+      - the pre-existing row is preserved
+      - its source_branch is NULL (no backfill)
+    """
+    from pathlib import Path
+
+    db_path = Path(str(tmp_path)) / "legacy.db"
+
+    # Hand-build the prior-schema DB without going through FlowstateDB so the
+    # current schema.sql / migrations are not applied. The shape below mirrors
+    # the post-migration-1 flow_runs schema (user_version=1) which is what an
+    # existing on-disk DB would look like before STATE-013.
+    legacy_conn = sqlite3.connect(str(db_path))
+    legacy_conn.execute("PRAGMA foreign_keys=ON")
+    legacy_conn.executescript("""
+        CREATE TABLE flow_definitions (
+            id TEXT PRIMARY KEY,
+            name TEXT NOT NULL UNIQUE,
+            source_dsl TEXT NOT NULL,
+            ast_json TEXT NOT NULL,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        );
+        CREATE TABLE tasks (
+            id TEXT PRIMARY KEY,
+            flow_name TEXT NOT NULL,
+            title TEXT NOT NULL,
+            description TEXT,
+            status TEXT NOT NULL,
+            current_node TEXT,
+            params_json TEXT,
+            output_json TEXT,
+            parent_task_id TEXT REFERENCES tasks(id),
+            created_by TEXT,
+            flow_run_id TEXT,
+            priority INTEGER DEFAULT 0,
+            depth INTEGER DEFAULT 0,
+            scheduled_at TIMESTAMP,
+            cron_expression TEXT,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            started_at TIMESTAMP,
+            completed_at TIMESTAMP,
+            error_message TEXT
+        );
+        CREATE TABLE flow_runs (
+            id TEXT PRIMARY KEY,
+            flow_definition_id TEXT NOT NULL REFERENCES flow_definitions(id),
+            status TEXT NOT NULL CHECK(status IN (
+                'created', 'running', 'pausing', 'paused', 'completed',
+                'failed', 'cancelled', 'budget_exceeded'
+            )),
+            default_workspace TEXT,
+            data_dir TEXT NOT NULL,
+            params_json TEXT,
+            budget_seconds INTEGER NOT NULL,
+            elapsed_seconds REAL DEFAULT 0,
+            on_error TEXT NOT NULL CHECK(on_error IN ('pause', 'abort', 'skip')),
+            started_at TIMESTAMP,
+            completed_at TIMESTAMP,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            error_message TEXT,
+            worktree_path TEXT,
+            task_id TEXT REFERENCES tasks(id)
+        );
+        INSERT INTO flow_definitions (id, name, source_dsl, ast_json)
+            VALUES ('legacy-fd', 'legacy-flow', 'flow legacy {}', '{}');
+        INSERT INTO flow_runs (
+            id, flow_definition_id, status, data_dir, budget_seconds, on_error
+        ) VALUES (
+            'legacy-run-1', 'legacy-fd', 'completed', '/tmp/legacy', 3600, 'pause'
+        );
+        PRAGMA user_version=1;
+    """)
+    legacy_conn.commit()
+    legacy_conn.close()
+
+    # Now open it through the current FlowstateDB — this should run migration 2.
+    db = FlowstateDB(db_path)
+    try:
+        # The new column exists
+        columns = {
+            row[1] for row in db.connection.execute("PRAGMA table_info(flow_runs)").fetchall()
+        }
+        assert "source_branch" in columns
+
+        # user_version advanced
+        version = db.connection.execute("PRAGMA user_version").fetchone()[0]
+        assert version >= 2
+
+        # The pre-existing row survived AND its source_branch is NULL
+        row = db.connection.execute(
+            "SELECT id, status, source_branch FROM flow_runs WHERE id = 'legacy-run-1'"
+        ).fetchone()
+        assert row is not None, "pre-existing row was lost during migration"
+        assert row["id"] == "legacy-run-1"
+        assert row["status"] == "completed"
+        assert row["source_branch"] is None
+    finally:
+        db.close()
+
+
+def test_source_branch_migration_is_idempotent(tmp_path: object) -> None:
+    """STATE-013: opening the same DB twice does not re-run the ALTER or error.
+
+    Reproduces the "second startup" case where user_version is already 2 and
+    the column already exists — migration 2 must be a no-op.
+    """
+    from pathlib import Path
+
+    db_path = Path(str(tmp_path)) / "idempotent.db"
+
+    db = FlowstateDB(db_path)
+    db.close()
+
+    # Second open — should not raise (column already exists, user_version >= 2)
+    db = FlowstateDB(db_path)
+    try:
+        columns = {
+            row[1] for row in db.connection.execute("PRAGMA table_info(flow_runs)").fetchall()
+        }
+        assert "source_branch" in columns
+        # Column appears exactly once (no duplicate ALTER ran)
+        all_columns = [
+            row[1] for row in db.connection.execute("PRAGMA table_info(flow_runs)").fetchall()
+        ]
+        assert all_columns.count("source_branch") == 1
+    finally:
+        db.close()
+
+
 def test_valid_insert_chain(db: FlowstateDB) -> None:
     """Valid inserts across related tables succeed without errors."""
     conn = db.connection

@@ -1,0 +1,28 @@
+// Test fixture: agent attribute resolves to a sibling agents/<name>.md
+flow agent_pipeline {
+    budget = 1h
+    on_error = pause
+    context = handoff
+
+    input {
+        topic: string
+    }
+
+    entry start {
+        prompt = "Kick off"
+        agent = "demo"
+    }
+
+    task analyze {
+        prompt = "Analyze topic: {{topic}}"
+        agent = "demo"
+    }
+
+    exit done {
+        prompt = "Wrap up"
+        agent = "demo"
+    }
+
+    start -> analyze
+    analyze -> done
+}

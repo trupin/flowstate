@@ -29,6 +29,8 @@ Event types and their documented payload fields (from specs.md Section 10.3):
 | schedule.triggered     | flow_definition_id, flow_run_id, cron_expression                     |
 | schedule.skipped       | flow_definition_id, reason                                           |
 | subtask.updated        | task_execution_id, subtask_id, status, ...                           |
+| source_branch_advanced | source_branch, old_commit, new_commit, exit_branch                   |
+| source_branch_persist_conflict | source_branch, conflict_files, preserved_branch, reason      |
 """
 
 from dataclasses import dataclass, field
@@ -39,7 +41,8 @@ from enum import StrEnum
 class EventType(StrEnum):
     """All event types emitted during flow execution.
 
-    18 engine event types plus 2 scheduling event types plus 1 subtask = 21 total.
+    18 engine event types plus 2 scheduling event types plus 1 subtask
+    plus 2 source-branch persist events (ENGINE-088) = 23 total.
     """
 
     # Flow lifecycle
@@ -78,6 +81,10 @@ class EventType(StrEnum):
 
     # Agent subtask lifecycle
     SUBTASK_UPDATED = "subtask.updated"
+
+    # Source-branch persist (ENGINE-088): worktree_persist outcomes
+    SOURCE_BRANCH_ADVANCED = "source_branch_advanced"
+    SOURCE_BRANCH_PERSIST_CONFLICT = "source_branch_persist_conflict"
 
 
 @dataclass
