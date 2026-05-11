@@ -31,12 +31,10 @@ use tokio::sync::watch;
 
 mod health;
 mod menu;
-mod picker;
 mod project;
 mod server;
 
 use crate::menu::{build_menu, CliInstallState, MenuState};
-use crate::picker::PICKER_RESULT_EVENT;
 use crate::project::{load_state, save_state, validate_project_root, DesktopState};
 use crate::server::FlowstateServer;
 
@@ -83,10 +81,6 @@ fn main() {
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
-        .invoke_handler(tauri::generate_handler![
-            crate::picker::picker_list_directory,
-            crate::picker::picker_submit
-        ])
         .manage(Mutex::new(AppState::new()))
         .setup(|app| {
             // macOS: hide the Dock icon. Menubar-only.
@@ -152,14 +146,11 @@ fn main() {
             Ok(())
         })
         .on_window_event(|window, event| {
-            // When the main UI window OR the folder picker closes, drop
-            // the activation policy back to `Accessory` so the Dock
-            // icon disappears again. Both windows promote to `Regular`
-            // while on-screen so they actually surface from a tray
-            // callback. UI-082 adds the picker label to this list.
-            let restore_label = window.label() == UI_WINDOW_LABEL
-                || window.label() == "folder_picker";
-            if restore_label {
+            // When the main UI window is closed/destroyed, drop the
+            // activation policy back to `Accessory` so the Dock icon
+            // disappears again. We promote to `Regular` only while the
+            // window is on screen (see `open_ui_window`).
+            if window.label() == UI_WINDOW_LABEL {
                 if let tauri::WindowEvent::Destroyed = event {
                     #[cfg(target_os = "macos")]
                     let _ = window
@@ -367,64 +358,92 @@ fn open_ui_in_browser(app: &AppHandle) {
     }
 }
 
-/// Show the custom Tauri folder picker; on submit, validate + switch.
+/// Show a native directory picker; if the user picks a directory that
+/// contains `flowstate.toml`, switch to it.
 ///
-/// UI-082 history: we tried NSOpenPanel from our own menubar NSApp,
-/// then from osascript-via-System-Events, then from `tell application
-/// "Finder"`. All three exhibited the same notched-MBP artifact —
-/// menubar icons composited over the dialog title bar — because
-/// NSOpenPanel's frame computation under macOS 15.6 doesn't exclude
-/// the notch reservation when invoked from non-foreground hosts.
-/// AppleScript's `tell` doesn't actually delegate dialog hosting to
-/// the named app; the panel is still rendered by the StandardAdditions
-/// runtime (a menubar helper).
+/// UI-082: replaced the previous tauri-plugin-dialog NSOpenPanel route
+/// with osascript's `choose folder` delegated to Finder. The plugin
+/// route required toggling activation policy Accessory → Regular for
+/// click coordinates, and the resulting NSOpenPanel positioned its
+/// title bar at y=0 of the main display — directly underneath the
+/// macOS menubar — so menubar icons composited on top of the dialog
+/// title's pixels. No combination of pre-open sleeps or notification-
+/// wait points fixed it; the bug is in NSOpenPanel's own geometry
+/// calculation when invoked from a menubar-only host.
 ///
-/// The only fix that bypasses NSOpenPanel entirely is hosting the
-/// picker in our own webview window — see `picker.rs`. We listen for
-/// the `picker:result` Tauri event the JS emits via `picker_submit`.
+/// osascript with `tell application "Finder"` runs the picker via
+/// Finder's host context — a normal foreground app — so the dialog
+/// positions correctly. No activation-policy dance needed.
 fn pick_project(app: AppHandle) {
-    let initial_path = {
-        let state_mutex = app.state::<Mutex<AppState>>();
-        let guard = state_mutex.lock().expect("AppState poisoned");
-        guard
-            .desktop_state
-            .last_project_root
-            .clone()
-            .and_then(|p| p.parent().map(Path::to_path_buf))
-            .or_else(|| std::env::var_os("HOME").map(PathBuf::from))
-            .unwrap_or_else(|| PathBuf::from("/"))
-    };
+    let app_for_task = app.clone();
+    tauri::async_runtime::spawn(async move {
+        let picked_path = tauri::async_runtime::spawn_blocking(run_osascript_folder_picker)
+            .await
+            .ok()
+            .and_then(|res| res);
 
-    // The event listener has to be installed before the window opens —
-    // otherwise a fast user submit could race ahead of the listener.
-    // `Listener::once` auto-unregisters after the first fire, so
-    // re-opening the picker is safe.
-    let app_for_listener = app.clone();
-    app.once(PICKER_RESULT_EVENT, move |event| {
-        let payload: Option<String> = serde_json::from_str(event.payload()).ok().flatten();
-        let Some(raw_path) = payload else {
-            log::info!("pick_project: cancelled");
-            return;
+        let Some(path) = picked_path else {
+            return; // user cancelled or the picker errored
         };
-        let path = PathBuf::from(&raw_path);
         if let Err(e) = validate_project_root(&path) {
             log::warn!("invalid project root: {e:#}");
-            // TODO(UI-074): surface a native error in the picker UI
-            // when the chosen folder lacks flowstate.toml, instead of
-            // silently logging.
+            // TODO(UI-074): show a native error dialog and offer to run
+            // `flowstate init` here. Stub for v0 — user just sees a log
+            // line.
             return;
         }
-        stop_server(&app_for_listener);
-        if let Err(e) = start_server_for(&app_for_listener, path.clone()) {
+        stop_server(&app_for_task);
+        if let Err(e) = start_server_for(&app_for_task, path.clone()) {
             log::warn!("start failed after switch: {e:#}");
         }
         // UI-080: re-evaluate the SDK-claude warning for the new project.
-        refresh_sdk_claude_warning(&app_for_listener, Some(&path));
+        refresh_sdk_claude_warning(&app_for_task, Some(&path));
     });
+}
 
-    if let Err(e) = picker::open_picker(&app, &initial_path) {
-        log::warn!("pick_project: failed to open picker window: {e}");
+/// UI-082: invoke macOS's `choose folder` dialog via osascript and
+/// return the picked POSIX path. Returns `None` on cancel or error.
+///
+/// Delegated to **Finder** specifically (not the default osascript
+/// host). Finder is a normal foreground app whose NSOpenPanel host
+/// context computes window frames against `NSScreen.visibleFrame`,
+/// excluding the menubar and the MacBook Pro notch. Without the
+/// `tell application "Finder"` wrapper, osascript hosts the panel via
+/// System Events — which on notched displays mispositions the panel
+/// title bar at y=0 of the display, painting it underneath the
+/// menubar icons.
+fn run_osascript_folder_picker() -> Option<PathBuf> {
+    let script = r#"
+        tell application "Finder"
+            activate
+            set chosen to choose folder with prompt "Select a Flowstate project directory"
+            return POSIX path of chosen
+        end tell
+    "#;
+    let output = match std::process::Command::new("osascript").arg("-e").arg(script).output() {
+        Ok(out) => out,
+        Err(e) => {
+            log::warn!("pick_project: osascript spawn failed: {e}");
+            return None;
+        }
+    };
+    if !output.status.success() {
+        // osascript returns non-zero on cancel (NSUserCancelledError) —
+        // expected, log at info-level so we don't spam warn for normal
+        // cancels.
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        if stderr.contains("User canceled") || stderr.contains("(-128)") {
+            log::info!("pick_project: user cancelled");
+        } else {
+            log::warn!("pick_project: osascript exited {} — stderr={}", output.status, stderr);
+        }
+        return None;
     }
+    let path_str = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    if path_str.is_empty() {
+        return None;
+    }
+    Some(PathBuf::from(path_str))
 }
 
 /// UI-081: filesystem location for the CLI shim. /usr/local/bin is the
