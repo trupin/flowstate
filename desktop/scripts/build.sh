@@ -72,18 +72,51 @@ fi
 
 echo "[build] flowstate-desktop $VERSION ($TRIPLE)"
 
-# UI-076: when TAURI_SIGNING_PRIVATE_KEY (or _PATH) is set, `cargo tauri
-# build` signs the bundle and emits a .sig file next to the .dmg. That
-# signature gets pasted into the `platforms.<target>.signature` field of
-# `desktop/updater/latest.json`. Without the env var, the build still
-# succeeds but produces an unsigned bundle — fine for local testing,
-# never for a release. Print a clear warning either way so maintainers
-# never accidentally publish an unsigned release.
+# UI-076: signing setup. `cargo tauri build` insists on signing once
+# `bundle.createUpdaterArtifacts: true` is set and a pubkey lives in
+# tauri.conf.json — otherwise it errors with "A public key has been
+# found, but no private key". Auto-discover the key (and Keychain
+# password) so maintainers don't have to remember to export two env
+# vars in every shell session.
+#
+# Tauri reads:
+#   TAURI_SIGNING_PRIVATE_KEY       (key contents — preferred)
+#   TAURI_SIGNING_PRIVATE_KEY_PATH  (path to key file — fallback)
+#   TAURI_SIGNING_PRIVATE_KEY_PASSWORD (optional, for password-protected keys)
+DEFAULT_KEY_PATH="$HOME/.tauri/flowstate.key"
+DEFAULT_KEY_KEYCHAIN_SERVICE="flowstate-tauri-signing"
+
+# Path: respect explicit override, else fall back to the canonical path
+# documented in RELEASING.md.
+if [[ -z "${TAURI_SIGNING_PRIVATE_KEY:-}" && -z "${TAURI_SIGNING_PRIVATE_KEY_PATH:-}" ]]; then
+  if [[ -f "$DEFAULT_KEY_PATH" ]]; then
+    export TAURI_SIGNING_PRIVATE_KEY_PATH="$DEFAULT_KEY_PATH"
+    echo "[build] auto-resolved TAURI_SIGNING_PRIVATE_KEY_PATH=$DEFAULT_KEY_PATH"
+  fi
+fi
+
+# Password: if the key is password-protected and the password isn't
+# already in env, try the Keychain service documented in RELEASING.md.
+# Silent on miss — many keys have no password and this is fine.
+if [[ -z "${TAURI_SIGNING_PRIVATE_KEY_PASSWORD:-}" ]] && command -v security >/dev/null 2>&1; then
+  if password=$(security find-generic-password -s "$DEFAULT_KEY_KEYCHAIN_SERVICE" -w 2>/dev/null); then
+    export TAURI_SIGNING_PRIVATE_KEY_PASSWORD="$password"
+    echo "[build] auto-resolved TAURI_SIGNING_PRIVATE_KEY_PASSWORD from Keychain ($DEFAULT_KEY_KEYCHAIN_SERVICE)"
+  fi
+fi
+
 if [[ -n "${TAURI_SIGNING_PRIVATE_KEY:-}${TAURI_SIGNING_PRIVATE_KEY_PATH:-}" ]]; then
-  echo "[build] signing enabled — TAURI_SIGNING_PRIVATE_KEY{,_PATH} present"
+  echo "[build] signing enabled"
 else
-  echo "[build] WARNING: no TAURI_SIGNING_PRIVATE_KEY{,_PATH} set — bundle will be UNSIGNED"
-  echo "[build]          (fine for local testing; never for a release upload)"
+  echo "[build] ERROR: no signing key available." >&2
+  echo "[build]        Expected one of:" >&2
+  echo "[build]          - file at $DEFAULT_KEY_PATH" >&2
+  echo "[build]          - env var TAURI_SIGNING_PRIVATE_KEY_PATH" >&2
+  echo "[build]          - env var TAURI_SIGNING_PRIVATE_KEY (key contents)" >&2
+  echo "[build]        Generate one with:" >&2
+  echo "[build]          cargo tauri signer generate -w $DEFAULT_KEY_PATH --ci" >&2
+  echo "[build]        See RELEASING.md > Desktop app for the full walkthrough." >&2
+  exit 1
 fi
 
 # --- Step 1: build the wheel + vendor Python. ---
