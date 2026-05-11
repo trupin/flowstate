@@ -191,6 +191,12 @@ if [[ -n "$APP_SRC" ]]; then
 fi
 printf '  dmg size: '; du -sh "$DMG_OUT" | awk '{print $1}'
 echo
+echo "To test locally, do NOT drag-overwrite the existing install — macOS's"
+echo "LaunchServices cache will keep launching the old binary. Use:"
+echo "  bash desktop/scripts/install.sh"
+echo "which kills any running flowstate-desktop, removes the old .app,"
+echo "and copies the new one cleanly."
+echo
 echo "Distribute the .dmg via GitHub Releases. First-launch users will hit"
 echo "macOS Gatekeeper — see desktop/README.md for the right-click → Open"
 echo "workaround."
