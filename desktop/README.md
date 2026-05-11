@@ -133,6 +133,32 @@ This:
 The first build takes ~10 min (Tauri pulls macOS framework deps).
 Subsequent builds are ~1-2 min.
 
+### Installing the freshly-built `.dmg` locally for testing
+
+```bash
+bash desktop/scripts/install.sh
+```
+
+This script:
+
+1. Sends SIGTERM (then SIGKILL after 3 s) to any running
+   `flowstate-desktop` process so the in-memory copy of the old binary
+   is gone.
+2. Removes `/Applications/Flowstate.app` outright (NOT a drag-replace).
+3. Mounts the newest `.dmg` from `desktop/dist/`, copies the `.app` to
+   `/Applications/`, ejects.
+
+> [!WARNING]
+> **Never drag-overwrite the existing install** during development.
+> Finder's "Replace" keeps the bundle's inode, and macOS's
+> LaunchServices caches binaries against that inode — double-clicking
+> the replaced `.app` shortly after a rebuild will silently re-launch
+> the **old** binary from cache. We chased a phantom NSOpenPanel bug
+> for ~30 commits during UI-082 before realising the user's test
+> launches weren't actually loading new fix builds. Always use
+> `install.sh` (or remove `/Applications/Flowstate.app` manually before
+> copying).
+
 ### Bumping the version
 
 Single source of truth: `desktop/src-tauri/tauri.conf.json` `version`
