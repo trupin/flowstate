@@ -94,20 +94,32 @@ fn main() {
             let initial_menu = build_menu(app.handle(), &menu_state)?;
 
             // Build the tray icon and attach the menu + handlers.
+            //
+            // UI-083 diagnostic: the user reports the tray icon never
+            // appears after launch. Adding a fallback `.title("FS")` so
+            // the status item has visible text even if the icon image
+            // doesn't render — this lets us distinguish "tray created
+            // but icon invisible" from "tray creation silently failing".
+            // Log explicitly on either side of the build so we can
+            // trace the failure in `log show --predicate 'process ==
+            // "flowstate-desktop"'`.
             let app_handle = app.handle().clone();
-            TrayIconBuilder::with_id(TRAY_ID)
+            log::info!("tray: building NSStatusItem (id={TRAY_ID})");
+            let tray_result = TrayIconBuilder::with_id(TRAY_ID)
                 .icon(Image::from_bytes(ICON_IDLE)?)
-                // Template mode strips color and tints to match the menubar
-                // appearance. The Flowstate state icons are color-coded
-                // (gray=idle, green=running, red=error), so template mode is
-                // wrong — it would render all three states as identical
-                // monochrome silhouettes. Render the source pixels directly.
                 .icon_as_template(false)
+                .title("FS")
+                .tooltip("Flowstate")
                 .menu(&initial_menu)
                 .on_menu_event(move |app, event| {
                     on_menu_event(app, event.id().as_ref());
                 })
-                .build(app)?;
+                .build(app);
+            match &tray_result {
+                Ok(_) => log::info!("tray: NSStatusItem registered ok"),
+                Err(e) => log::error!("tray: NSStatusItem build failed: {e:#}"),
+            }
+            tray_result?;
 
             // Listen for /health events emitted by the poller. We update
             // the tray icon and menu labels in response.
