@@ -86,12 +86,20 @@ echo "[build] flowstate-desktop $VERSION ($TRIPLE)"
 DEFAULT_KEY_PATH="$HOME/.tauri/flowstate.key"
 DEFAULT_KEY_KEYCHAIN_SERVICE="flowstate-tauri-signing"
 
-# Path: respect explicit override, else fall back to the canonical path
-# documented in RELEASING.md.
-if [[ -z "${TAURI_SIGNING_PRIVATE_KEY:-}" && -z "${TAURI_SIGNING_PRIVATE_KEY_PATH:-}" ]]; then
-  if [[ -f "$DEFAULT_KEY_PATH" ]]; then
-    export TAURI_SIGNING_PRIVATE_KEY_PATH="$DEFAULT_KEY_PATH"
-    echo "[build] auto-resolved TAURI_SIGNING_PRIVATE_KEY_PATH=$DEFAULT_KEY_PATH"
+# Key: respect explicit override, else fall back to the canonical path
+# documented in RELEASING.md. Export the *contents* (TAURI_SIGNING_PRIVATE_KEY)
+# rather than just the path (_PATH) — `cargo tauri build` honors the
+# contents-form reliably across Tauri 2.x versions; _PATH support is
+# inconsistent and fails with "A public key has been found, but no
+# private key" on some builds.
+if [[ -z "${TAURI_SIGNING_PRIVATE_KEY:-}" ]]; then
+  # If only _PATH was set, read from there. Else fall back to the default path.
+  if [[ -n "${TAURI_SIGNING_PRIVATE_KEY_PATH:-}" && -f "${TAURI_SIGNING_PRIVATE_KEY_PATH}" ]]; then
+    export TAURI_SIGNING_PRIVATE_KEY="$(cat "${TAURI_SIGNING_PRIVATE_KEY_PATH}")"
+    echo "[build] auto-resolved TAURI_SIGNING_PRIVATE_KEY from \$TAURI_SIGNING_PRIVATE_KEY_PATH"
+  elif [[ -f "$DEFAULT_KEY_PATH" ]]; then
+    export TAURI_SIGNING_PRIVATE_KEY="$(cat "$DEFAULT_KEY_PATH")"
+    echo "[build] auto-resolved TAURI_SIGNING_PRIVATE_KEY from $DEFAULT_KEY_PATH"
   fi
 fi
 
@@ -105,14 +113,14 @@ if [[ -z "${TAURI_SIGNING_PRIVATE_KEY_PASSWORD:-}" ]] && command -v security >/d
   fi
 fi
 
-if [[ -n "${TAURI_SIGNING_PRIVATE_KEY:-}${TAURI_SIGNING_PRIVATE_KEY_PATH:-}" ]]; then
+if [[ -n "${TAURI_SIGNING_PRIVATE_KEY:-}" ]]; then
   echo "[build] signing enabled"
 else
   echo "[build] ERROR: no signing key available." >&2
   echo "[build]        Expected one of:" >&2
   echo "[build]          - file at $DEFAULT_KEY_PATH" >&2
-  echo "[build]          - env var TAURI_SIGNING_PRIVATE_KEY_PATH" >&2
   echo "[build]          - env var TAURI_SIGNING_PRIVATE_KEY (key contents)" >&2
+  echo "[build]          - env var TAURI_SIGNING_PRIVATE_KEY_PATH (path to key)" >&2
   echo "[build]        Generate one with:" >&2
   echo "[build]          cargo tauri signer generate -w $DEFAULT_KEY_PATH --ci" >&2
   echo "[build]        See RELEASING.md > Desktop app for the full walkthrough." >&2
