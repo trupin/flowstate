@@ -89,20 +89,12 @@ fn main() {
                 app.set_activation_policy(tauri::ActivationPolicy::Accessory);
             }
 
-            // Build the initial (idle) menu.
-            let menu_state = MenuState::default();
-            let initial_menu = build_menu(app.handle(), &menu_state)?;
-
-            // Build the tray icon and attach the menu + handlers.
+            // UI-084: the tray icon is built later in the RunEvent::Ready
+            // handler (see `.run(...)` below) — see the comment there for
+            // why. Setup just primes MenuState by way of the helpers
+            // below (refresh_cli_install_state etc.); the Ready handler
+            // reads MenuState when building the initial menu.
             let app_handle = app.handle().clone();
-            TrayIconBuilder::with_id(TRAY_ID)
-                .icon(Image::from_bytes(ICON_IDLE)?)
-                .icon_as_template(true)
-                .menu(&initial_menu)
-                .on_menu_event(move |app, event| {
-                    on_menu_event(app, event.id().as_ref());
-                })
-                .build(app)?;
 
             // Listen for /health events emitted by the poller. We update
             // the tray icon and menu labels in response.
@@ -161,21 +153,56 @@ fn main() {
         })
         .build(tauri::generate_context!())
         .expect("error while running flowstate-desktop")
-        .run(|_app_handle, event| {
-            // Menubar-app lifecycle: closing the UI window (or all
-            // windows) must NOT terminate the process — the tray icon
-            // and the supervised flowstate server should keep running.
-            // Tauri fires `ExitRequested` after the last window closes
-            // on macOS; calling `api.prevent_exit()` keeps the run loop
-            // alive. The only legitimate exit path is the tray's
-            // `Quit Flowstate` menu item, which calls `app.exit(0)`
-            // directly and bypasses this guard.
-            if let tauri::RunEvent::ExitRequested { api, code, .. } = event {
+        .run(|app_handle, event| match event {
+            // UI-084: build the tray here (after Tauri's full init has
+            // settled) instead of inside `setup()`. On macOS 15.6 + Tauri
+            // 2.11.1 + tray-icon 0.23.1, building during `setup()` causes
+            // `NSStatusItem` to be registered at the API level but never
+            // attach to the visible NSStatusBar — Tauri returns Ok and the
+            // icon is silently invisible. Probes confirmed raw NSStatusBar
+            // and tray-icon-without-Tauri both work fine, so the bug is
+            // specifically Tauri's setup() lifecycle. `Ready` fires once
+            // after `setup()` returns and plugins are initialized; building
+            // the tray here registers it on the visible menubar correctly.
+            tauri::RunEvent::Ready => {
+                if let Err(e) = build_tray(app_handle) {
+                    log::error!("tray: build failed: {e:#}");
+                }
+            }
+            // Menubar-app lifecycle: closing the UI window (or all windows)
+            // must NOT terminate the process — the tray icon and the
+            // supervised flowstate server should keep running. Tauri fires
+            // `ExitRequested` after the last window closes on macOS;
+            // calling `api.prevent_exit()` keeps the run loop alive. The
+            // only legitimate exit path is the tray's `Quit Flowstate`
+            // menu item, which calls `app.exit(0)` directly and bypasses
+            // this guard.
+            tauri::RunEvent::ExitRequested { api, code, .. } => {
                 if code.is_none() {
                     api.prevent_exit();
                 }
             }
+            _ => {}
         });
+}
+
+/// Build the tray icon and register it with the manager. Called from the
+/// `RunEvent::Ready` handler (see comment there for why not `setup()`).
+fn build_tray(app: &AppHandle) -> tauri::Result<()> {
+    let menu = {
+        let state_mutex = app.state::<Mutex<AppState>>();
+        let guard = state_mutex.lock().expect("AppState poisoned");
+        build_menu(app, &guard.menu_state)?
+    };
+    TrayIconBuilder::with_id(TRAY_ID)
+        .icon(Image::from_bytes(ICON_IDLE)?)
+        .icon_as_template(true)
+        .menu(&menu)
+        .on_menu_event(move |app, event| {
+            on_menu_event(app, event.id().as_ref());
+        })
+        .build(app)?;
+    Ok(())
 }
 
 /// Dispatcher for tray menu events. The string IDs come from `menu.rs`.
