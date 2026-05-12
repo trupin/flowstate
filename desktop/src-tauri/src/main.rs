@@ -97,12 +97,7 @@ fn main() {
             let app_handle = app.handle().clone();
             TrayIconBuilder::with_id(TRAY_ID)
                 .icon(Image::from_bytes(ICON_IDLE)?)
-                // Template mode strips color and tints to match the menubar
-                // appearance. The Flowstate state icons are color-coded
-                // (gray=idle, green=running, red=error), so template mode is
-                // wrong — it would render all three states as identical
-                // monochrome silhouettes. Render the source pixels directly.
-                .icon_as_template(false)
+                .icon_as_template(true)
                 .menu(&initial_menu)
                 .on_menu_event(move |app, event| {
                     on_menu_event(app, event.id().as_ref());
