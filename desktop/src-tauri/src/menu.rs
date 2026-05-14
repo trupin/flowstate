@@ -37,6 +37,7 @@ pub enum CliInstallState {
 }
 
 /// State the menu builder needs to render the right labels.
+#[derive(Clone)]
 pub struct MenuState {
     pub project_label: String,
     pub port_label: String,

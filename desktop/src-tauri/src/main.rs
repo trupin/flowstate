@@ -89,47 +89,24 @@ fn main() {
                 app.set_activation_policy(tauri::ActivationPolicy::Accessory);
             }
 
-            // UI-084: the tray icon is built later in the RunEvent::Ready
-            // handler (see `.run(...)` below) — see the comment there for
-            // why. Setup just primes MenuState by way of the helpers
-            // below (refresh_cli_install_state etc.); the Ready handler
-            // reads MenuState when building the initial menu.
-            let app_handle = app.handle().clone();
+            // UI-084: the tray icon, and everything that touches the menu
+            // (refresh_cli_install_state, start_server_for, refresh_sdk_
+            // claude_warning), is deferred to the RunEvent::Ready arm of
+            // .run(...). When invoked from inside setup(), Tauri's
+            // run_main_thread! macro — used by every MenuItem::new — round-
+            // trips through the still-active RuntimeRunEvent::Ready handler
+            // and the second call deadlocks. Doing this work after setup()
+            // returns avoids the re-entrancy.
 
-            // Listen for /health events emitted by the poller. We update
-            // the tray icon and menu labels in response.
+            // Listen for /health events emitted by the poller. The poller
+            // is spawned later (from the Ready handler when the server
+            // auto-starts), but the listeners must be wired here so they
+            // catch the very first event.
             register_health_listeners(app.handle().clone());
 
-            // UI-081: reflect the current CLI-install state in the tray.
-            // Cheap filesystem probe — runs synchronously here so the
-            // initial menu doesn't briefly show "Install CLI" and then
-            // flip if a shim is already in place.
-            refresh_cli_install_state(&app_handle);
-
-            // If we have a remembered project, auto-start the server.
-            let last_root = {
-                let state_mutex = app_handle.state::<Mutex<AppState>>();
-                let guard = state_mutex.lock().expect("AppState poisoned");
-                guard.desktop_state.last_project_root.clone()
-            };
-            if let Some(root) = last_root {
-                if validate_project_root(&root).is_ok() {
-                    if let Err(e) = start_server_for(&app_handle, root.clone()) {
-                        log::warn!("auto-start failed: {e:#}");
-                    }
-                    // UI-080: evaluate the SDK-claude warning for the
-                    // remembered project as soon as the tray is up.
-                    refresh_sdk_claude_warning(&app_handle, Some(&root));
-                } else {
-                    log::warn!(
-                        "remembered project root no longer valid; user will need to pick again"
-                    );
-                }
-            }
-
-            // UI-076: kick off a background updater check. Doesn't block
-            // the tray from rendering — silently logs network failures so
-            // the user isn't bothered by transient errors.
+            // UI-076: kick off a background updater check. Network-bound,
+            // independent of the tray; safe to spawn from setup() because
+            // it doesn't touch the menu state on the main thread.
             let updater_handle = app.handle().clone();
             tauri::async_runtime::spawn(async move {
                 check_for_update(updater_handle).await;
@@ -168,6 +145,24 @@ fn main() {
                 if let Err(e) = build_tray(app_handle) {
                     log::error!("tray: build failed: {e:#}");
                 }
+                refresh_cli_install_state(app_handle);
+                let last_root = {
+                    let state_mutex = app_handle.state::<Mutex<AppState>>();
+                    let guard = state_mutex.lock().expect("AppState poisoned");
+                    guard.desktop_state.last_project_root.clone()
+                };
+                if let Some(root) = last_root {
+                    if validate_project_root(&root).is_ok() {
+                        if let Err(e) = start_server_for(app_handle, root.clone()) {
+                            log::warn!("auto-start failed: {e:#}");
+                        }
+                        refresh_sdk_claude_warning(app_handle, Some(&root));
+                    } else {
+                        log::warn!(
+                            "remembered project root no longer valid; user will need to pick again"
+                        );
+                    }
+                }
             }
             // Menubar-app lifecycle: closing the UI window (or all windows)
             // must NOT terminate the process — the tray icon and the
@@ -189,11 +184,14 @@ fn main() {
 /// Build the tray icon and register it with the manager. Called from the
 /// `RunEvent::Ready` handler (see comment there for why not `setup()`).
 fn build_tray(app: &AppHandle) -> tauri::Result<()> {
-    let menu = {
+    // UI-084: same lock-across-build_menu hazard as update_menu — clone
+    // and drop the lock before calling build_menu.
+    let snapshot = {
         let state_mutex = app.state::<Mutex<AppState>>();
         let guard = state_mutex.lock().expect("AppState poisoned");
-        build_menu(app, &guard.menu_state)?
+        guard.menu_state.clone()
     };
+    let menu = build_menu(app, &snapshot)?;
     TrayIconBuilder::with_id(TRAY_ID)
         .icon(Image::from_bytes(ICON_IDLE)?)
         .icon_as_template(true)
@@ -855,14 +853,22 @@ fn register_health_listeners(app: AppHandle) {
 }
 
 /// Apply a mutation to the menu state and rebuild the tray menu.
+///
+/// UI-084: holding the AppState mutex across `build_menu` deadlocks
+/// because `MenuItem::new` round-trips through the main thread via
+/// `run_main_thread!`. The main thread can be elsewhere trying to
+/// acquire the same mutex (e.g. `refresh_sdk_claude_warning`), and
+/// the listener firing on a tokio worker holds the mutex while
+/// waiting for main → deadlock. Clone the state and drop the lock
+/// before calling `build_menu`.
 fn update_menu(app: &AppHandle, mutate: impl FnOnce(&mut MenuState)) {
-    let new_menu: tauri::Result<Menu<Wry>> = {
+    let snapshot = {
         let state_mutex = app.state::<Mutex<AppState>>();
         let mut guard = state_mutex.lock().expect("AppState poisoned");
         mutate(&mut guard.menu_state);
-        build_menu(app, &guard.menu_state)
+        guard.menu_state.clone()
     };
-    match new_menu {
+    match build_menu(app, &snapshot) {
         Ok(menu) => {
             if let Some(tray) = app.tray_by_id(TRAY_ID) {
                 if let Err(e) = tray.set_menu(Some(menu)) {
